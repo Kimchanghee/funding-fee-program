@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { TrendingDown, TrendingUp, Zap, AlertCircle, Play } from 'lucide-react';
 import CountdownTimer from '@/components/ui/CountdownTimer';
 import { useFundingStore } from '@/store/fundingStore';
@@ -85,6 +86,7 @@ function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: numbe
 
 export default function OpportunityCard() {
   const { opportunities, strategyConfig, strategyRunning, executeStrategy, setShowStrategyPanel, apiConfigs, simulationMode, simBalances } = useFundingStore();
+  const [compoundMode, setCompoundMode] = useState(false);
   const best = opportunities[0];
 
   if (!best) {
@@ -200,6 +202,33 @@ export default function OpportunityCard() {
             </div>
           </div>
 
+          {/* Simple / Compound toggle */}
+          <div style={{ display: 'flex', gap: 4, background: 'var(--bg-accent)', borderRadius: 8, padding: 3 }}>
+            {(['단리', '복리'] as const).map((label, i) => {
+              const active = compoundMode === (i === 1);
+              return (
+                <button
+                  key={label}
+                  onClick={() => setCompoundMode(i === 1)}
+                  style={{
+                    flex: 1,
+                    padding: '4px 10px',
+                    borderRadius: 6,
+                    border: 'none',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    background: active ? (i === 1 ? 'rgba(139,92,246,0.3)' : 'rgba(16,185,129,0.2)') : 'transparent',
+                    color: active ? (i === 1 ? '#a78bfa' : '#10b981') : 'var(--color-text-muted)',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+
           {/* Profit estimates */}
           <div
             style={{
@@ -210,12 +239,13 @@ export default function OpportunityCard() {
             }}
           >
             {[
-              { label: '8h 수익', value: profit.perFunding },
-              { label: '일 수익', value: profit.perDay },
-              { label: '월 수익', value: profit.perMonth },
-              { label: '연 수익', value: profit.perYear },
-            ].map(({ label, value }) => {
-              const roi = (value / strategyConfig.investmentUSDT) * 100;
+              { label: '8h 수익', value: profit.perFunding, compoundValue: profit.perFunding },
+              { label: '일 수익', value: profit.perDay, compoundValue: profit.compound.perDay },
+              { label: '월 수익', value: profit.perMonth, compoundValue: profit.compound.perMonth },
+              { label: '연 수익', value: profit.perYear, compoundValue: profit.compound.perYear },
+            ].map(({ label, value, compoundValue }) => {
+              const displayValue = compoundMode ? compoundValue : value;
+              const roi = (displayValue / strategyConfig.investmentUSDT) * 100;
               return (
                 <div
                   key={label}
@@ -223,15 +253,15 @@ export default function OpportunityCard() {
                     padding: '8px 12px',
                     borderRadius: 8,
                     background: 'var(--bg-accent)',
-                    border: '1px solid var(--color-border)',
+                    border: `1px solid ${compoundMode ? 'rgba(139,92,246,0.2)' : 'var(--color-border)'}`,
                     textAlign: 'center',
                   }}
                 >
                   <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 2 }}>{label}</div>
-                  <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: '#10b981' }}>
-                    ${value.toFixed(2)}
+                  <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: compoundMode ? '#a78bfa' : '#10b981' }}>
+                    ${displayValue.toFixed(2)}
                   </div>
-                  <div className="mono" style={{ fontSize: 10, color: '#6ee7b7', marginTop: 2 }}>
+                  <div className="mono" style={{ fontSize: 10, color: compoundMode ? '#c4b5fd' : '#6ee7b7', marginTop: 2 }}>
                     +{roi.toFixed(2)}%
                   </div>
                 </div>

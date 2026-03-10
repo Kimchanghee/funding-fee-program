@@ -66,17 +66,47 @@ export function findOpportunities(
   return opportunities.sort((a, b) => b.spread - a.spread).slice(0, topN);
 }
 
+export interface ProfitEstimate {
+  perFunding: number;
+  perDay: number;
+  perMonth: number;
+  perYear: number;
+  compound: {
+    perDay: number;
+    perMonth: number;
+    perYear: number;
+  };
+}
+
 export function estimateProfit(
   opportunity: ArbitrageOpportunity,
   investmentUSDT: number,
   leverage: number,
-): { perFunding: number; perDay: number; perMonth: number; perYear: number } {
+): ProfitEstimate {
   const notional = investmentUSDT * leverage;
   const perFunding = notional * opportunity.spread;
+
+  // Simple interest (현재 수익률 고정)
+  const perDay = perFunding * 3;
+  const perMonth = perFunding * 3 * 30;
+  const perYear = perFunding * 3 * 365;
+
+  // Compound interest (수익 재투자, 레버리지 포함 복리)
+  // 8h당 수익률 = spread * leverage / 1 (margin 기준)
+  const ratePerPeriod = opportunity.spread * leverage;
+  const compoundDay = investmentUSDT * (Math.pow(1 + ratePerPeriod, 3) - 1);
+  const compoundMonth = investmentUSDT * (Math.pow(1 + ratePerPeriod, 90) - 1);
+  const compoundYear = investmentUSDT * (Math.pow(1 + ratePerPeriod, 1095) - 1);
+
   return {
     perFunding,
-    perDay: perFunding * 3,
-    perMonth: perFunding * 3 * 30,
-    perYear: perFunding * 3 * 365,
+    perDay,
+    perMonth,
+    perYear,
+    compound: {
+      perDay: compoundDay,
+      perMonth: compoundMonth,
+      perYear: compoundYear,
+    },
   };
 }

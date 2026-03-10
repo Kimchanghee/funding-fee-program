@@ -53,8 +53,13 @@ export async function fetchFundingRates(
   const symbolSet = symbols ? new Set(symbols) : null;
 
   try {
-    // ── Bulk fetch (1 API call) ───────────────────────────────────────────
-    const frs = await ex.fetchFundingRates() as Record<string, any>;
+    // ── Bulk fetch (1 API call) with 20s timeout ──────────────────────────
+    const frs = await Promise.race([
+      ex.fetchFundingRates() as Promise<Record<string, any>>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout`)), 20000),
+      ),
+    ]);
     const results: FundingRate[] = [];
     for (const [sym, fr] of Object.entries(frs)) {
       if (!sym.includes('USDT')) continue;

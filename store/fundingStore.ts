@@ -208,8 +208,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Refresh rates ─────────────────────────────
   async refreshRates() {
     set({ isLoadingRates: true });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
-      const res = await fetch('/api/funding-rates');
+      const res = await fetch('/api/funding-rates', { signal: controller.signal });
       const json = await res.json() as {
         success: boolean;
         data: {
@@ -236,8 +238,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }
       }
     } catch (err) {
-      get().addLog('error', '펀딩률 조회 실패', undefined, (err as Error).message);
+      const name = (err as Error).name;
+      if (name === 'AbortError') {
+        get().addLog('warning', '펀딩률 조회 타임아웃 (30s) — 재시도 예정', undefined);
+      } else {
+        get().addLog('error', '펀딩률 조회 실패', undefined, (err as Error).message);
+      }
     } finally {
+      clearTimeout(timer);
       set({ isLoadingRates: false });
     }
   },
