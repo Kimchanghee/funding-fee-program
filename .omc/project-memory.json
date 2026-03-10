@@ -1,0 +1,293 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1773138836588,
+  "projectRoot": "d:\\Dithub\\funding-fee-program",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {},
+  "hotPaths": [
+    {
+      "path": "store\\fundingStore.ts",
+      "accessCount": 22,
+      "lastAccessed": 1773147973360,
+      "type": "file"
+    },
+    {
+      "path": "lib\\exchanges\\index.ts",
+      "accessCount": 21,
+      "lastAccessed": 1773148384788,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\OpportunityCard.tsx",
+      "accessCount": 17,
+      "lastAccessed": 1773148165284,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\LogPanel.tsx",
+      "accessCount": 9,
+      "lastAccessed": 1773147394538,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\Header.tsx",
+      "accessCount": 9,
+      "lastAccessed": 1773148000513,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\PositionsTable.tsx",
+      "accessCount": 7,
+      "lastAccessed": 1773148095946,
+      "type": "file"
+    },
+    {
+      "path": "app\\page.tsx",
+      "accessCount": 6,
+      "lastAccessed": 1773146971497,
+      "type": "file"
+    },
+    {
+      "path": "lib\\types.ts",
+      "accessCount": 5,
+      "lastAccessed": 1773147884955,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\FundingHistory.tsx",
+      "accessCount": 4,
+      "lastAccessed": 1773146253272,
+      "type": "file"
+    },
+    {
+      "path": "lib\\opportunities.ts",
+      "accessCount": 4,
+      "lastAccessed": 1773147668177,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\BalanceCards.tsx",
+      "accessCount": 4,
+      "lastAccessed": 1773148037753,
+      "type": "file"
+    },
+    {
+      "path": "app\\settings\\page.tsx",
+      "accessCount": 3,
+      "lastAccessed": 1773140155717,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\FundingRateTable.tsx",
+      "accessCount": 3,
+      "lastAccessed": 1773140169459,
+      "type": "file"
+    },
+    {
+      "path": "app\\layout.tsx",
+      "accessCount": 3,
+      "lastAccessed": 1773140391635,
+      "type": "file"
+    },
+    {
+      "path": "hooks\\useWebSockets.ts",
+      "accessCount": 3,
+      "lastAccessed": 1773147699951,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\funding-rates\\route.ts",
+      "accessCount": 3,
+      "lastAccessed": 1773148346344,
+      "type": "file"
+    },
+    {
+      "path": "lib\\websocket\\parsers.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773146129444,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\strategy\\execute\\route.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773147663239,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\exchanges\\[exchange]\\open\\route.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773147667687,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\exchanges\\[exchange]\\close\\route.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773147667931,
+      "type": "file"
+    },
+    {
+      "path": "lib\\exchanges\\utils.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773147671061,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\exchanges\\[exchange]\\positions\\route.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773147674060,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\exchanges\\[exchange]\\balance\\route.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773147674123,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\exchanges\\[exchange]\\test\\route.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773147676735,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\exchanges\\[exchange]\\funding-history\\route.ts",
+      "accessCount": 2,
+      "lastAccessed": 1773147677189,
+      "type": "file"
+    },
+    {
+      "path": "package.json",
+      "accessCount": 2,
+      "lastAccessed": 1773147696973,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\StrategyPanel.tsx",
+      "accessCount": 2,
+      "lastAccessed": 1773147707500,
+      "type": "file"
+    },
+    {
+      "path": ".env.local.example",
+      "accessCount": 2,
+      "lastAccessed": 1773147719077,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1773148340853,
+      "type": "directory"
+    },
+    {
+      "path": "tsconfig.json",
+      "accessCount": 1,
+      "lastAccessed": 1773139171852,
+      "type": "file"
+    },
+    {
+      "path": "next.config.ts",
+      "accessCount": 1,
+      "lastAccessed": 1773139173064,
+      "type": "file"
+    },
+    {
+      "path": "postcss.config.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1773139174303,
+      "type": "file"
+    },
+    {
+      "path": "eslint.config.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1773139176010,
+      "type": "file"
+    },
+    {
+      "path": "app\\globals.css",
+      "accessCount": 1,
+      "lastAccessed": 1773139245542,
+      "type": "file"
+    },
+    {
+      "path": "lib\\keyStore.ts",
+      "accessCount": 1,
+      "lastAccessed": 1773139270671,
+      "type": "file"
+    },
+    {
+      "path": "app\\api\\exchanges\\[exchange]\\funding-rates\\route.ts",
+      "accessCount": 1,
+      "lastAccessed": 1773139321384,
+      "type": "file"
+    },
+    {
+      "path": "components\\ui\\StatusDot.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1773139407636,
+      "type": "file"
+    },
+    {
+      "path": "components\\ui\\LogBadge.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1773139412283,
+      "type": "file"
+    },
+    {
+      "path": "components\\ui\\KSTClock.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1773139415535,
+      "type": "file"
+    },
+    {
+      "path": "components\\ui\\CountdownTimer.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1773139420472,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\ApiPanel.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1773139643052,
+      "type": "file"
+    },
+    {
+      "path": "next-env.d.ts",
+      "accessCount": 1,
+      "lastAccessed": 1773139746111,
+      "type": "file"
+    },
+    {
+      "path": "components\\dashboard\\WsStatusBar.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1773145919604,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
