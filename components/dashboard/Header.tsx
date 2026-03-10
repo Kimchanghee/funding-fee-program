@@ -12,6 +12,7 @@ export default function Header() {
     connectedExchanges,
     isLoadingRates,
     strategyRunning,
+    strategyConfig,
     lastRatesUpdate,
     refreshRates,
     refreshPositions,
@@ -132,7 +133,7 @@ export default function Header() {
       {/* Simulation toggle */}
       <button
         onClick={toggleSimulationMode}
-        title={simulationMode ? '시뮬레이션 모드 OFF' : '시뮬레이션 모드 ON (각 거래소 $1,500 가상 잔고)'}
+        title={simulationMode ? '시뮬레이션 모드 OFF' : `시뮬레이션 모드 ON (각 거래소 $${strategyConfig.investmentUSDT.toLocaleString()} 가상 잔고)`}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -154,7 +155,7 @@ export default function Header() {
       {simulationMode && (
         <button
           onClick={resetSimulation}
-          title="시뮬레이션 초기화 ($1,500 리셋)"
+          title={`시뮬레이션 초기화 ($${strategyConfig.investmentUSDT.toLocaleString()} 리셋)`}
           style={{
             padding: '5px 10px',
             borderRadius: 8,

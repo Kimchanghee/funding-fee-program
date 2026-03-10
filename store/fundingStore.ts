@@ -14,7 +14,7 @@ import type {
   ExchangeId,
   FundingPayment,
 } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, SIM_INITIAL_BALANCE } from '@/lib/types';
+import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs } from '@/lib/keyStore';
 import { estimateProfit, findOpportunities } from '@/lib/opportunities';
 import type { WsRateUpdate } from '@/lib/websocket/parsers';
@@ -148,7 +148,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
   fundingHistory: [],
   simulationMode: true,
-  simBalances: { binance: SIM_INITIAL_BALANCE, bybit: SIM_INITIAL_BALANCE, okx: SIM_INITIAL_BALANCE, bitget: SIM_INITIAL_BALANCE, gate: SIM_INITIAL_BALANCE },
+  simBalances: { binance: 1000, bybit: 1000, okx: 1000, bitget: 1000, gate: 1000 },
   simPositions: [],
   simTotalFundingEarned: 0,
   isLoadingRates: false,
@@ -202,7 +202,20 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   setStrategyConfig(config) {
-    set((s) => ({ strategyConfig: { ...s.strategyConfig, ...config } }));
+    set((s) => {
+      const next = { ...s.strategyConfig, ...config };
+      // 투자금 변경 시 시뮬 잔고 자동 동기화
+      if (config.investmentUSDT !== undefined && config.investmentUSDT !== s.strategyConfig.investmentUSDT) {
+        const bal = config.investmentUSDT;
+        return {
+          strategyConfig: next,
+          simBalances: { binance: bal, bybit: bal, okx: bal, bitget: bal, gate: bal },
+          simPositions: [],
+          simTotalFundingEarned: 0,
+        };
+      }
+      return { strategyConfig: next };
+    });
   },
 
   // ── Refresh rates ─────────────────────────────
@@ -556,17 +569,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Simulation ────────────────────────────────
   toggleSimulationMode() {
     const next = !get().simulationMode;
+    const bal = get().strategyConfig.investmentUSDT;
     set({ simulationMode: next });
-    get().addLog('info', next ? '[SIM] 시뮬레이션 모드 ON — 각 거래소 $1,500 가상 잔고' : '[SIM] 시뮬레이션 모드 OFF');
+    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${bal.toLocaleString()} 가상 잔고` : '[SIM] 시뮬레이션 모드 OFF');
   },
 
   resetSimulation() {
+    const bal = get().strategyConfig.investmentUSDT;
     set({
       simPositions: [],
-      simBalances: { binance: SIM_INITIAL_BALANCE, bybit: SIM_INITIAL_BALANCE, okx: SIM_INITIAL_BALANCE, bitget: SIM_INITIAL_BALANCE, gate: SIM_INITIAL_BALANCE },
+      simBalances: { binance: bal, bybit: bal, okx: bal, bitget: bal, gate: bal },
       simTotalFundingEarned: 0,
     });
-    get().addLog('info', '[SIM] 초기화 완료 — 각 거래소 $1,500 리셋');
+    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal.toLocaleString()} 리셋`);
   },
 
   closeSimPosition(simId) {
