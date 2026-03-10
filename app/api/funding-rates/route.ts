@@ -62,13 +62,15 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // If cache exists but stale, return stale + kick background refresh
-  if (cache && !refreshInProgress) {
-    refreshInProgress = true;
-    doFetch(exchanges, symbols)
-      .then((result) => { cache = result; })
-      .catch(() => {})
-      .finally(() => { refreshInProgress = false; });
+  // If cache exists but stale, return stale immediately + kick background refresh if not already running
+  if (cache) {
+    if (!refreshInProgress) {
+      refreshInProgress = true;
+      doFetch(exchanges, symbols)
+        .then((result) => { cache = result; })
+        .catch(() => {})
+        .finally(() => { refreshInProgress = false; });
+    }
 
     return NextResponse.json({
       success: true,
@@ -80,12 +82,13 @@ export async function GET(req: NextRequest) {
   // First load or no cache — must wait
   try {
     cache = await doFetch(exchanges, symbols);
-  } catch {
+  } catch (err) {
     return NextResponse.json({
-      success: true,
+      success: false,
+      error: (err as Error).message || '모든 거래소에서 펀딩률 조회 실패',
       data: { rates: [], opportunities: [], errors: [] },
       timestamp: now,
-    });
+    }, { status: 502 });
   }
 
   return NextResponse.json({

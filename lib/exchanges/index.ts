@@ -94,13 +94,18 @@ export async function fetchFundingRates(
     }
     return results;
   } catch {
-    // ── Fallback: individual fetches in parallel ──────────────────────────
+    // ── Fallback: individual fetches in parallel with per-symbol timeout ──
     if (!symbols || symbols.length === 0) throw new Error(`[${id}] fetchFundingRates failed`);
     const results: FundingRate[] = [];
     await Promise.allSettled(
       symbols.map(async (sym) => {
         try {
-          const fr = await ex.fetchFundingRate(sym);
+          const fr = await Promise.race([
+            ex.fetchFundingRate(sym),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`[${id}] fetchFundingRate(${sym}) timeout`)), 8000),
+            ),
+          ]);
           const normalized = normalizeFr(id, sym, fr);
           if (normalized) results.push(normalized);
         } catch { /* skip */ }

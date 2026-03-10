@@ -46,6 +46,8 @@ interface FundingState {
   lastRatesUpdate: number | null;
   lastPositionsUpdate: number | null;
   wsStatuses: Partial<Record<ExchangeId, WsStatus>>;
+  ratesStatus: 'idle' | 'loading' | 'success' | 'error';
+  ratesError: string | null;
 
   // Simulation
   simulationMode: boolean;
@@ -185,6 +187,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   lastRatesUpdate: null,
   lastPositionsUpdate: null,
   wsStatuses: {},
+  ratesStatus: 'idle',
+  ratesError: null,
   showApiPanel: false,
   showStrategyPanel: false,
   rateFilter: '',
@@ -247,13 +251,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Refresh rates ─────────────────────────────
   async refreshRates() {
     if (get().isLoadingRates) return; // prevent duplicate requests
-    set({ isLoadingRates: true });
+    set({ isLoadingRates: true, ratesStatus: 'loading', ratesError: null });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch('/api/funding-rates', { signal: controller.signal });
       const json = await res.json() as {
         success: boolean;
+        error?: string;
         data: {
           rates: FundingRate[];
           opportunities: ArbitrageOpportunity[];
@@ -267,6 +272,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           fundingRates: json.data.rates,
           opportunities: json.data.opportunities,
           lastRatesUpdate: json.timestamp,
+          ratesStatus: 'success',
+          ratesError: null,
         });
         get().addLog('success', `펀딩률 업데이트: ${json.data.rates.length}개 데이터`, undefined,
           `기회: ${json.data.opportunities.length}개`);
@@ -276,13 +283,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             get().addLog('warning', `${(e.exchange || '?').toUpperCase()} 펀딩률 오류`, e.exchange, e.error);
           }
         }
+      } else {
+        // Server returned success: false — an actual error
+        const errMsg = json.error || '서버에서 펀딩률 데이터를 가져오지 못했습니다';
+        set({ ratesStatus: 'error', ratesError: errMsg });
+        get().addLog('error', '펀딩률 조회 실패', undefined, errMsg);
       }
     } catch (err) {
       const name = (err as Error).name;
       if (name === 'AbortError') {
-        get().addLog('warning', '펀딩률 조회 타임아웃 (30s) — 재시도 예정', undefined);
+        set({ ratesStatus: 'error', ratesError: '펀딩률 조회 타임아웃 (15s)' });
+        get().addLog('warning', '펀딩률 조회 타임아웃 (15s) — 재시도 예정', undefined);
       } else {
-        get().addLog('error', '펀딩률 조회 실패', undefined, (err as Error).message);
+        const msg = (err as Error).message;
+        set({ ratesStatus: 'error', ratesError: msg });
+        get().addLog('error', '펀딩률 조회 실패', undefined, msg);
       }
     } finally {
       clearTimeout(timer);

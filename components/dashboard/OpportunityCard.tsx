@@ -85,7 +85,7 @@ function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: numbe
 }
 
 export default function OpportunityCard() {
-  const { opportunities, strategyConfig, executeStrategy, setShowStrategyPanel, apiConfigs, simulationMode, simBalances, automationActive, automationStartedAt, automationStats, simPositions, stopAutomation, snipeScheduled, snipeTargetTime, scheduleSnipe, cancelSnipe, closeSimPosition } = useFundingStore();
+  const { opportunities, strategyConfig, executeStrategy, setShowStrategyPanel, apiConfigs, simulationMode, simBalances, automationActive, automationStartedAt, automationStats, simPositions, stopAutomation, snipeScheduled, snipeTargetTime, scheduleSnipe, cancelSnipe, closeSimPosition, ratesStatus, ratesError, isLoadingRates, lastRatesUpdate } = useFundingStore();
   const [compoundMode, setCompoundMode] = useState(false);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false); // 진입/청산 처리 중 방지
@@ -136,6 +136,13 @@ export default function OpportunityCard() {
     }
   }, [best, snipeScheduled, scheduleSnipe, cancelSnipe]);
 
+  // 로딩 중 (첫 로딩 or 아직 데이터 없음)
+  const isFirstLoading = isLoadingRates && !lastRatesUpdate;
+  // 에러 상태 (데이터도 없고 에러 발생)
+  const isErrorState = ratesStatus === 'error' && !best;
+  // 빈 결과 (로딩 완료했지만 기회 없음)
+  const isEmptyResult = !best && ratesStatus === 'success';
+
   if (!best) {
     return (
       <div
@@ -150,12 +157,55 @@ export default function OpportunityCard() {
           minHeight: 200,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 20, height: 20, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-          <span style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>
-            5개 거래소 펀딩률 데이터 조회 중...
-          </span>
-        </div>
+        {isFirstLoading ? (
+          /* 첫 로딩 중 */
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 20, height: 20, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+            <span style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>
+              5개 거래소 펀딩률 데이터 조회 중...
+            </span>
+          </div>
+        ) : isErrorState ? (
+          /* 에러 발생 */
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 24 }}>⚠</span>
+            <span style={{ color: '#ef4444', fontSize: 14, fontWeight: 600 }}>
+              펀딩률 데이터 조회 실패
+            </span>
+            {ratesError && (
+              <span style={{ color: 'var(--color-text-muted)', fontSize: 12, textAlign: 'center', maxWidth: 300 }}>
+                {ratesError}
+              </span>
+            )}
+            <span style={{ color: 'var(--color-text-muted)', fontSize: 11 }}>
+              30초 후 자동 재시도됩니다
+            </span>
+          </div>
+        ) : isEmptyResult ? (
+          /* 데이터는 왔지만 기회 없음 */
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 24 }}>📊</span>
+            <span style={{ color: 'var(--color-text-muted)', fontSize: 14, fontWeight: 600 }}>
+              현재 유효한 헷징 기회가 없습니다
+            </span>
+            <span style={{ color: 'var(--color-text-muted)', fontSize: 12 }}>
+              스프레드가 최소 기준 미만이거나 데이터가 부족합니다
+            </span>
+            {lastRatesUpdate && (
+              <span style={{ color: 'var(--color-text-muted)', fontSize: 11 }}>
+                마지막 업데이트: {new Date(lastRatesUpdate).toLocaleTimeString('ko-KR')}
+              </span>
+            )}
+          </div>
+        ) : (
+          /* 기본 로딩 (재시도 중 등) */
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 20, height: 20, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+            <span style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>
+              펀딩률 데이터 갱신 중...
+            </span>
+          </div>
+        )}
         {simulationMode && (
           <div style={{ display: 'flex', gap: 12, fontSize: 12, color: 'var(--color-text-muted)' }}>
             <span style={{ color: '#a78bfa' }}>SIM 모드 활성</span>
@@ -359,15 +409,18 @@ export default function OpportunityCard() {
               opacity: (!canExecute && !isRunning) || isProcessing ? 0.5 : 1,
               cursor: (!canExecute && !isRunning) || isProcessing ? 'not-allowed' : 'pointer',
               background: isRunning
-                ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                ? 'linear-gradient(135deg, #f59e0b, #f97316)'
                 : simulationMode ? 'linear-gradient(135deg, #7c3aed, #a78bfa)' : undefined,
+              border: isRunning ? '2px solid #fbbf24' : undefined,
+              boxShadow: isRunning ? '0 0 16px rgba(245, 158, 11, 0.4)' : undefined,
               transition: 'all 0.3s ease',
               position: 'relative',
               overflow: 'hidden',
+              animation: isRunning ? 'pulse-glow 2s ease-in-out infinite' : undefined,
             }}
             disabled={(!canExecute && !isRunning) || isProcessing}
             onClick={handleToggle}
-            title={!canExecute && !isRunning ? (simulationMode ? '시뮬 잔고 부족' : '두 거래소 모두 API 키가 필요합니다') : ''}
+            title={!canExecute && !isRunning ? (simulationMode ? '시뮬 잔고 부족' : '두 거래소 모두 API 키가 필요합니다') : isRunning ? '클릭하면 전체 청산' : ''}
           >
             {isProcessing ? (
               <>
@@ -376,11 +429,8 @@ export default function OpportunityCard() {
               </>
             ) : isRunning ? (
               <>
-                <div className="automation-dot" style={{ width: 10, height: 10, borderRadius: '50%', background: 'white' }} />
-                {simulationMode ? '[SIM] ' : ''}진행 중 — 클릭하면 전체 청산
-                <span className="mono" style={{ fontSize: 11, opacity: 0.8, marginLeft: 4 }}>
-                  ({simPositions.length}개)
-                </span>
+                <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#fff', boxShadow: '0 0 6px #fff', animation: 'blink 1.5s ease-in-out infinite' }} />
+                {simulationMode ? '[SIM] ' : ''}투자 실행 중 ({simPositions.length}개) — 청산하기
               </>
             ) : (
               <>
