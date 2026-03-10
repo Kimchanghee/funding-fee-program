@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { TrendingDown, TrendingUp, Zap, AlertCircle, Play } from 'lucide-react';
 import CountdownTimer from '@/components/ui/CountdownTimer';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_COLORS, EXCHANGE_NAMES } from '@/lib/types';
+import { EXCHANGE_COLORS, EXCHANGE_NAMES, SIM_INITIAL_BALANCE } from '@/lib/types';
 import { estimateProfit } from '@/lib/opportunities';
 
 function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: number; side: 'long' | 'short' }) {
@@ -96,16 +96,28 @@ export default function OpportunityCard() {
         style={{
           padding: 32,
           display: 'flex',
+          flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: 12,
+          gap: 16,
           minHeight: 200,
         }}
       >
-        <AlertCircle size={20} color="var(--color-text-muted)" />
-        <span style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>
-          펀딩률 데이터 로딩 중... 잠시 기다려 주세요.
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 20, height: 20, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>
+            5개 거래소 펀딩률 데이터 조회 중...
+          </span>
+        </div>
+        {simulationMode && (
+          <div style={{ display: 'flex', gap: 12, fontSize: 12, color: 'var(--color-text-muted)' }}>
+            <span style={{ color: '#a78bfa' }}>SIM 모드 활성</span>
+            <span>•</span>
+            <span>거래소당 <strong style={{ color: 'var(--color-text)' }}>${SIM_INITIAL_BALANCE.toLocaleString()}</strong></span>
+            <span>•</span>
+            <span>총 <strong style={{ color: '#f59e0b' }}>${(SIM_INITIAL_BALANCE * 5).toLocaleString()}</strong></span>
+          </div>
+        )}
       </div>
     );
   }

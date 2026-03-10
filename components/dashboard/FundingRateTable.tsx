@@ -156,7 +156,12 @@ export default function FundingRateTable() {
             {paged.length === 0 ? (
               <tr>
                 <td colSpan={10} style={{ padding: 40, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>
-                  {isLoadingRates ? '데이터 로딩 중...' : '조건에 맞는 기회 없음'}
+                  {isLoadingRates ? (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                      <div style={{ width: 16, height: 16, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                      5개 거래소 펀딩률 데이터 조회 중...
+                    </div>
+                  ) : '조건에 맞는 기회 없음'}
                 </td>
               </tr>
             ) : (

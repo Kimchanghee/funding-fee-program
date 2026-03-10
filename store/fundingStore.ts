@@ -147,7 +147,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     maxPositionAgeHours: 72,
   },
   fundingHistory: [],
-  simulationMode: false,
+  simulationMode: true,
   simBalances: { binance: SIM_INITIAL_BALANCE, bybit: SIM_INITIAL_BALANCE, okx: SIM_INITIAL_BALANCE, bitget: SIM_INITIAL_BALANCE, gate: SIM_INITIAL_BALANCE },
   simPositions: [],
   simTotalFundingEarned: 0,
