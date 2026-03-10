@@ -145,7 +145,7 @@ export default function FundingRateTable() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>연수익률 <SortIcon field="annualReturn" /></div>
               </th>
               <th style={{ ...thStyle }}>
-                {`8h 수익 ($${strategyConfig.investmentUSDT.toLocaleString()} x${strategyConfig.leverage})`}
+                {`8h 수익 (총 $${(strategyConfig.investmentUSDT * 2).toLocaleString()} x${strategyConfig.leverage})`}
               </th>
               <th style={thStyle} onClick={() => handleSort('minutesToFunding')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>다음 펀딩 <SortIcon field="minutesToFunding" /></div>

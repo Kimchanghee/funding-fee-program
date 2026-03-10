@@ -245,7 +245,7 @@ export default function OpportunityCard() {
               { label: '연 수익', value: profit.perYear, compoundValue: profit.compound.perYear },
             ].map(({ label, value, compoundValue }) => {
               const displayValue = compoundMode ? compoundValue : value;
-              const roi = (displayValue / strategyConfig.investmentUSDT) * 100;
+              const roi = (displayValue / profit.totalCapital) * 100;
               return (
                 <div
                   key={label}
@@ -307,8 +307,9 @@ export default function OpportunityCard() {
           )}
 
           {/* Config summary */}
-          <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--color-text-muted)' }}>
-            <span>투자금: <strong style={{ color: 'var(--color-text)' }}>${strategyConfig.investmentUSDT.toLocaleString()}</strong></span>
+          <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--color-text-muted)', flexWrap: 'wrap' }}>
+            <span>거래소당: <strong style={{ color: 'var(--color-text)' }}>${strategyConfig.investmentUSDT.toLocaleString()}</strong></span>
+            <span>총 투자금: <strong style={{ color: '#f59e0b' }}>${(strategyConfig.investmentUSDT * 2).toLocaleString()}</strong></span>
             <span>레버리지: <strong style={{ color: 'var(--color-text)' }}>{strategyConfig.leverage}x</strong></span>
             <button
               onClick={() => setShowStrategyPanel(true)}
