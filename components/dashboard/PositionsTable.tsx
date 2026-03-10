@@ -88,7 +88,7 @@ function CloseModal({ position, onClose }: { position: Position; onClose: () => 
 }
 
 export default function PositionsTable() {
-  const { positions, isLoadingPositions, refreshPositions, simulationMode, simPositions, closeSimPosition } = useFundingStore();
+  const { positions, isLoadingPositions, refreshPositions, simulationMode, simPositions, closeSimPosition, automationActive, fundingRates } = useFundingStore();
   const [closeTarget, setCloseTarget] = useState<Position | null>(null);
   const [sideFilter, setSideFilter] = useState<'all' | 'long' | 'short'>('all');
 
@@ -121,6 +121,17 @@ export default function PositionsTable() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
               {simulationMode ? '[SIM] 시뮬 포지션' : '활성 포지션'}
+              {automationActive && (
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '2px 8px', borderRadius: 10,
+                  background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)',
+                  fontSize: 10, fontWeight: 700, color: '#10b981',
+                }}>
+                  <div className="automation-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} />
+                  자동감시
+                </span>
+              )}
               {activePositions.length > 0 && (
                 <span style={{ padding: '2px 7px', borderRadius: 10, background: 'var(--bg-accent)', fontSize: 11, color: 'var(--color-text-muted)' }}>
                   {activePositions.length}
@@ -197,13 +208,14 @@ export default function PositionsTable() {
                 <th style={thStyle}>미실현 손익</th>
                 <th style={thStyle}>청산가</th>
                 {simulationMode && <th style={thStyle}>수령 펀딩</th>}
+                {simulationMode && <th style={thStyle}>스프레드</th>}
                 <th style={{ ...thStyle, textAlign: 'right' }}>청산</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={simulationMode ? 12 : 11} style={{ padding: 32, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>
+                  <td colSpan={simulationMode ? 13 : 11} style={{ padding: 32, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>
                     {!simulationMode && isLoadingPositions ? '포지션 로딩 중...' : simulationMode ? '[SIM] 진입한 포지션 없음' : '활성 포지션 없음'}
                   </td>
                 </tr>
@@ -280,6 +292,32 @@ export default function PositionsTable() {
                           <span className="mono" style={{ fontSize: 12, color: simPos && simPos.fundingCollected >= 0 ? '#a78bfa' : '#ef4444', fontWeight: 700 }}>
                             {simPos ? `${simPos.fundingCollected >= 0 ? '+' : ''}$${simPos.fundingCollected.toFixed(4)}` : '—'}
                           </span>
+                        </td>
+                      )}
+                      {simulationMode && (
+                        <td style={{ padding: '10px 14px' }}>
+                          {simPos ? (() => {
+                            const liveRate = fundingRates.find(r => r.exchange === pos.exchange && r.symbol === pos.symbol);
+                            const currentRate = liveRate?.rate ?? pos.fundingRate;
+                            // Find the paired position
+                            const pairTs = Math.floor(simPos.openedAt / 1000);
+                            const paired = simPositions.find(p => p.simId !== simPos.simId && p.baseAsset === simPos.baseAsset && Math.floor(p.openedAt / 1000) === pairTs);
+                            if (!paired) return <span style={{ color: 'var(--color-text-muted)', fontSize: 11 }}>—</span>;
+                            const pairedRate = fundingRates.find(r => r.exchange === paired.exchange && r.symbol === paired.symbol)?.rate ?? paired.fundingRate;
+                            const currentSpread = simPos.side === 'short' ? currentRate - pairedRate : pairedRate - currentRate;
+                            const entrySpread = simPos.spread;
+                            const reversed = currentSpread <= 0;
+                            return (
+                              <div>
+                                <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: reversed ? '#ef4444' : '#10b981' }}>
+                                  {reversed ? '!' : ''}{(currentSpread * 100).toFixed(4)}%
+                                </div>
+                                <div className="mono" style={{ fontSize: 9, color: 'var(--color-text-muted)' }}>
+                                  진입: {(entrySpread * 100).toFixed(4)}%
+                                </div>
+                              </div>
+                            );
+                          })() : '—'}
                         </td>
                       )}
                       <td style={{ padding: '10px 14px', textAlign: 'right' }}>

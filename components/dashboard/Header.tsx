@@ -21,6 +21,9 @@ export default function Header() {
     simulationMode,
     toggleSimulationMode,
     resetSimulation,
+    automationActive,
+    stopAutomation,
+    simPositions,
   } = useFundingStore();
 
   const handleRefresh = async () => {
@@ -112,23 +115,52 @@ export default function Header() {
 
       <div style={{ width: 1, height: 24, background: 'var(--color-border)' }} />
 
-      {/* Strategy status */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '4px 12px',
-          borderRadius: 20,
-          background: strategyRunning ? 'rgba(16,185,129,0.15)' : 'var(--bg-accent)',
-          border: `1px solid ${strategyRunning ? 'rgba(16,185,129,0.4)' : 'var(--color-border)'}`,
-        }}
-      >
-        <Activity size={12} color={strategyRunning ? '#10b981' : 'var(--color-text-muted)'} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: strategyRunning ? '#10b981' : 'var(--color-text-muted)' }}>
-          {strategyRunning ? '실행중' : '대기중'}
-        </span>
-      </div>
+      {/* Automation status */}
+      {automationActive ? (
+        <button
+          onClick={stopAutomation}
+          className="automation-border"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 12px',
+            borderRadius: 20,
+            background: 'rgba(16,185,129,0.15)',
+            border: '1px solid rgba(16,185,129,0.4)',
+            cursor: 'pointer',
+            position: 'relative',
+            overflow: 'hidden',
+          }}
+          title="클릭하여 자동화 중지"
+        >
+          <div className="automation-sweep" style={{ position: 'absolute', inset: 0 }} />
+          <div className="automation-dot" style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', flexShrink: 0 }} />
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981', position: 'relative' }}>
+            자동화 작동중
+          </span>
+          <span className="mono" style={{ fontSize: 10, color: '#6ee7b7', position: 'relative' }}>
+            {simPositions.length}P
+          </span>
+        </button>
+      ) : (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 12px',
+            borderRadius: 20,
+            background: strategyRunning ? 'rgba(16,185,129,0.15)' : 'var(--bg-accent)',
+            border: `1px solid ${strategyRunning ? 'rgba(16,185,129,0.4)' : 'var(--color-border)'}`,
+          }}
+        >
+          <Activity size={12} color={strategyRunning ? '#10b981' : 'var(--color-text-muted)'} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: strategyRunning ? '#10b981' : 'var(--color-text-muted)' }}>
+            {strategyRunning ? '실행중' : '대기중'}
+          </span>
+        </div>
+      )}
 
       {/* Simulation toggle */}
       <button

@@ -3,7 +3,32 @@ import * as ccxt from 'ccxt';
 import type { ApiConfig, ExchangeId, FundingRate, Balance, Position } from '../types';
 import { normalizeFundingRate } from './utils';
 
+// ── Exchange instance cache (avoids re-creating + re-loading markets every call) ──
+const publicExchangeCache = new Map<ExchangeId, any>();
+const privateExchangeCache = new Map<string, any>();
+
+function getPublicExchange(id: ExchangeId): any {
+  let ex = publicExchangeCache.get(id);
+  if (ex) return ex;
+  ex = createExchange(id);
+  publicExchangeCache.set(id, ex);
+  return ex;
+}
+
+function getPrivateExchange(id: ExchangeId, config: ApiConfig): any {
+  const key = `${id}:${config.apiKey}`;
+  let ex = privateExchangeCache.get(key);
+  if (ex) return ex;
+  ex = createExchange(id, config);
+  privateExchangeCache.set(key, ex);
+  return ex;
+}
+
 function makeExchange(id: ExchangeId, config?: ApiConfig): any {
+  return config?.apiKey ? getPrivateExchange(id, config) : getPublicExchange(id);
+}
+
+function createExchange(id: ExchangeId, config?: ApiConfig): any {
   const opts: Record<string, unknown> = {
     apiKey: config?.apiKey || '',
     secret: config?.secret || '',
@@ -57,7 +82,7 @@ export async function fetchFundingRates(
     const frs = await Promise.race([
       ex.fetchFundingRates() as Promise<Record<string, any>>,
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout`)), 20000),
+        setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout`)), 10000),
       ),
     ]);
     const results: FundingRate[] = [];

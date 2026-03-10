@@ -69,13 +69,21 @@ export function findOpportunities(
 export interface ProfitEstimate {
   perFunding: number;
   totalCapital: number;
+  actualPortfolio: number; // 실제/시뮬 총 자산
   perDay: number;
   perMonth: number;
   perYear: number;
+  roiPerFunding: number;   // 총 자산 대비 8h 수익률 (%)
+  roiPerDay: number;
+  roiPerMonth: number;
+  roiPerYear: number;
   compound: {
     perDay: number;
     perMonth: number;
     perYear: number;
+    roiPerDay: number;
+    roiPerMonth: number;
+    roiPerYear: number;
   };
 }
 
@@ -83,10 +91,12 @@ export function estimateProfit(
   opportunity: ArbitrageOpportunity,
   investmentUSDT: number,
   leverage: number,
+  actualPortfolio?: number, // 시뮬 총 자산 또는 실제 총 자산
 ): ProfitEstimate {
   // investmentUSDT = 한쪽 거래소 마진
   // 총 투자금 = investmentUSDT × 2 (숏 거래소 + 롱 거래소)
   const totalCapital = investmentUSDT * 2;
+  const portfolio = actualPortfolio ?? totalCapital;
   const notional = investmentUSDT * leverage; // 한쪽 포지션 명목가치
   const perFunding = notional * opportunity.spread; // 8h당 양쪽 합산 수익
 
@@ -95,23 +105,36 @@ export function estimateProfit(
   const perMonth = perFunding * 3 * 30;
   const perYear = perFunding * 3 * 365;
 
+  // ROI based on actual portfolio
+  const roiPerFunding = (perFunding / portfolio) * 100;
+  const roiPerDay = (perDay / portfolio) * 100;
+  const roiPerMonth = (perMonth / portfolio) * 100;
+  const roiPerYear = (perYear / portfolio) * 100;
+
   // Compound interest (복리: 수익 재투자)
-  // 총 자본 대비 8h당 수익률 = perFunding / totalCapital
-  const ratePerPeriod = perFunding / totalCapital;
-  const compoundDay = totalCapital * (Math.pow(1 + ratePerPeriod, 3) - 1);
-  const compoundMonth = totalCapital * (Math.pow(1 + ratePerPeriod, 90) - 1);
-  const compoundYear = totalCapital * (Math.pow(1 + ratePerPeriod, 1095) - 1);
+  const ratePerPeriod = perFunding / portfolio;
+  const compoundDay = portfolio * (Math.pow(1 + ratePerPeriod, 3) - 1);
+  const compoundMonth = portfolio * (Math.pow(1 + ratePerPeriod, 90) - 1);
+  const compoundYear = portfolio * (Math.pow(1 + ratePerPeriod, 1095) - 1);
 
   return {
     perFunding,
     totalCapital,
+    actualPortfolio: portfolio,
     perDay,
     perMonth,
     perYear,
+    roiPerFunding,
+    roiPerDay,
+    roiPerMonth,
+    roiPerYear,
     compound: {
       perDay: compoundDay,
       perMonth: compoundMonth,
       perYear: compoundYear,
+      roiPerDay: (compoundDay / portfolio) * 100,
+      roiPerMonth: (compoundMonth / portfolio) * 100,
+      roiPerYear: (compoundYear / portfolio) * 100,
     },
   };
 }

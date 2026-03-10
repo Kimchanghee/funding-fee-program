@@ -53,6 +53,16 @@ interface FundingState {
   simPositions: SimPosition[];
   simTotalFundingEarned: number;
 
+  // Automation
+  automationActive: boolean;
+  automationStartedAt: number | null;
+  automationStats: { fundingCollected: number; positionsOpened: number; autoExits: number };
+
+  // Snipe mode (펀딩 직전 진입 → 수령 → 즉시 청산)
+  snipeScheduled: boolean;
+  snipeTargetTime: number | null;
+  _snipeTimer: ReturnType<typeof setTimeout> | null;
+
   // UI state
   showApiPanel: boolean;
   showStrategyPanel: boolean;
@@ -90,6 +100,15 @@ interface FundingState {
   resetSimulation: () => void;
   closeSimPosition: (simId: string) => void;
   tickSimFunding: () => void;
+
+  // Automation actions
+  startAutomation: () => void;
+  stopAutomation: () => void;
+  checkAutoExit: () => void;
+
+  // Snipe actions
+  scheduleSnipe: (opportunity: ArbitrageOpportunity) => void;
+  cancelSnipe: () => void;
 
   setShowApiPanel: (v: boolean) => void;
   setShowStrategyPanel: (v: boolean) => void;
@@ -145,12 +164,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     autoExecute: false,
     closeOnSpreadReverse: false,
     maxPositionAgeHours: 72,
+    compoundInvesting: false,
   },
   fundingHistory: [],
   simulationMode: true,
   simBalances: { binance: 1000, bybit: 1000, okx: 1000, bitget: 1000, gate: 1000 },
   simPositions: [],
   simTotalFundingEarned: 0,
+  automationActive: false,
+  automationStartedAt: null,
+  automationStats: { fundingCollected: 0, positionsOpened: 0, autoExits: 0 },
+  snipeScheduled: false,
+  snipeTargetTime: null,
+  _snipeTimer: null,
   isLoadingRates: false,
   isLoadingPositions: false,
   isLoadingHistory: false,
@@ -220,9 +246,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── Refresh rates ─────────────────────────────
   async refreshRates() {
+    if (get().isLoadingRates) return; // prevent duplicate requests
     set({ isLoadingRates: true });
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
+    const timer = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch('/api/funding-rates', { signal: controller.signal });
       const json = await res.json() as {
@@ -318,6 +345,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       get().refreshPositions();
       get().refreshBalances();
       get().tickSimFunding();
+      get().checkAutoExit();
     }, 15_000); // 15s
 
     set({ _ratesInterval: ratesInterval, _positionsInterval: positionsInterval });
@@ -354,6 +382,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
 
       const ts = Date.now();
+      const isSnipe = get().snipeScheduled;
       const shortPos: SimPosition = {
         simId: `sim-${ts}-short`,
         exchange: shortExchange,
@@ -367,15 +396,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         markPrice: opportunity.shortMarkPrice,
         leverage,
         margin,
-        unrealizedPnl: -entryFee, // 진입 수수료를 미실현 손익에 반영
+        unrealizedPnl: -entryFee,
         unrealizedPnlPercent: (-entryFee / margin) * 100,
-        liquidationPrice: opportunity.shortMarkPrice * (1 + (1 / leverage) * 0.9), // ~90% 마진 소진 근사
+        liquidationPrice: opportunity.shortMarkPrice * (1 + (1 / leverage) * 0.9),
         fundingRate: opportunity.shortRate,
         openedAt: ts,
         positionType: 'hedge_short',
         fundingCollected: 0,
         spread: opportunity.spread,
         nextFundingTime: opportunity.nextFundingTime,
+        isSnipe,
+        fundingReceived: 0,
       };
       const longPos: SimPosition = {
         simId: `sim-${ts}-long`,
@@ -390,7 +421,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         markPrice: opportunity.longMarkPrice,
         leverage,
         margin,
-        unrealizedPnl: -entryFee, // 진입 수수료를 미실현 손익에 반영
+        unrealizedPnl: -entryFee,
         unrealizedPnlPercent: (-entryFee / margin) * 100,
         liquidationPrice: opportunity.longMarkPrice * (1 - (1 / leverage) * 0.9),
         fundingRate: opportunity.longRate,
@@ -399,6 +430,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         fundingCollected: 0,
         spread: opportunity.spread,
         nextFundingTime: opportunity.nextFundingTime,
+        isSnipe,
+        fundingReceived: 0,
       };
 
       const perFunding = notional * opportunity.spread;
@@ -409,6 +442,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           ...s.simBalances,
           [shortExchange]: s.simBalances[shortExchange] - totalCostPerSide,
           [longExchange]: s.simBalances[longExchange] - totalCostPerSide,
+        },
+      }));
+      // 자동화 활성화 + 통계 업데이트
+      if (!get().automationActive) {
+        get().startAutomation();
+      }
+      set(s => ({
+        automationStats: {
+          ...s.automationStats,
+          positionsOpened: s.automationStats.positionsOpened + 1,
         },
       }));
       get().addLog('success',
@@ -638,17 +681,43 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         fundingRate: currentRate, // 최신 rate로 갱신
         fundingCollected: pos.fundingCollected + funding,
         nextFundingTime: pos.nextFundingTime + 8 * 3600 * 1000,
+        fundingReceived: (pos.fundingReceived ?? 0) + 1,
       };
     });
 
     if (totalNew === 0) { set({ simPositions: updated }); return; }
+
+    // 스나이핑 포지션: 펀딩 수령 후 즉시 자동 청산
+    const snipeToClose = updated.filter(p => p.isSnipe && (p.fundingReceived ?? 0) >= 1);
+    if (snipeToClose.length > 0) {
+      setTimeout(() => {
+        for (const pos of snipeToClose) {
+          get().closeSimPosition(pos.simId);
+        }
+        get().addLog('success',
+          `[스나이핑] 펀딩 수령 완료 → ${snipeToClose.length}개 포지션 자동 청산`,
+          undefined,
+          `총 수령: $${snipeToClose.reduce((s, p) => s + p.fundingCollected, 0).toFixed(4)}`,
+        );
+        // 스나이핑 상태 리셋
+        set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
+      }, 500); // 약간의 딜레이로 UX 자연스럽게
+    }
 
     set(s => {
       const newBal = { ...s.simBalances };
       for (const [ex, delta] of Object.entries(balanceDelta)) {
         newBal[ex as ExchangeId] = (newBal[ex as ExchangeId] ?? 0) + (delta as number);
       }
-      return { simPositions: updated, simBalances: newBal, simTotalFundingEarned: s.simTotalFundingEarned + totalNew };
+      return {
+        simPositions: updated,
+        simBalances: newBal,
+        simTotalFundingEarned: s.simTotalFundingEarned + totalNew,
+        automationStats: {
+          ...s.automationStats,
+          fundingCollected: s.automationStats.fundingCollected + totalNew,
+        },
+      };
     });
   },
 
@@ -720,6 +789,155 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       return { fundingRates: next, simPositions, _recalcTimeout: timeout };
     });
+  },
+
+  // ── Automation ──────────────────────────────
+  startAutomation() {
+    set({
+      automationActive: true,
+      automationStartedAt: Date.now(),
+      automationStats: { fundingCollected: 0, positionsOpened: 0, autoExits: 0 },
+    });
+    get().addLog('success', '🤖 풀 자동화 시작 — 스프레드 감시 + 자동 청산 활성화');
+  },
+
+  stopAutomation() {
+    const stats = get().automationStats;
+    const elapsed = get().automationStartedAt ? Date.now() - get().automationStartedAt! : 0;
+    const hours = (elapsed / 3600000).toFixed(1);
+    set({ automationActive: false, automationStartedAt: null });
+    get().addLog('info',
+      `🤖 자동화 중지 — ${hours}시간 운영`,
+      undefined,
+      `진입: ${stats.positionsOpened}회 | 자동청산: ${stats.autoExits}회 | 펀딩수령: $${stats.fundingCollected.toFixed(4)}`,
+    );
+  },
+
+  checkAutoExit() {
+    const { simPositions, fundingRates, strategyConfig, automationActive, simulationMode } = get();
+    if (!automationActive) return;
+
+    const now = Date.now();
+    const positionsToClose: string[] = [];
+
+    // 헷지 페어별로 그룹핑 (같은 baseAsset, 같은 타임스탬프 기반)
+    const pairGroups = new Map<string, SimPosition[]>();
+    for (const pos of simPositions) {
+      // 같은 시간(±1초)에 진입한 같은 코인 = 헷지 페어
+      const pairKey = `${pos.baseAsset}-${Math.floor(pos.openedAt / 1000)}`;
+      const group = pairGroups.get(pairKey) ?? [];
+      group.push(pos);
+      pairGroups.set(pairKey, group);
+    }
+
+    for (const [, pair] of pairGroups) {
+      if (pair.length < 2) continue;
+      const shortPos = pair.find(p => p.side === 'short');
+      const longPos = pair.find(p => p.side === 'long');
+      if (!shortPos || !longPos) continue;
+
+      // 1. 스프레드 역전 감지
+      if (strategyConfig.closeOnSpreadReverse) {
+        const currentShortRate = fundingRates.find(
+          r => r.exchange === shortPos.exchange && r.symbol === shortPos.symbol,
+        )?.rate ?? shortPos.fundingRate;
+        const currentLongRate = fundingRates.find(
+          r => r.exchange === longPos.exchange && r.symbol === longPos.symbol,
+        )?.rate ?? longPos.fundingRate;
+        const currentSpread = currentShortRate - currentLongRate;
+
+        if (currentSpread <= 0) {
+          positionsToClose.push(shortPos.simId, longPos.simId);
+          get().addLog('warning',
+            `🔄 [자동청산] ${shortPos.baseAsset} 스프레드 역전 감지`,
+            undefined,
+            `진입 스프레드: +${(shortPos.spread * 100).toFixed(4)}% → 현재: ${(currentSpread * 100).toFixed(4)}%`,
+          );
+          continue;
+        }
+      }
+
+      // 2. 최대 보유시간 초과
+      const ageHours = (now - shortPos.openedAt) / 3600000;
+      if (ageHours >= strategyConfig.maxPositionAgeHours) {
+        positionsToClose.push(shortPos.simId, longPos.simId);
+        get().addLog('warning',
+          `⏰ [자동청산] ${shortPos.baseAsset} 최대 보유시간 ${strategyConfig.maxPositionAgeHours}시간 초과`,
+          undefined,
+          `보유시간: ${ageHours.toFixed(1)}시간`,
+        );
+        continue;
+      }
+    }
+
+    // 청산 실행
+    if (positionsToClose.length > 0) {
+      for (const simId of positionsToClose) {
+        if (simulationMode) {
+          get().closeSimPosition(simId);
+        }
+      }
+      set(s => ({
+        automationStats: {
+          ...s.automationStats,
+          autoExits: s.automationStats.autoExits + positionsToClose.length / 2,
+        },
+      }));
+    }
+  },
+
+  // ── Snipe (펀딩 직전 진입 → 수령 → 즉시 청산) ──
+  scheduleSnipe(opportunity) {
+    const { _snipeTimer } = get();
+    if (_snipeTimer) clearTimeout(_snipeTimer);
+
+    const now = Date.now();
+    const ENTRY_BEFORE_MS = 30_000; // 펀딩 30초 전 진입
+    const targetTime = opportunity.nextFundingTime;
+    const delay = Math.max(0, targetTime - now - ENTRY_BEFORE_MS);
+
+    if (delay <= 0) {
+      // 이미 펀딩 시간 임박 → 즉시 진입
+      set({ snipeScheduled: true, snipeTargetTime: targetTime });
+      get().executeStrategy(opportunity);
+      get().addLog('success',
+        `[스나이핑] 펀딩 임박! ${opportunity.baseAsset} 즉시 진입`,
+        undefined,
+        `펀딩까지 ${((targetTime - now) / 1000).toFixed(0)}초 남음`,
+      );
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      // 진입 시점: 최적 기회 다시 확인 (rates가 변했을 수 있음)
+      const { opportunities } = get();
+      const best = opportunities[0];
+      if (!best) {
+        get().addLog('warning', '[스나이핑] 진입 시점에 유효한 기회 없음 — 취소됨');
+        set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
+        return;
+      }
+      get().executeStrategy(best);
+      get().addLog('success',
+        `[스나이핑] ${best.baseAsset} 자동 진입 완료!`,
+        undefined,
+        `펀딩까지 ~30초 | 스프레드: +${best.spreadPercent.toFixed(4)}%`,
+      );
+    }, delay);
+
+    set({ snipeScheduled: true, snipeTargetTime: targetTime, _snipeTimer: timer });
+    get().addLog('info',
+      `[스나이핑] ${opportunity.baseAsset} 예약 완료`,
+      undefined,
+      `${(delay / 60000).toFixed(1)}분 후 자동 진입 → 펀딩 수령 → 즉시 청산`,
+    );
+  },
+
+  cancelSnipe() {
+    const { _snipeTimer } = get();
+    if (_snipeTimer) clearTimeout(_snipeTimer);
+    set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
+    get().addLog('info', '[스나이핑] 예약 취소됨');
   },
 
   async fetchFundingHistory() {

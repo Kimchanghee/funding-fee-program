@@ -103,6 +103,7 @@ export interface StrategyConfig {
   autoExecute: boolean;     // auto enter at funding time
   closeOnSpreadReverse: boolean;
   maxPositionAgeHours: number;
+  compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (단리)
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
@@ -130,6 +131,8 @@ export interface SimPosition extends Position {
   fundingCollected: number;
   spread: number;           // shortRate - longRate at entry
   nextFundingTime: number;  // ms timestamp of next funding
+  isSnipe?: boolean;        // true = 펀딩 스나이핑 (수령 후 자동 청산)
+  fundingReceived?: number; // snipe: 펀딩 수령 횟수
 }
 
 export const SIM_INITIAL_BALANCE = 1500;

@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { TrendingDown, TrendingUp, Zap, AlertCircle, Play } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { TrendingDown, TrendingUp, Zap, Play, Crosshair, Check, Clock } from 'lucide-react';
 import CountdownTimer from '@/components/ui/CountdownTimer';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, SIM_INITIAL_BALANCE } from '@/lib/types';
@@ -85,9 +85,56 @@ function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: numbe
 }
 
 export default function OpportunityCard() {
-  const { opportunities, strategyConfig, strategyRunning, executeStrategy, setShowStrategyPanel, apiConfigs, simulationMode, simBalances } = useFundingStore();
+  const { opportunities, strategyConfig, executeStrategy, setShowStrategyPanel, apiConfigs, simulationMode, simBalances, automationActive, automationStartedAt, automationStats, simPositions, stopAutomation, snipeScheduled, snipeTargetTime, scheduleSnipe, cancelSnipe, closeSimPosition } = useFundingStore();
   const [compoundMode, setCompoundMode] = useState(false);
+  const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' } | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false); // 진입/청산 처리 중 방지
   const best = opportunities[0];
+
+  // 진행 중 상태 = 시뮬 포지션이 있음
+  const isRunning = simulationMode ? simPositions.length > 0 : automationActive;
+
+  // Toast auto-dismiss
+  useEffect(() => {
+    if (!toastMsg) return;
+    const t = setTimeout(() => setToastMsg(null), 3000);
+    return () => clearTimeout(t);
+  }, [toastMsg]);
+
+  // 토글 핸들러: 진입하기 ↔ 전체 청산
+  const handleToggle = useCallback(async () => {
+    if (!best || isProcessing) return;
+    setIsProcessing(true);
+
+    if (isRunning) {
+      // 진행 중 → 전체 청산
+      if (simulationMode) {
+        const ids = simPositions.map(p => p.simId);
+        for (const id of ids) closeSimPosition(id);
+      }
+      if (automationActive) stopAutomation();
+      setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
+    } else {
+      // 대기 중 → 진입
+      await executeStrategy(best);
+      setToastMsg({ text: `${best.baseAsset} 헷징 진입 완료!`, type: 'success' });
+    }
+
+    // 잠깐 대기 후 버튼 재활성화 (더블클릭 방지)
+    setTimeout(() => setIsProcessing(false), 500);
+  }, [best, isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, automationActive, stopAutomation, executeStrategy]);
+
+  const handleSnipe = useCallback(() => {
+    if (!best) return;
+    if (snipeScheduled) {
+      cancelSnipe();
+      setToastMsg({ text: '스나이핑 예약 취소됨', type: 'snipe' });
+    } else {
+      scheduleSnipe(best);
+      const mins = ((best.nextFundingTime - Date.now()) / 60000).toFixed(0);
+      setToastMsg({ text: `${best.baseAsset} 스나이핑 예약! (${mins}분 후)`, type: 'snipe' });
+    }
+  }, [best, snipeScheduled, scheduleSnipe, cancelSnipe]);
 
   if (!best) {
     return (
@@ -122,7 +169,11 @@ export default function OpportunityCard() {
     );
   }
 
-  const profit = estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage);
+  // 실제 총 자산 계산 (시뮬: 전체 거래소 잔고 합산, 실거래: 잔고 합산)
+  const totalPortfolio = simulationMode
+    ? Object.values(simBalances).reduce((s, v) => s + v, 0)
+    : undefined;
+  const profit = estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage, totalPortfolio);
   const hasShortConfig = !!apiConfigs[best.shortExchange];
   const hasLongConfig = !!apiConfigs[best.longExchange];
   const canExecute = simulationMode
@@ -131,6 +182,14 @@ export default function OpportunityCard() {
     : hasShortConfig && hasLongConfig;
 
   return (
+    <>
+    {/* Toast notification */}
+    {toastMsg && (
+      <div className={`toast toast-${toastMsg.type}`}>
+        {toastMsg.type === 'success' ? <Check size={16} /> : <Crosshair size={16} />}
+        {toastMsg.text}
+      </div>
+    )}
     <div
       className="glass-card opportunity-glow"
       style={{
@@ -241,6 +300,13 @@ export default function OpportunityCard() {
             })}
           </div>
 
+          {/* Portfolio base info */}
+          <div style={{ fontSize: 10, color: 'var(--color-text-muted)', textAlign: 'center' }}>
+            수익률 기준: <strong style={{ color: 'var(--color-text)' }}>
+              {simulationMode ? `시뮬 총 자산 $${profit.actualPortfolio.toLocaleString('en', { maximumFractionDigits: 0 })}` : `투자금 $${profit.totalCapital.toLocaleString()}`}
+            </strong>
+          </div>
+
           {/* Profit estimates */}
           <div
             style={{
@@ -251,13 +317,13 @@ export default function OpportunityCard() {
             }}
           >
             {[
-              { label: '8h 수익', value: profit.perFunding, compoundValue: profit.perFunding },
-              { label: '일 수익', value: profit.perDay, compoundValue: profit.compound.perDay },
-              { label: '월 수익', value: profit.perMonth, compoundValue: profit.compound.perMonth },
-              { label: '연 수익', value: profit.perYear, compoundValue: profit.compound.perYear },
-            ].map(({ label, value, compoundValue }) => {
+              { label: '8h 수익', value: profit.perFunding, compoundValue: profit.perFunding, roi: profit.roiPerFunding, compoundRoi: profit.roiPerFunding },
+              { label: '일 수익', value: profit.perDay, compoundValue: profit.compound.perDay, roi: profit.roiPerDay, compoundRoi: profit.compound.roiPerDay },
+              { label: '월 수익', value: profit.perMonth, compoundValue: profit.compound.perMonth, roi: profit.roiPerMonth, compoundRoi: profit.compound.roiPerMonth },
+              { label: '연 수익', value: profit.perYear, compoundValue: profit.compound.perYear, roi: profit.roiPerYear, compoundRoi: profit.compound.roiPerYear },
+            ].map(({ label, value, compoundValue, roi, compoundRoi }) => {
               const displayValue = compoundMode ? compoundValue : value;
-              const roi = (displayValue / profit.totalCapital) * 100;
+              const displayRoi = compoundMode ? compoundRoi : roi;
               return (
                 <div
                   key={label}
@@ -274,47 +340,126 @@ export default function OpportunityCard() {
                     ${displayValue.toFixed(2)}
                   </div>
                   <div className="mono" style={{ fontSize: 10, color: compoundMode ? '#c4b5fd' : '#6ee7b7', marginTop: 2 }}>
-                    +{roi.toFixed(2)}%
+                    +{displayRoi.toFixed(2)}%
                   </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Execute button */}
+          {/* 메인 토글 버튼: 진입하기 ↔ 진행 중 (전체 청산) */}
           <button
-            className="btn btn-success"
+            className={`btn ${isRunning ? 'btn-danger' : 'btn-success'}`}
             style={{
               width: '100%',
-              padding: '12px 24px',
-              fontSize: 14,
-              borderRadius: 10,
-              opacity: (!canExecute || strategyRunning) ? 0.5 : 1,
-              cursor: (!canExecute || strategyRunning) ? 'not-allowed' : 'pointer',
-              background: simulationMode ? 'linear-gradient(135deg, #7c3aed, #a78bfa)' : undefined,
+              padding: '14px 24px',
+              fontSize: 15,
+              fontWeight: 800,
+              borderRadius: 12,
+              opacity: (!canExecute && !isRunning) || isProcessing ? 0.5 : 1,
+              cursor: (!canExecute && !isRunning) || isProcessing ? 'not-allowed' : 'pointer',
+              background: isRunning
+                ? 'linear-gradient(135deg, #dc2626, #ef4444)'
+                : simulationMode ? 'linear-gradient(135deg, #7c3aed, #a78bfa)' : undefined,
+              transition: 'all 0.3s ease',
+              position: 'relative',
+              overflow: 'hidden',
             }}
-            disabled={!canExecute || strategyRunning}
-            onClick={() => executeStrategy(best)}
-            title={!canExecute ? (simulationMode ? '시뮬 잔고 부족' : '두 거래소 모두 API 키가 필요합니다') : ''}
+            disabled={(!canExecute && !isRunning) || isProcessing}
+            onClick={handleToggle}
+            title={!canExecute && !isRunning ? (simulationMode ? '시뮬 잔고 부족' : '두 거래소 모두 API 키가 필요합니다') : ''}
           >
-            {strategyRunning ? (
+            {isProcessing ? (
               <>
-                <div style={{ width: 14, height: 14, border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                실행 중...
+                <div style={{ width: 16, height: 16, border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                처리 중...
+              </>
+            ) : isRunning ? (
+              <>
+                <div className="automation-dot" style={{ width: 10, height: 10, borderRadius: '50%', background: 'white' }} />
+                {simulationMode ? '[SIM] ' : ''}진행 중 — 클릭하면 전체 청산
+                <span className="mono" style={{ fontSize: 11, opacity: 0.8, marginLeft: 4 }}>
+                  ({simPositions.length}개)
+                </span>
               </>
             ) : (
               <>
-                <Play size={14} fill="white" />
+                <Play size={16} fill="white" />
                 {simulationMode ? '[SIM] 지금 진입하기' : '지금 진입하기'}
               </>
             )}
           </button>
 
-          {!canExecute && (
+          {/* 진행 중일 때: 간단한 상태 요약 */}
+          {isRunning && (
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, width: '100%',
+            }}>
+              {[
+                { label: '포지션', value: `${simPositions.length}개`, color: '#3b82f6' },
+                { label: '수령 펀딩', value: `$${automationStats.fundingCollected.toFixed(4)}`, color: '#10b981' },
+                { label: '경과', value: automationStartedAt ? `${((Date.now() - automationStartedAt) / 60000).toFixed(0)}분` : '-', color: '#f59e0b' },
+              ].map(({ label, value, color }) => (
+                <div key={label} style={{ textAlign: 'center', padding: '6px 8px', borderRadius: 8, background: 'var(--bg-accent)', border: '1px solid var(--color-border)' }}>
+                  <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{label}</div>
+                  <div className="mono" style={{ fontSize: 13, fontWeight: 700, color }}>{value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 펀딩 스나이핑 버튼 */}
+          {!isRunning && (
+            <>
+              <button
+                className={`btn ${snipeScheduled ? 'snipe-scheduled' : ''}`}
+                style={{
+                  width: '100%',
+                  padding: '10px 24px',
+                  fontSize: 13,
+                  borderRadius: 10,
+                  cursor: !canExecute ? 'not-allowed' : 'pointer',
+                  opacity: !canExecute ? 0.5 : 1,
+                  background: snipeScheduled
+                    ? 'linear-gradient(135deg, rgba(245,158,11,0.15), rgba(217,119,6,0.1))'
+                    : 'linear-gradient(135deg, rgba(245,158,11,0.08), rgba(15,22,35,1))',
+                  border: `1px solid ${snipeScheduled ? 'rgba(245,158,11,0.5)' : 'rgba(245,158,11,0.2)'}`,
+                  color: snipeScheduled ? '#fbbf24' : '#f59e0b',
+                  transition: 'all 0.3s ease',
+                }}
+                disabled={!canExecute}
+                onClick={handleSnipe}
+              >
+                {snipeScheduled ? (
+                  <>
+                    <Clock size={14} />
+                    스나이핑 대기 중... (취소하려면 클릭)
+                  </>
+                ) : (
+                  <>
+                    <Crosshair size={14} />
+                    {simulationMode ? '[SIM] ' : ''}펀딩 직전 스나이핑
+                  </>
+                )}
+              </button>
+              {!snipeScheduled && (
+                <div style={{ fontSize: 10, color: 'var(--color-text-muted)', textAlign: 'center', marginTop: -4 }}>
+                  펀딩 30초 전 자동 진입 → 펀딩피 수령 → 즉시 청산
+                </div>
+              )}
+              {snipeScheduled && snipeTargetTime && (
+                <div style={{ fontSize: 11, color: '#fbbf24', textAlign: 'center', marginTop: -4 }}>
+                  예정: {new Date(snipeTargetTime).toLocaleTimeString('ko-KR')} 직전 진입
+                </div>
+              )}
+            </>
+          )}
+
+          {!canExecute && !isRunning && (
             <div style={{ fontSize: 11, color: 'var(--color-warning)', textAlign: 'center' }}>
               {simulationMode
-                ? `⚠️ 시뮬 잔고 부족 (필요: $${strategyConfig.investmentUSDT})`
-                : `⚠️ ${!hasShortConfig ? best.shortExchange.toUpperCase() : best.longExchange.toUpperCase()} API 키 필요`}
+                ? `시뮬 잔고 부족 (필요: $${strategyConfig.investmentUSDT})`
+                : `${!hasShortConfig ? best.shortExchange.toUpperCase() : best.longExchange.toUpperCase()} API 키 필요`}
             </div>
           )}
 
@@ -340,5 +485,6 @@ export default function OpportunityCard() {
         />
       </div>
     </div>
+    </>
   );
 }
