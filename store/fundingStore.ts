@@ -339,14 +339,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const margin = strategyConfig.investmentUSDT;
       const leverage = strategyConfig.leverage;
       const notional = margin * leverage;
+      const TAKER_FEE = 0.0005; // 0.05% taker fee (typical exchange fee)
+      const entryFee = notional * TAKER_FEE; // per-side entry fee
+      const totalCostPerSide = margin + entryFee;
       const { shortExchange, longExchange } = opportunity;
 
-      if ((simBalances[shortExchange] ?? 0) < margin) {
-        get().addLog('error', `[SIM] ${shortExchange.toUpperCase()} 시뮬 잔고 부족 ($${simBalances[shortExchange]?.toFixed(2)})`, shortExchange);
+      if ((simBalances[shortExchange] ?? 0) < totalCostPerSide) {
+        get().addLog('error', `[SIM] ${shortExchange.toUpperCase()} 시뮬 잔고 부족 ($${simBalances[shortExchange]?.toFixed(2)}, 필요: $${totalCostPerSide.toFixed(2)} 마진+수수료)`, shortExchange);
         return;
       }
-      if ((simBalances[longExchange] ?? 0) < margin) {
-        get().addLog('error', `[SIM] ${longExchange.toUpperCase()} 시뮬 잔고 부족 ($${simBalances[longExchange]?.toFixed(2)})`, longExchange);
+      if ((simBalances[longExchange] ?? 0) < totalCostPerSide) {
+        get().addLog('error', `[SIM] ${longExchange.toUpperCase()} 시뮬 잔고 부족 ($${simBalances[longExchange]?.toFixed(2)}, 필요: $${totalCostPerSide.toFixed(2)} 마진+수수료)`, longExchange);
         return;
       }
 
@@ -364,9 +367,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         markPrice: opportunity.shortMarkPrice,
         leverage,
         margin,
-        unrealizedPnl: 0,
-        unrealizedPnlPercent: 0,
-        liquidationPrice: opportunity.shortMarkPrice * (1 + (1 / leverage) * 0.9),
+        unrealizedPnl: -entryFee, // 진입 수수료를 미실현 손익에 반영
+        unrealizedPnlPercent: (-entryFee / margin) * 100,
+        liquidationPrice: opportunity.shortMarkPrice * (1 + (1 / leverage) * 0.9), // ~90% 마진 소진 근사
         fundingRate: opportunity.shortRate,
         openedAt: ts,
         positionType: 'hedge_short',
@@ -387,8 +390,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         markPrice: opportunity.longMarkPrice,
         leverage,
         margin,
-        unrealizedPnl: 0,
-        unrealizedPnlPercent: 0,
+        unrealizedPnl: -entryFee, // 진입 수수료를 미실현 손익에 반영
+        unrealizedPnlPercent: (-entryFee / margin) * 100,
         liquidationPrice: opportunity.longMarkPrice * (1 - (1 / leverage) * 0.9),
         fundingRate: opportunity.longRate,
         openedAt: ts,
@@ -399,18 +402,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       };
 
       const perFunding = notional * opportunity.spread;
+      const totalEntryFees = entryFee * 2; // 양쪽 합산 진입 수수료
       set(s => ({
         simPositions: [...s.simPositions, shortPos, longPos],
         simBalances: {
           ...s.simBalances,
-          [shortExchange]: s.simBalances[shortExchange] - margin,
-          [longExchange]: s.simBalances[longExchange] - margin,
+          [shortExchange]: s.simBalances[shortExchange] - totalCostPerSide,
+          [longExchange]: s.simBalances[longExchange] - totalCostPerSide,
         },
       }));
       get().addLog('success',
         `[SIM] ${opportunity.baseAsset} 헷징 진입 완료`,
         undefined,
-        `숏:${shortExchange.toUpperCase()} 롱:${longExchange.toUpperCase()} | 8h예상수익: $${perFunding.toFixed(2)}`,
+        `숏:${shortExchange.toUpperCase()} 롱:${longExchange.toUpperCase()} | 8h예상수익: $${perFunding.toFixed(2)} | 수수료: -$${totalEntryFees.toFixed(2)}`,
       );
       return;
     }
@@ -587,20 +591,24 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   closeSimPosition(simId) {
     const pos = get().simPositions.find(p => p.simId === simId);
     if (!pos) return;
-    const returnAmount = pos.margin + pos.fundingCollected;
+    const TAKER_FEE = 0.0005; // 0.05% exit fee
+    const exitFee = pos.sizeUSD * TAKER_FEE;
+    // 반환 = 마진 + 미실현 손익 + 수령 펀딩 - 청산 수수료
+    const returnAmount = pos.margin + pos.unrealizedPnl + pos.fundingCollected - exitFee;
+    const netPnl = pos.unrealizedPnl + pos.fundingCollected - exitFee;
     set(s => ({
       simPositions: s.simPositions.filter(p => p.simId !== simId),
       simBalances: { ...s.simBalances, [pos.exchange]: s.simBalances[pos.exchange] + returnAmount },
     }));
-    get().addLog('info',
+    get().addLog(netPnl >= 0 ? 'success' : 'warning',
       `[SIM] 포지션 청산: ${pos.displaySymbol} ${pos.side.toUpperCase()}`,
       pos.exchange,
-      `마진 반환: $${pos.margin.toFixed(2)} | 수령 펀딩: $${pos.fundingCollected.toFixed(4)}`,
+      `순손익: ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)} (펀딩: $${pos.fundingCollected.toFixed(4)}, PnL: $${pos.unrealizedPnl.toFixed(2)}, 수수료: -$${exitFee.toFixed(2)})`,
     );
   },
 
   tickSimFunding() {
-    const { simPositions } = get();
+    const { simPositions, fundingRates } = get();
     if (simPositions.length === 0) return;
     const now = Date.now();
     let totalNew = 0;
@@ -608,20 +616,26 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const updated = simPositions.map(pos => {
       if (pos.nextFundingTime > now) return pos;
+      // 실시간 펀딩률 조회 (없으면 진입 시 rate fallback)
+      const liveRate = fundingRates.find(
+        r => r.exchange === pos.exchange && r.symbol === pos.symbol,
+      );
+      const currentRate = liveRate?.rate ?? pos.fundingRate;
       // Effective funding from this position's perspective
       const funding = pos.side === 'short'
-        ? pos.sizeUSD * pos.fundingRate          // short: positive rate = receive
-        : pos.sizeUSD * (-pos.fundingRate);       // long:  negative rate = receive
+        ? pos.sizeUSD * currentRate            // short: positive rate = receive
+        : pos.sizeUSD * (-currentRate);         // long:  negative rate = receive
       totalNew += funding;
       balanceDelta[pos.exchange] = (balanceDelta[pos.exchange] ?? 0) + funding;
       get().addLog(
         funding >= 0 ? 'success' : 'warning',
         `[SIM] 펀딩 ${funding >= 0 ? '수령' : '지불'}: ${pos.baseAsset} ${pos.side.toUpperCase()}`,
         pos.exchange,
-        `$${Math.abs(funding).toFixed(4)} (${(pos.fundingRate * 100).toFixed(4)}%)`,
+        `$${Math.abs(funding).toFixed(4)} (${(currentRate * 100).toFixed(4)}%${liveRate ? '' : ' [진입시rate]'})`,
       );
       return {
         ...pos,
+        fundingRate: currentRate, // 최신 rate로 갱신
         fundingCollected: pos.fundingCollected + funding,
         nextFundingTime: pos.nextFundingTime + 8 * 3600 * 1000,
       };
