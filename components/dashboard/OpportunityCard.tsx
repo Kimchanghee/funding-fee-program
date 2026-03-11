@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { TrendingDown, TrendingUp, Zap, Play, Crosshair, Check, Clock } from 'lucide-react';
+import { TrendingDown, TrendingUp, Zap, Crosshair, Check, Clock } from 'lucide-react';
 import CountdownTimer from '@/components/ui/CountdownTimer';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, SIM_INITIAL_BALANCE } from '@/lib/types';
@@ -85,7 +85,7 @@ function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: numbe
 }
 
 export default function OpportunityCard() {
-  const { opportunities, strategyConfig, executeStrategy, setShowStrategyPanel, apiConfigs, simulationMode, simBalances, automationActive, automationStartedAt, automationStats, simPositions, stopAutomation, snipeScheduled, snipeTargetTime, scheduleSnipe, cancelSnipe, closeSimPosition, ratesStatus, ratesError, isLoadingRates, lastRatesUpdate } = useFundingStore();
+  const { opportunities, strategyConfig, setShowStrategyPanel, apiConfigs, simulationMode, simBalances, automationActive, automationStartedAt, automationStats, simPositions, stopAutomation, snipeScheduled, snipeTargetTime, scheduleSnipe, cancelSnipe, closeSimPosition, ratesStatus, ratesError, isLoadingRates, lastRatesUpdate } = useFundingStore();
   const [compoundMode, setCompoundMode] = useState(false);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false); // 진입/청산 처리 중 방지
@@ -101,28 +101,20 @@ export default function OpportunityCard() {
     return () => clearTimeout(t);
   }, [toastMsg]);
 
-  // 토글 핸들러: 진입하기 ↔ 전체 청산
-  const handleToggle = useCallback(async () => {
-    if (!best || isProcessing) return;
+  // 청산 핸들러: 전체 포지션 청산
+  const handleToggle = useCallback(() => {
+    if (!isRunning || isProcessing) return;
     setIsProcessing(true);
 
-    if (isRunning) {
-      // 진행 중 → 전체 청산
-      if (simulationMode) {
-        const ids = simPositions.map(p => p.simId);
-        for (const id of ids) closeSimPosition(id);
-      }
-      if (automationActive) stopAutomation();
-      setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
-    } else {
-      // 대기 중 → 진입
-      await executeStrategy(best);
-      setToastMsg({ text: `${best.baseAsset} 헷징 진입 완료!`, type: 'success' });
+    if (simulationMode) {
+      const ids = simPositions.map(p => p.simId);
+      for (const id of ids) closeSimPosition(id);
     }
+    if (automationActive) stopAutomation();
+    setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
 
-    // 잠깐 대기 후 버튼 재활성화 (더블클릭 방지)
     setTimeout(() => setIsProcessing(false), 500);
-  }, [best, isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, automationActive, stopAutomation, executeStrategy]);
+  }, [isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, automationActive, stopAutomation]);
 
   const handleSnipe = useCallback(() => {
     if (!best) return;
@@ -400,48 +392,78 @@ export default function OpportunityCard() {
             })}
           </div>
 
-          {/* 메인 토글 버튼: 진입하기 ↔ 진행 중 (전체 청산) */}
-          <button
-            className={`btn ${isRunning ? 'btn-danger' : 'btn-success'}`}
-            style={{
-              width: '100%',
-              padding: '14px 24px',
-              fontSize: 15,
-              fontWeight: 800,
-              borderRadius: 12,
-              opacity: (!canExecute && !isRunning) || isProcessing ? 0.5 : 1,
-              cursor: (!canExecute && !isRunning) || isProcessing ? 'not-allowed' : 'pointer',
-              background: isRunning
-                ? 'linear-gradient(135deg, #f59e0b, #f97316)'
-                : simulationMode ? 'linear-gradient(135deg, #7c3aed, #a78bfa)' : undefined,
-              border: isRunning ? '2px solid #fbbf24' : undefined,
-              boxShadow: isRunning ? '0 0 16px rgba(245, 158, 11, 0.4)' : undefined,
-              transition: 'all 0.3s ease',
-              position: 'relative',
-              overflow: 'hidden',
-              animation: isRunning ? 'pulse-glow 2s ease-in-out infinite' : undefined,
-            }}
-            disabled={(!canExecute && !isRunning) || isProcessing}
-            onClick={handleToggle}
-            title={!canExecute && !isRunning ? (simulationMode ? '시뮬 잔고 부족' : '두 거래소 모두 API 키가 필요합니다') : isRunning ? '클릭하면 전체 청산' : ''}
-          >
-            {isProcessing ? (
-              <>
-                <div style={{ width: 16, height: 16, border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                처리 중...
-              </>
-            ) : isRunning ? (
-              <>
-                <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#fff', boxShadow: '0 0 6px #fff', animation: 'blink 1.5s ease-in-out infinite' }} />
-                {simulationMode ? '[SIM] ' : ''}투자 실행 중 ({simPositions.length}개) — 청산하기
-              </>
-            ) : (
-              <>
-                <Play size={16} fill="white" />
-                {simulationMode ? '[SIM] 지금 진입하기' : '지금 진입하기'}
-              </>
-            )}
-          </button>
+          {/* 메인 버튼: 스나이핑 예약 ↔ 진행 중 (전체 청산) */}
+          {isRunning ? (
+            <button
+              className="btn btn-danger"
+              style={{
+                width: '100%',
+                padding: '14px 24px',
+                fontSize: 15,
+                fontWeight: 800,
+                borderRadius: 12,
+                opacity: isProcessing ? 0.5 : 1,
+                cursor: isProcessing ? 'not-allowed' : 'pointer',
+                background: 'linear-gradient(135deg, #f59e0b, #f97316)',
+                border: '2px solid #fbbf24',
+                boxShadow: '0 0 16px rgba(245, 158, 11, 0.4)',
+                transition: 'all 0.3s ease',
+                position: 'relative',
+                overflow: 'hidden',
+                animation: 'pulse-glow 2s ease-in-out infinite',
+              }}
+              disabled={isProcessing}
+              onClick={handleToggle}
+              title="클릭하면 전체 청산"
+            >
+              {isProcessing ? (
+                <>
+                  <div style={{ width: 16, height: 16, border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                  처리 중...
+                </>
+              ) : (
+                <>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#fff', boxShadow: '0 0 6px #fff', animation: 'blink 1.5s ease-in-out infinite' }} />
+                  {simulationMode ? '[SIM] ' : ''}투자 실행 중 ({simPositions.length}개) — 청산하기
+                </>
+              )}
+            </button>
+          ) : (
+            <button
+              className={`btn ${snipeScheduled ? 'snipe-scheduled' : ''}`}
+              style={{
+                width: '100%',
+                padding: '14px 24px',
+                fontSize: 15,
+                fontWeight: 800,
+                borderRadius: 12,
+                cursor: !canExecute ? 'not-allowed' : 'pointer',
+                opacity: !canExecute ? 0.5 : 1,
+                background: snipeScheduled
+                  ? 'linear-gradient(135deg, rgba(245,158,11,0.15), rgba(217,119,6,0.1))'
+                  : simulationMode
+                    ? 'linear-gradient(135deg, #7c3aed, #a78bfa)'
+                    : 'linear-gradient(135deg, #f59e0b, #d97706)',
+                border: `1px solid ${snipeScheduled ? 'rgba(245,158,11,0.5)' : simulationMode ? 'rgba(139,92,246,0.5)' : 'rgba(245,158,11,0.5)'}`,
+                color: snipeScheduled ? '#fbbf24' : '#fff',
+                transition: 'all 0.3s ease',
+              }}
+              disabled={!canExecute}
+              onClick={handleSnipe}
+            >
+              {snipeScheduled ? (
+                <>
+                  <Clock size={16} />
+                  스나이핑 대기 중... (취소하려면 클릭)
+                </>
+              ) : (
+                <>
+                  <Crosshair size={16} />
+                  {simulationMode ? '[SIM] ' : ''}펀딩 스나이핑 시작
+                </>
+              )}
+            </button>
+          )}
 
           {/* 진행 중일 때: 간단한 상태 요약 */}
           {isRunning && (
@@ -461,51 +483,16 @@ export default function OpportunityCard() {
             </div>
           )}
 
-          {/* 펀딩 스나이핑 버튼 */}
-          {!isRunning && (
-            <>
-              <button
-                className={`btn ${snipeScheduled ? 'snipe-scheduled' : ''}`}
-                style={{
-                  width: '100%',
-                  padding: '10px 24px',
-                  fontSize: 13,
-                  borderRadius: 10,
-                  cursor: !canExecute ? 'not-allowed' : 'pointer',
-                  opacity: !canExecute ? 0.5 : 1,
-                  background: snipeScheduled
-                    ? 'linear-gradient(135deg, rgba(245,158,11,0.15), rgba(217,119,6,0.1))'
-                    : 'linear-gradient(135deg, rgba(245,158,11,0.08), rgba(15,22,35,1))',
-                  border: `1px solid ${snipeScheduled ? 'rgba(245,158,11,0.5)' : 'rgba(245,158,11,0.2)'}`,
-                  color: snipeScheduled ? '#fbbf24' : '#f59e0b',
-                  transition: 'all 0.3s ease',
-                }}
-                disabled={!canExecute}
-                onClick={handleSnipe}
-              >
-                {snipeScheduled ? (
-                  <>
-                    <Clock size={14} />
-                    스나이핑 대기 중... (취소하려면 클릭)
-                  </>
-                ) : (
-                  <>
-                    <Crosshair size={14} />
-                    {simulationMode ? '[SIM] ' : ''}펀딩 직전 스나이핑
-                  </>
-                )}
-              </button>
-              {!snipeScheduled && (
-                <div style={{ fontSize: 10, color: 'var(--color-text-muted)', textAlign: 'center', marginTop: -4 }}>
-                  펀딩 30초 전 자동 진입 → 펀딩피 수령 → 즉시 청산
-                </div>
-              )}
-              {snipeScheduled && snipeTargetTime && (
-                <div style={{ fontSize: 11, color: '#fbbf24', textAlign: 'center', marginTop: -4 }}>
-                  예정: {new Date(snipeTargetTime).toLocaleTimeString('ko-KR')} 직전 진입
-                </div>
-              )}
-            </>
+          {/* 스나이핑 상태 안내 */}
+          {!isRunning && !snipeScheduled && (
+            <div style={{ fontSize: 10, color: 'var(--color-text-muted)', textAlign: 'center', marginTop: -4 }}>
+              펀딩 30초 전 자동 진입 → 펀딩피 수령 → 즉시 청산
+            </div>
+          )}
+          {!isRunning && snipeScheduled && snipeTargetTime && (
+            <div style={{ fontSize: 11, color: '#fbbf24', textAlign: 'center', marginTop: -4 }}>
+              예정: {new Date(snipeTargetTime).toLocaleTimeString('ko-KR')} 직전 진입
+            </div>
           )}
 
           {!canExecute && !isRunning && (
