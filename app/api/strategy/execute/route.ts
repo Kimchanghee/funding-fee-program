@@ -13,6 +13,17 @@ export async function POST(req: NextRequest) {
 
     const { opportunity, investmentUSDT, leverage, apiConfigs } = body;
 
+    // Runtime validation
+    if (!opportunity?.shortExchange || !opportunity?.longExchange || !opportunity?.shortSymbol || !opportunity?.longSymbol) {
+      return NextResponse.json({ success: false, error: 'Invalid opportunity data' }, { status: 400 });
+    }
+    if (typeof investmentUSDT !== 'number' || investmentUSDT <= 0) {
+      return NextResponse.json({ success: false, error: 'Invalid investmentUSDT' }, { status: 400 });
+    }
+    if (typeof leverage !== 'number' || leverage < 1 || leverage > 125) {
+      return NextResponse.json({ success: false, error: 'Invalid leverage' }, { status: 400 });
+    }
+
     const shortConfig = apiConfigs[opportunity.shortExchange];
     const longConfig = apiConfigs[opportunity.longExchange];
 

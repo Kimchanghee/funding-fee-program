@@ -90,7 +90,7 @@ interface FundingState {
   startPolling: () => void;
   stopPolling: () => void;
 
-  executeStrategy: (opportunity: ArbitrageOpportunity) => Promise<void>;
+  executeStrategy: (opportunity: ArbitrageOpportunity) => Promise<boolean>;
   closePosition: (position: Position) => Promise<void>;
   testConnection: (exchange: ExchangeId) => Promise<boolean>;
 
@@ -391,12 +391,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         undefined,
         `${opportunity.baseAsset} ${opportunity.shortExchange}↔${opportunity.longExchange}`,
       );
-      return;
+      return false;
     }
 
     // ── Simulation branch ──────────────────────
     if (simulationMode) {
-      const margin = strategyConfig.investmentUSDT;
+      // compoundInvesting: use proportional balance instead of fixed amount
+      const margin = strategyConfig.compoundInvesting
+        ? Math.min(
+            (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
+            (simBalances[opportunity.longExchange] ?? 0) * 0.9,
+          )
+        : strategyConfig.investmentUSDT;
       const leverage = strategyConfig.leverage;
       const notional = margin * leverage;
       const TAKER_FEE = 0.0005; // 0.05% taker fee (typical exchange fee)
@@ -406,11 +412,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       if ((simBalances[shortExchange] ?? 0) < totalCostPerSide) {
         get().addLog('error', `[SIM] ${shortExchange.toUpperCase()} 시뮬 잔고 부족 ($${simBalances[shortExchange]?.toFixed(2)}, 필요: $${totalCostPerSide.toFixed(2)} 마진+수수료)`, shortExchange);
-        return;
+        return false;
       }
       if ((simBalances[longExchange] ?? 0) < totalCostPerSide) {
         get().addLog('error', `[SIM] ${longExchange.toUpperCase()} 시뮬 잔고 부족 ($${simBalances[longExchange]?.toFixed(2)}, 필요: $${totalCostPerSide.toFixed(2)} 마진+수수료)`, longExchange);
-        return;
+        return false;
       }
 
       const ts = Date.now();
@@ -493,7 +499,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         undefined,
         `숏:${shortExchange.toUpperCase()} 롱:${longExchange.toUpperCase()} | 8h예상수익: $${perFunding.toFixed(2)} | 수수료: -$${totalEntryFees.toFixed(2)}`,
       );
-      return;
+      return true;
     }
 
     // ── Real trading branch ────────────────────
@@ -502,11 +508,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     if (!shortConfig) {
       get().addLog('error', `${opportunity.shortExchange.toUpperCase()} API 키 없음`, opportunity.shortExchange);
-      return;
+      return false;
     }
     if (!longConfig) {
       get().addLog('error', `${opportunity.longExchange.toUpperCase()} API 키 없음`, opportunity.longExchange);
-      return;
+      return false;
     }
 
     const profit = estimateProfit(opportunity, strategyConfig.investmentUSDT, strategyConfig.leverage);
@@ -566,8 +572,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       // Refresh positions after entry
       setTimeout(() => get().refreshPositions(), 2000);
+      return json.success === true;
     } catch (err) {
       get().addLog('error', '전략 실행 중 오류 발생', undefined, (err as Error).message);
+      return false;
     } finally {
       set({ strategyRunning: false });
     }
@@ -936,12 +944,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     if (delay <= 0) {
       // 이미 펀딩 시간 임박 → 즉시 진입
       set({ snipeScheduled: true, snipeTargetTime: targetTime });
-      get().executeStrategy(opportunity);
-      get().addLog('success',
-        `[스나이핑] 펀딩 임박! ${opportunity.baseAsset} 즉시 진입`,
-        undefined,
-        `펀딩까지 ${((targetTime - now) / 1000).toFixed(0)}초 남음`,
-      );
+      get().executeStrategy(opportunity).then((success) => {
+        if (success) {
+          get().addLog('success',
+            `[스나이핑] 펀딩 임박! ${opportunity.baseAsset} 즉시 진입`,
+            undefined,
+            `펀딩까지 ${((targetTime - now) / 1000).toFixed(0)}초 남음`,
+          );
+        } else {
+          // 진입 실패 시 스나이핑 상태 해제
+          set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
+          get().addLog('error', `[스나이핑] ${opportunity.baseAsset} 즉시 진입 실패 — 스나이핑 해제`);
+        }
+      });
       return;
     }
 
@@ -961,12 +976,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
         return;
       }
-      get().executeStrategy(target);
-      get().addLog('success',
-        `[스나이핑] ${target.baseAsset} 자동 진입 완료!`,
-        undefined,
-        `펀딩까지 ~30초 | 스프레드: +${target.spreadPercent.toFixed(4)}%${freshMatch ? '' : ' [예약시 데이터]'}`,
-      );
+      get().executeStrategy(target).then((success) => {
+        if (success) {
+          get().addLog('success',
+            `[스나이핑] ${target.baseAsset} 자동 진입 완료!`,
+            undefined,
+            `펀딩까지 ~30초 | 스프레드: +${target.spreadPercent.toFixed(4)}%${freshMatch ? '' : ' [예약시 데이터]'}`,
+          );
+        } else {
+          // 진입 실패 시 스나이핑 상태 해제
+          set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
+          get().addLog('error', `[스나이핑] ${target.baseAsset} 자동 진입 실패 — 스나이핑 해제`);
+        }
+      });
     }, delay);
 
     set({ snipeScheduled: true, snipeTargetTime: targetTime, _snipeTimer: timer });

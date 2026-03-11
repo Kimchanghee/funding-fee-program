@@ -103,19 +103,32 @@ export default function OpportunityCard() {
   }, [toastMsg]);
 
   // 청산 핸들러: 전체 포지션 청산
-  const handleToggle = useCallback(() => {
+  const closeRealPosition = useFundingStore(s => s.closePosition);
+  const handleToggle = useCallback(async () => {
     if (!isRunning || isProcessing) return;
     setIsProcessing(true);
 
-    if (simulationMode) {
-      const ids = simPositions.map(p => p.simId);
-      for (const id of ids) closeSimPosition(id);
+    try {
+      if (simulationMode) {
+        const ids = simPositions.map(p => p.simId);
+        for (const id of ids) closeSimPosition(id);
+      } else if (positions.length > 0) {
+        // 실거래 포지션 전체 청산
+        const results = await Promise.allSettled(
+          positions.map(p => closeRealPosition(p)),
+        );
+        const failed = results.filter(r => r.status === 'rejected').length;
+        if (failed > 0) {
+          setToastMsg({ text: `${positions.length - failed}개 청산 완료, ${failed}개 실패`, type: 'success' });
+          return;
+        }
+      }
+      if (automationActive) stopAutomation();
+      setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
+    } finally {
+      setTimeout(() => setIsProcessing(false), 500);
     }
-    if (automationActive) stopAutomation();
-    setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
-
-    setTimeout(() => setIsProcessing(false), 500);
-  }, [isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, automationActive, stopAutomation]);
+  }, [isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, automationActive, stopAutomation, positions, closeRealPosition]);
 
   const handleSnipe = useCallback(() => {
     if (!best) return;
@@ -425,7 +438,7 @@ export default function OpportunityCard() {
               ) : (
                 <>
                   <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#fff', boxShadow: '0 0 6px #fff', animation: 'blink 1.5s ease-in-out infinite' }} />
-                  {simulationMode ? '[SIM] ' : ''}투자 실행 중 ({simPositions.length}개) — 청산하기
+                  {simulationMode ? '[SIM] ' : ''}투자 실행 중 ({simulationMode ? simPositions.length : positions.length}개) — 청산하기
                 </>
               )}
             </button>

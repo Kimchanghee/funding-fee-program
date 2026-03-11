@@ -16,6 +16,7 @@ interface RatesCache {
 }
 
 // Cache keyed by sorted exchange list to avoid cross-contamination
+const MAX_CACHE_ENTRIES = 10; // prevent unbounded memory growth from arbitrary exchange params
 const cacheMap = new Map<string, RatesCache>();
 const refreshSet = new Set<string>();
 const CACHE_TTL = 8_000; // 8s — serve cached data if fresh enough
@@ -56,8 +57,15 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const exchangeParam = url.searchParams.get('exchanges');
   const exchanges = exchangeParam
-    ? (exchangeParam.split(',') as ExchangeId[])
+    ? exchangeParam.split(',').filter((e): e is ExchangeId => SUPPORTED_EXCHANGES.includes(e as ExchangeId))
     : SUPPORTED_EXCHANGES;
+
+  if (exchanges.length === 0) {
+    return NextResponse.json(
+      { success: false, error: 'No valid exchanges specified', data: { rates: [], opportunities: [], errors: [] }, timestamp: Date.now() },
+      { status: 400 },
+    );
+  }
 
   const symbols = TRACKED_SYMBOLS.map((b) => `${b}/USDT:USDT`);
   const now = Date.now();
@@ -100,6 +108,11 @@ export async function GET(req: NextRequest) {
   // First load or no cache — must wait
   try {
     const result = await doFetch(exchanges, symbols);
+    // Evict oldest entry if cache is full
+    if (cacheMap.size >= MAX_CACHE_ENTRIES && !cacheMap.has(key)) {
+      const oldest = [...cacheMap.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)[0];
+      if (oldest) cacheMap.delete(oldest[0]);
+    }
     cacheMap.set(key, result);
 
     return NextResponse.json({

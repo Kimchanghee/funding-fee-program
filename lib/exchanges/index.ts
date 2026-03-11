@@ -16,7 +16,8 @@ function getPublicExchange(id: ExchangeId): any {
 }
 
 function getPrivateExchange(id: ExchangeId, config: ApiConfig): any {
-  const key = `${id}:${config.apiKey}`;
+  // Include secret + passphrase in key so credential changes invalidate cache
+  const key = `${id}:${config.apiKey}:${config.secret.slice(-8)}:${config.passphrase || ''}`;
   let ex = privateExchangeCache.get(key);
   if (ex) return ex;
   ex = createExchange(id, config);
@@ -206,7 +207,7 @@ export async function openPosition(
     return {
       orderId: (order.id as string) || '',
       price: (order.average as number) || price,
-      amount: contractAmount,
+      amount: (order.filled as number) || contractAmount, // actual filled qty for accurate rollback
     };
   } catch (err) {
     throw new Error(`[${id}] openPosition failed: ${(err as Error).message}`);

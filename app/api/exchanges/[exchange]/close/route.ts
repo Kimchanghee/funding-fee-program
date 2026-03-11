@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId } from '@/lib/types';
+import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { closePosition } from '@/lib/exchanges';
 
 function getApiConfig(req: NextRequest) {
@@ -15,6 +16,10 @@ export async function POST(
   { params }: { params: Promise<{ exchange: string }> },
 ) {
   const { exchange } = await params;
+
+  if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) {
+    return NextResponse.json({ success: false, error: `Unsupported exchange: ${exchange}` }, { status: 400 });
+  }
   const id = exchange as ExchangeId;
   const config = getApiConfig(req);
 
@@ -28,6 +33,18 @@ export async function POST(
       side: 'long' | 'short';
       amount: number;
     };
+
+    // Runtime validation
+    if (!body.symbol || typeof body.symbol !== 'string') {
+      return NextResponse.json({ success: false, error: 'Invalid symbol' }, { status: 400 });
+    }
+    if (body.side !== 'long' && body.side !== 'short') {
+      return NextResponse.json({ success: false, error: 'Invalid side: must be long or short' }, { status: 400 });
+    }
+    if (typeof body.amount !== 'number' || body.amount <= 0) {
+      return NextResponse.json({ success: false, error: 'Invalid amount: must be positive number' }, { status: 400 });
+    }
+
     await closePosition(id, config, body.symbol, body.side, body.amount);
     return NextResponse.json({ success: true });
   } catch (err) {
