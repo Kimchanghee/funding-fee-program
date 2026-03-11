@@ -587,7 +587,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const config = apiConfigs[position.exchange];
     if (!config) {
       get().addLog('error', `${position.exchange.toUpperCase()} API 키 없음`, position.exchange);
-      return;
+      throw new Error(`${position.exchange.toUpperCase()} API 키 없음`);
     }
 
     get().addLog('info', `포지션 청산 시도: ${position.displaySymbol} ${position.side}`, position.exchange);
@@ -612,9 +612,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         setTimeout(() => get().refreshPositions(), 2000);
       } else {
         get().addLog('error', `청산 실패: ${json.error}`, position.exchange);
+        throw new Error(`청산 실패: ${json.error}`);
       }
     } catch (err) {
       get().addLog('error', '청산 중 오류', position.exchange, (err as Error).message);
+      throw err;
     }
   },
 
@@ -946,6 +948,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       set({ snipeScheduled: true, snipeTargetTime: targetTime });
       get().executeStrategy(opportunity).then((success) => {
         if (success) {
+          set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
           get().addLog('success',
             `[스나이핑] 펀딩 임박! ${opportunity.baseAsset} 즉시 진입`,
             undefined,
@@ -978,6 +981,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
       get().executeStrategy(target).then((success) => {
         if (success) {
+          set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
           get().addLog('success',
             `[스나이핑] ${target.baseAsset} 자동 진입 완료!`,
             undefined,

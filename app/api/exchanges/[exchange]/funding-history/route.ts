@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId } from '@/lib/types';
+import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { fetchFundingHistory } from '@/lib/exchanges';
 
 function getApiConfig(req: NextRequest) {
@@ -15,6 +16,9 @@ export async function GET(
   { params }: { params: Promise<{ exchange: string }> },
 ) {
   const { exchange } = await params;
+  if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) {
+    return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
+  }
   const id = exchange as ExchangeId;
   const config = getApiConfig(req);
 
@@ -23,7 +27,7 @@ export async function GET(
   }
 
   const url = new URL(req.url);
-  const limit = parseInt(url.searchParams.get('limit') || '20');
+  const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '20') || 20, 1), 200);
 
   try {
     const history = await fetchFundingHistory(id, config, undefined, limit);

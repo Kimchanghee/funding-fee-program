@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const exchangeParam = url.searchParams.get('exchanges');
   const exchanges = exchangeParam
-    ? exchangeParam.split(',').filter((e): e is ExchangeId => SUPPORTED_EXCHANGES.includes(e as ExchangeId))
+    ? [...new Set(exchangeParam.split(','))].filter((e): e is ExchangeId => SUPPORTED_EXCHANGES.includes(e as ExchangeId))
     : SUPPORTED_EXCHANGES;
 
   if (exchanges.length === 0) {

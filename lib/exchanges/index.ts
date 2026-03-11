@@ -5,6 +5,7 @@ import { normalizeFundingRate } from './utils';
 
 // ── Exchange instance cache (avoids re-creating + re-loading markets every call) ──
 const publicExchangeCache = new Map<ExchangeId, any>();
+const MAX_PRIVATE_CACHE = 20;
 const privateExchangeCache = new Map<string, any>();
 
 function getPublicExchange(id: ExchangeId): any {
@@ -16,10 +17,15 @@ function getPublicExchange(id: ExchangeId): any {
 }
 
 function getPrivateExchange(id: ExchangeId, config: ApiConfig): any {
-  // Include secret + passphrase in key so credential changes invalidate cache
-  const key = `${id}:${config.apiKey}:${config.secret.slice(-8)}:${config.passphrase || ''}`;
+  // Use full apiKey + secret for unique cache key (avoids collision from partial matching)
+  const key = `${id}:${config.apiKey}:${config.secret}:${config.passphrase || ''}`;
   let ex = privateExchangeCache.get(key);
   if (ex) return ex;
+  // Evict oldest entry if cache is full
+  if (privateExchangeCache.size >= MAX_PRIVATE_CACHE) {
+    const oldest = privateExchangeCache.keys().next().value;
+    if (oldest) privateExchangeCache.delete(oldest);
+  }
   ex = createExchange(id, config);
   privateExchangeCache.set(key, ex);
   return ex;
@@ -207,7 +213,7 @@ export async function openPosition(
     return {
       orderId: (order.id as string) || '',
       price: (order.average as number) || price,
-      amount: (order.filled as number) || contractAmount, // actual filled qty for accurate rollback
+      amount: (order.filled as number) ?? contractAmount, // actual filled qty for accurate rollback
     };
   } catch (err) {
     throw new Error(`[${id}] openPosition failed: ${(err as Error).message}`);

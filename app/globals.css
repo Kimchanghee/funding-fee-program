@@ -128,6 +128,11 @@ body {
   color: white;
   border: 1px solid rgba(245,158,11,0.5);
 }
+.toast-error {
+  background: linear-gradient(135deg, rgba(239,68,68,0.95), rgba(185,28,28,0.95));
+  color: white;
+  border: 1px solid rgba(239,68,68,0.5);
+}
 
 /* Button entry animation */
 @keyframes entry-success {

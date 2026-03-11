@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity } from '@/lib/types';
+import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { openPosition, closePosition } from '@/lib/exchanges';
+
+function isValidApiConfig(config: unknown): config is ApiConfig {
+  if (!config || typeof config !== 'object') return false;
+  const c = config as Record<string, unknown>;
+  return typeof c.apiKey === 'string' && c.apiKey.length > 0
+    && typeof c.secret === 'string' && c.secret.length > 0;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -17,6 +25,9 @@ export async function POST(req: NextRequest) {
     if (!opportunity?.shortExchange || !opportunity?.longExchange || !opportunity?.shortSymbol || !opportunity?.longSymbol) {
       return NextResponse.json({ success: false, error: 'Invalid opportunity data' }, { status: 400 });
     }
+    if (!SUPPORTED_EXCHANGES.includes(opportunity.shortExchange) || !SUPPORTED_EXCHANGES.includes(opportunity.longExchange)) {
+      return NextResponse.json({ success: false, error: 'Unsupported exchange in opportunity' }, { status: 400 });
+    }
     if (typeof investmentUSDT !== 'number' || investmentUSDT <= 0) {
       return NextResponse.json({ success: false, error: 'Invalid investmentUSDT' }, { status: 400 });
     }
@@ -24,12 +35,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid leverage' }, { status: 400 });
     }
 
-    const shortConfig = apiConfigs[opportunity.shortExchange];
-    const longConfig = apiConfigs[opportunity.longExchange];
+    const shortConfig = apiConfigs?.[opportunity.shortExchange];
+    const longConfig = apiConfigs?.[opportunity.longExchange];
 
-    if (!shortConfig || !longConfig) {
+    if (!isValidApiConfig(shortConfig) || !isValidApiConfig(longConfig)) {
       return NextResponse.json(
-        { success: false, error: 'Missing API config for one or both exchanges' },
+        { success: false, error: 'Missing or invalid API credentials for one or both exchanges' },
         { status: 400 },
       );
     }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId } from '@/lib/types';
 import { fetchFundingRates } from '@/lib/exchanges';
-import { TRACKED_SYMBOLS } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, TRACKED_SYMBOLS } from '@/lib/types';
 
 function getApiConfig(req: NextRequest) {
   const apiKey = req.headers.get('x-api-key') || '';
@@ -15,6 +15,9 @@ export async function GET(
   { params }: { params: Promise<{ exchange: string }> },
 ) {
   const { exchange } = await params;
+  if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) {
+    return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
+  }
   const id = exchange as ExchangeId;
   const config = getApiConfig(req);
 

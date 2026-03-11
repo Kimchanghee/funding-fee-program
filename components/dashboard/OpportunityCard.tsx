@@ -87,7 +87,7 @@ function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: numbe
 export default function OpportunityCard() {
   const { opportunities, strategyConfig, setShowStrategyPanel, apiConfigs, simulationMode, simBalances, automationActive, automationStartedAt, automationStats, simPositions, stopAutomation, snipeScheduled, snipeTargetTime, scheduleSnipe, cancelSnipe, closeSimPosition, ratesStatus, ratesError, isLoadingRates, lastRatesUpdate } = useFundingStore();
   const [compoundMode, setCompoundMode] = useState(false);
-  const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' } | null>(null);
+  const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' | 'error' } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false); // 진입/청산 처리 중 방지
   const best = opportunities[0];
 
@@ -119,7 +119,7 @@ export default function OpportunityCard() {
         );
         const failed = results.filter(r => r.status === 'rejected').length;
         if (failed > 0) {
-          setToastMsg({ text: `${positions.length - failed}개 청산 완료, ${failed}개 실패`, type: 'success' });
+          setToastMsg({ text: `${positions.length - failed}개 청산 완료, ${failed}개 실패`, type: 'error' });
           return;
         }
       }
@@ -245,7 +245,7 @@ export default function OpportunityCard() {
     {/* Toast notification */}
     {toastMsg && (
       <div className={`toast toast-${toastMsg.type}`}>
-        {toastMsg.type === 'success' ? <Check size={16} /> : <Crosshair size={16} />}
+        {toastMsg.type === 'success' ? <Check size={16} /> : toastMsg.type === 'error' ? <Zap size={16} /> : <Crosshair size={16} />}
         {toastMsg.text}
       </div>
     )}
