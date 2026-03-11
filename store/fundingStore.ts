@@ -944,48 +944,70 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const delay = Math.max(0, targetTime - now - ENTRY_BEFORE_MS);
 
     if (delay <= 0) {
-      // 이미 펀딩 시간 임박 → 즉시 진입
+      // 이미 펀딩 시간 임박 → 즉시 진입 (최적 기회로 전환 가능)
+      const { opportunities: currentOpps } = get();
+      const bestNow = currentOpps.length > 0
+        ? currentOpps.reduce((best, o) => o.spread > best.spread ? o : best, currentOpps[0])
+        : null;
+      const target = bestNow && bestNow.spread > 0 ? bestNow : opportunity;
+      const switched = target.baseAsset !== opportunity.baseAsset;
+
       set({ snipeScheduled: true, snipeTargetTime: targetTime });
-      get().executeStrategy(opportunity).then((success) => {
+      if (switched) {
+        get().addLog('info',
+          `[스나이핑] 최적 기회 변경: ${opportunity.baseAsset} → ${target.baseAsset}`,
+          undefined,
+          `스프레드: +${target.spreadPercent.toFixed(4)}%`,
+        );
+      }
+      get().executeStrategy(target).then((success) => {
         if (success) {
           set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
           get().addLog('success',
-            `[스나이핑] 펀딩 임박! ${opportunity.baseAsset} 즉시 진입`,
+            `[스나이핑] 펀딩 임박! ${target.baseAsset} 즉시 진입`,
             undefined,
-            `펀딩까지 ${((targetTime - now) / 1000).toFixed(0)}초 남음`,
+            `펀딩까지 ${((targetTime - now) / 1000).toFixed(0)}초 남음${switched ? ` [${opportunity.baseAsset}에서 전환]` : ''}`,
           );
         } else {
-          // 진입 실패 시 스나이핑 상태 해제
           set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
-          get().addLog('error', `[스나이핑] ${opportunity.baseAsset} 즉시 진입 실패 — 스나이핑 해제`);
+          get().addLog('error', `[스나이핑] ${target.baseAsset} 즉시 진입 실패 — 스나이핑 해제`);
         }
       });
       return;
     }
 
-    // 예약 시점의 기회를 캡처 — 실행 시 동일 코인의 최신 기회를 우선 사용, 없으면 캡처된 것 사용
+    // 실행 시점에 전체 opportunities에서 최적 기회를 선택 (예약 코인에 고정하지 않음)
     const capturedOpportunity = { ...opportunity };
     const timer = setTimeout(() => {
       const { opportunities } = get();
-      // 같은 baseAsset + 같은 거래소 조합의 최신 기회를 찾음
-      const freshMatch = opportunities.find(
-        o => o.baseAsset === capturedOpportunity.baseAsset
-          && o.shortExchange === capturedOpportunity.shortExchange
-          && o.longExchange === capturedOpportunity.longExchange,
-      );
-      const target = freshMatch ?? capturedOpportunity;
+      // 전체 기회 중 스프레드가 가장 큰 최적 기회를 선택
+      const bestNow = opportunities.length > 0
+        ? opportunities.reduce((best, o) => o.spread > best.spread ? o : best, opportunities[0])
+        : null;
+      const target = bestNow && bestNow.spread > 0 ? bestNow : capturedOpportunity;
+      const switched = target.baseAsset !== capturedOpportunity.baseAsset;
+
       if (target.spread <= 0) {
-        get().addLog('warning', '[스나이핑] 진입 시점에 스프레드 소멸 — 취소됨');
+        get().addLog('warning', '[스나이핑] 진입 시점에 유효한 기회 없음 — 취소됨');
         set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
         return;
       }
+
+      if (switched) {
+        get().addLog('info',
+          `[스나이핑] 최적 기회 변경: ${capturedOpportunity.baseAsset} → ${target.baseAsset}`,
+          undefined,
+          `스프레드: +${target.spreadPercent.toFixed(4)}%`,
+        );
+      }
+
       get().executeStrategy(target).then((success) => {
         if (success) {
           set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
           get().addLog('success',
             `[스나이핑] ${target.baseAsset} 자동 진입 완료!`,
             undefined,
-            `펀딩까지 ~30초 | 스프레드: +${target.spreadPercent.toFixed(4)}%${freshMatch ? '' : ' [예약시 데이터]'}`,
+            `펀딩까지 ~30초 | 스프레드: +${target.spreadPercent.toFixed(4)}%${switched ? ` [${capturedOpportunity.baseAsset}에서 전환]` : ''}`,
           );
         } else {
           // 진입 실패 시 스나이핑 상태 해제
