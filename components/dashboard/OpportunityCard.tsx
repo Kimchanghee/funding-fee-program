@@ -91,8 +91,9 @@ export default function OpportunityCard() {
   const [isProcessing, setIsProcessing] = useState(false); // 진입/청산 처리 중 방지
   const best = opportunities[0];
 
-  // 진행 중 상태 = 시뮬 포지션이 있음
-  const isRunning = simulationMode ? simPositions.length > 0 : automationActive;
+  // 진행 중 상태: 시뮬=포지션 존재, 실거래=실포지션 존재 or 자동화 활성
+  const positions = useFundingStore(s => s.positions);
+  const isRunning = simulationMode ? simPositions.length > 0 : (positions.length > 0 || automationActive);
 
   // Toast auto-dismiss
   useEffect(() => {

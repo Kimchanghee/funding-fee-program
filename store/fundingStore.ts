@@ -384,6 +384,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   async executeStrategy(opportunity) {
     const { apiConfigs, strategyConfig, simulationMode, simBalances } = get();
 
+    // Guard: minimum spread check
+    if (opportunity.spreadPercent < strategyConfig.minSpreadPercent) {
+      get().addLog('warning',
+        `스프레드 ${opportunity.spreadPercent.toFixed(4)}%가 최소 기준 ${strategyConfig.minSpreadPercent}% 미만 — 진입 스킵`,
+        undefined,
+        `${opportunity.baseAsset} ${opportunity.shortExchange}↔${opportunity.longExchange}`,
+      );
+      return;
+    }
+
     // ── Simulation branch ──────────────────────
     if (simulationMode) {
       const margin = strategyConfig.investmentUSDT;
@@ -429,6 +439,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         nextFundingTime: opportunity.nextFundingTime,
         isSnipe,
         fundingReceived: 0,
+        entryFee,
       };
       const longPos: SimPosition = {
         simId: `sim-${ts}-long`,
@@ -454,6 +465,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         nextFundingTime: opportunity.nextFundingTime,
         isSnipe,
         fundingReceived: 0,
+        entryFee,
       };
 
       const perFunding = notional * opportunity.spread;
@@ -801,13 +813,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         useFundingStore.setState({ opportunities: opps, _recalcTimeout: null });
       }, 1000);
 
-      // Update sim position markPrices + unrealizedPnl
+      // Update sim position markPrices + unrealizedPnl (including entry fee)
       const simPositions = get().simPositions.map(pos => {
         if (pos.baseAsset !== update.baseAsset || pos.exchange !== update.exchange) return pos;
         const mp = update.markPrice || pos.markPrice;
-        const pnl = pos.side === 'short'
+        const pricePnl = pos.side === 'short'
           ? (pos.entryPrice - mp) * pos.size
           : (mp - pos.entryPrice) * pos.size;
+        const pnl = pricePnl - (pos.entryFee ?? 0); // 진입 수수료 차감
         return { ...pos, markPrice: mp, unrealizedPnl: pnl, unrealizedPnlPercent: (pnl / pos.margin) * 100, fundingRate: update.rate };
       });
 
@@ -932,20 +945,27 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return;
     }
 
+    // 예약 시점의 기회를 캡처 — 실행 시 동일 코인의 최신 기회를 우선 사용, 없으면 캡처된 것 사용
+    const capturedOpportunity = { ...opportunity };
     const timer = setTimeout(() => {
-      // 진입 시점: 최적 기회 다시 확인 (rates가 변했을 수 있음)
       const { opportunities } = get();
-      const best = opportunities[0];
-      if (!best) {
-        get().addLog('warning', '[스나이핑] 진입 시점에 유효한 기회 없음 — 취소됨');
+      // 같은 baseAsset + 같은 거래소 조합의 최신 기회를 찾음
+      const freshMatch = opportunities.find(
+        o => o.baseAsset === capturedOpportunity.baseAsset
+          && o.shortExchange === capturedOpportunity.shortExchange
+          && o.longExchange === capturedOpportunity.longExchange,
+      );
+      const target = freshMatch ?? capturedOpportunity;
+      if (target.spread <= 0) {
+        get().addLog('warning', '[스나이핑] 진입 시점에 스프레드 소멸 — 취소됨');
         set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
         return;
       }
-      get().executeStrategy(best);
+      get().executeStrategy(target);
       get().addLog('success',
-        `[스나이핑] ${best.baseAsset} 자동 진입 완료!`,
+        `[스나이핑] ${target.baseAsset} 자동 진입 완료!`,
         undefined,
-        `펀딩까지 ~30초 | 스프레드: +${best.spreadPercent.toFixed(4)}%`,
+        `펀딩까지 ~30초 | 스프레드: +${target.spreadPercent.toFixed(4)}%${freshMatch ? '' : ' [예약시 데이터]'}`,
       );
     }, delay);
 

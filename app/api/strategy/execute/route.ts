@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity } from '@/lib/types';
-import { openPosition } from '@/lib/exchanges';
+import { openPosition, closePosition } from '@/lib/exchanges';
 
 export async function POST(req: NextRequest) {
   try {
@@ -46,6 +46,38 @@ export async function POST(req: NextRequest) {
     const shortOk = shortResult.status === 'fulfilled';
     const longOk = longResult.status === 'fulfilled';
 
+    // Rollback: if one side succeeded but the other failed, close the successful side
+    let rollbackError: string | undefined;
+    if (shortOk && !longOk) {
+      try {
+        const shortData = shortResult.value;
+        await closePosition(
+          opportunity.shortExchange,
+          shortConfig,
+          opportunity.shortSymbol,
+          'short',
+          shortData.amount,
+        );
+        rollbackError = `롱 진입 실패 → 숏 포지션 롤백(청산) 완료`;
+      } catch (rbErr) {
+        rollbackError = `롱 진입 실패 + 숏 롤백 실패: ${(rbErr as Error).message} — 수동 청산 필요!`;
+      }
+    } else if (!shortOk && longOk) {
+      try {
+        const longData = longResult.value;
+        await closePosition(
+          opportunity.longExchange,
+          longConfig,
+          opportunity.longSymbol,
+          'long',
+          longData.amount,
+        );
+        rollbackError = `숏 진입 실패 → 롱 포지션 롤백(청산) 완료`;
+      } catch (rbErr) {
+        rollbackError = `숏 진입 실패 + 롱 롤백 실패: ${(rbErr as Error).message} — 수동 청산 필요!`;
+      }
+    }
+
     return NextResponse.json({
       success: shortOk && longOk,
       short: shortOk
@@ -54,6 +86,7 @@ export async function POST(req: NextRequest) {
       long: longOk
         ? { success: true, data: longResult.value }
         : { success: false, error: (longResult.reason as Error).message },
+      rollback: rollbackError,
     });
   } catch (err) {
     return NextResponse.json(

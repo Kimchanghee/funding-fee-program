@@ -133,6 +133,7 @@ export interface SimPosition extends Position {
   nextFundingTime: number;  // ms timestamp of next funding
   isSnipe?: boolean;        // true = 펀딩 스나이핑 (수령 후 자동 청산)
   fundingReceived?: number; // snipe: 펀딩 수령 횟수
+  entryFee: number;         // 진입 수수료 (WS 가격 갱신 시 PnL에 반영)
 }
 
 export const SIM_INITIAL_BALANCE = 1500;
