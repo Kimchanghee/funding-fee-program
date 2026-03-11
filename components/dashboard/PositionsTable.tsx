@@ -233,7 +233,7 @@ export default function PositionsTable() {
                       }}
                     >
                       <td style={{ padding: '10px 14px' }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color, background: `${color}22`, padding: '2px 7px', borderRadius: 5 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color, background: `${color}22`, padding: '2px 8px', borderRadius: 6 }}>
                           {EXCHANGE_NAMES[pos.exchange as ExchangeId] || pos.exchange.toUpperCase()}
                         </span>
                       </td>

@@ -37,8 +37,8 @@ export default function LogPanel() {
   return (
     <div className="glass-card" style={{ overflow: 'hidden' }}>
       {/* Header */}
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text)' }}>
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text)' }}>
           실시간 로그
           <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 400 }}>
             ({logs.length}개)

@@ -29,7 +29,7 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
+    <div style={{ minHeight: '100vh', background: '#0a0e17' }}>
       <Header />
 
       <main

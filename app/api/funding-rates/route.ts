@@ -17,7 +17,7 @@ interface RatesCache {
 
 let cache: RatesCache | null = null;
 let refreshInProgress = false;
-const CACHE_TTL = 15_000; // 15s — serve cached data if fresh enough
+const CACHE_TTL = 8_000; // 8s — serve cached data if fresh enough
 
 async function doFetch(exchanges: ExchangeId[], symbols: string[]): Promise<RatesCache> {
   const results = await Promise.allSettled(
@@ -68,7 +68,14 @@ export async function GET(req: NextRequest) {
       refreshInProgress = true;
       doFetch(exchanges, symbols)
         .then((result) => { cache = result; })
-        .catch(() => {})
+        .catch(() => {
+          // Retry once after 2s on failure instead of serving stale indefinitely
+          setTimeout(() => {
+            doFetch(exchanges, symbols)
+              .then((result) => { cache = result; })
+              .catch(() => {});
+          }, 2000);
+        })
         .finally(() => { refreshInProgress = false; });
     }
 

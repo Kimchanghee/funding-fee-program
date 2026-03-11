@@ -72,7 +72,7 @@ function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: numbe
               color: receiving ? '#10b981' : '#ef4444',
               background: receiving ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
               padding: '2px 8px',
-              borderRadius: 4,
+              borderRadius: 6,
             }}>
               {receiving ? '▲ 수령' : '▼ 지불'}
             </span>
@@ -178,7 +178,7 @@ export default function OpportunityCard() {
               </span>
             )}
             <span style={{ color: 'var(--color-text-muted)', fontSize: 11 }}>
-              30초 후 자동 재시도됩니다
+              10초 후 자동 재시도됩니다
             </span>
           </div>
         ) : isEmptyResult ? (
@@ -226,9 +226,12 @@ export default function OpportunityCard() {
   const profit = estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage, totalPortfolio);
   const hasShortConfig = !!apiConfigs[best.shortExchange];
   const hasLongConfig = !!apiConfigs[best.longExchange];
+  // executeStrategy와 동일한 수수료 포함 잔고 체크
+  const TAKER_FEE = 0.0005;
+  const simCostPerSide = strategyConfig.investmentUSDT + (strategyConfig.investmentUSDT * strategyConfig.leverage * TAKER_FEE);
   const canExecute = simulationMode
-    ? (simBalances[best.shortExchange] ?? 0) >= strategyConfig.investmentUSDT &&
-      (simBalances[best.longExchange] ?? 0) >= strategyConfig.investmentUSDT
+    ? (simBalances[best.shortExchange] ?? 0) >= simCostPerSide &&
+      (simBalances[best.longExchange] ?? 0) >= simCostPerSide
     : hasShortConfig && hasLongConfig;
 
   return (

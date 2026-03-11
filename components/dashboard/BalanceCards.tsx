@@ -16,10 +16,10 @@ function Card({ exchange }: { exchange: ExchangeId }) {
     return (
       <div className="glass-card" style={{ minWidth: 200, padding: '16px 20px', borderColor: `${color}44`, background: `linear-gradient(135deg, rgba(167,139,250,0.08), var(--bg-card))`, flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: '0.08em', padding: '2px 8px', borderRadius: 5, background: `${color}22` }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: '0.08em', padding: '2px 8px', borderRadius: 6, background: `${color}22` }}>
             {EXCHANGE_NAMES[exchange]}
           </span>
-          <span style={{ fontSize: 9, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.15)', padding: '2px 6px', borderRadius: 4 }}>SIM</span>
+          <span style={{ fontSize: 9, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.15)', padding: '2px 6px', borderRadius: 6 }}>SIM</span>
         </div>
         <div className="mono" style={{ fontSize: 20, fontWeight: 800, color: 'var(--color-text)', marginBottom: 4 }}>
           ${(simBal + locked).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -70,7 +70,7 @@ function Card({ exchange }: { exchange: ExchangeId }) {
             color,
             letterSpacing: '0.08em',
             padding: '2px 8px',
-            borderRadius: 5,
+            borderRadius: 6,
             background: `${color}22`,
           }}
         >

@@ -138,6 +138,13 @@ function makeApiHeaders(config: ApiConfig): Record<string, string> {
 }
 
 let logCounter = 0;
+// 시뮬 잔고 = 투자금 + 수수료 버퍼 (진입/청산 taker fee 커버)
+function simBalanceFor(investmentUSDT: number, leverage: number = 5): number {
+  const TAKER_FEE = 0.0005;
+  const feeBuffer = investmentUSDT * leverage * TAKER_FEE * 2; // 진입+청산 양쪽
+  return investmentUSDT + feeBuffer;
+}
+
 function makeLog(level: LogLevel, message: string, exchange?: ExchangeId, detail?: string): LogEntry {
   return {
     id: `${Date.now()}-${++logCounter}`,
@@ -170,7 +177,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
   fundingHistory: [],
   simulationMode: true,
-  simBalances: { binance: 1000, bybit: 1000, okx: 1000, bitget: 1000, gate: 1000 },
+  simBalances: { binance: simBalanceFor(1000), bybit: simBalanceFor(1000), okx: simBalanceFor(1000), bitget: simBalanceFor(1000), gate: simBalanceFor(1000) },
   simPositions: [],
   simTotalFundingEarned: 0,
   automationActive: false,
@@ -236,7 +243,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const next = { ...s.strategyConfig, ...config };
       // 투자금 변경 시 시뮬 잔고 자동 동기화
       if (config.investmentUSDT !== undefined && config.investmentUSDT !== s.strategyConfig.investmentUSDT) {
-        const bal = config.investmentUSDT;
+        const bal = simBalanceFor(config.investmentUSDT, next.leverage);
         return {
           strategyConfig: next,
           simBalances: { binance: bal, bybit: bal, okx: bal, bitget: bal, gate: bal },
@@ -293,7 +300,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const name = (err as Error).name;
       if (name === 'AbortError') {
         set({ ratesStatus: 'error', ratesError: '펀딩률 조회 타임아웃 (15s)' });
-        get().addLog('warning', '펀딩률 조회 타임아웃 (15s) — 재시도 예정', undefined);
+        get().addLog('warning', '펀딩률 조회 타임아웃 (15s) — 10초 후 재시도', undefined);
       } else {
         const msg = (err as Error).message;
         set({ ratesStatus: 'error', ratesError: msg });
@@ -354,7 +361,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const ratesInterval = setInterval(() => {
       get().refreshRates();
-    }, 30_000); // 30s
+    }, 10_000); // 10s — faster refresh for real-time arbitrage
 
     const positionsInterval = setInterval(() => {
       get().refreshPositions();
@@ -631,19 +638,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Simulation ────────────────────────────────
   toggleSimulationMode() {
     const next = !get().simulationMode;
-    const bal = get().strategyConfig.investmentUSDT;
+    const { investmentUSDT, leverage } = get().strategyConfig;
+    const bal = simBalanceFor(investmentUSDT, leverage);
     set({ simulationMode: next });
-    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${bal.toLocaleString()} 가상 잔고` : '[SIM] 시뮬레이션 모드 OFF');
+    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${bal.toFixed(0)} 가상 잔고` : '[SIM] 시뮬레이션 모드 OFF');
   },
 
   resetSimulation() {
-    const bal = get().strategyConfig.investmentUSDT;
+    const { investmentUSDT, leverage } = get().strategyConfig;
+    const bal = simBalanceFor(investmentUSDT, leverage);
     set({
       simPositions: [],
       simBalances: { binance: bal, bybit: bal, okx: bal, bitget: bal, gate: bal },
       simTotalFundingEarned: 0,
     });
-    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal.toLocaleString()} 리셋`);
+    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal.toFixed(0)} 리셋`);
   },
 
   closeSimPosition(simId) {
@@ -783,14 +792,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         ];
       }
 
-      // Debounce opportunity recalculation (3s)
+      // Debounce opportunity recalculation (1s — fast enough for real-time)
       const prev = s._recalcTimeout;
       if (prev) clearTimeout(prev);
       const timeout = setTimeout(() => {
         const { fundingRates: current } = useFundingStore.getState();
         const opps = findOpportunities(current);
         useFundingStore.setState({ opportunities: opps, _recalcTimeout: null });
-      }, 3000);
+      }, 1000);
 
       // Update sim position markPrices + unrealizedPnl
       const simPositions = get().simPositions.map(pos => {

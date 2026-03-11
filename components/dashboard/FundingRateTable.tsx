@@ -26,8 +26,8 @@ function ExchangeTag({ exchange }: { exchange: ExchangeId }) {
       style={{
         display: 'inline-flex',
         alignItems: 'center',
-        padding: '2px 7px',
-        borderRadius: 5,
+        padding: '2px 8px',
+        borderRadius: 6,
         fontSize: 10,
         fontWeight: 700,
         background: `${color}22`,
@@ -105,7 +105,7 @@ export default function FundingRateTable() {
         <div>
           <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text)' }}>펀딩률 기회 목록</div>
           <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-            {filtered.length}개 아비트라지 쌍 • 30초마다 업데이트
+            {filtered.length}개 아비트라지 쌍 • 10초마다 업데이트
           </div>
         </div>
         <div style={{ flex: 1 }} />

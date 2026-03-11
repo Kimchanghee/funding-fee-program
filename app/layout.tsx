@@ -16,8 +16,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ko" className={notoSansKR.variable}>
-      <body style={{ background: 'var(--bg-primary)', color: 'var(--color-text)', minHeight: '100vh' }}>
+    <html lang="ko" className={notoSansKR.variable} style={{ background: '#0a0e17' }}>
+      <body style={{ background: '#0a0e17', color: '#e2e8f0', minHeight: '100vh' }}>
         {children}
       </body>
     </html>

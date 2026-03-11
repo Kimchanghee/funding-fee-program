@@ -22,7 +22,7 @@ export default function FundingHistory() {
     .reduce((sum, p) => sum + p.amount, 0);
 
   const thStyle: React.CSSProperties = {
-    padding: '8px 14px',
+    padding: '10px 14px',
     fontSize: 11,
     fontWeight: 600,
     color: 'var(--color-text-muted)',
@@ -111,32 +111,32 @@ export default function FundingHistory() {
                     className="table-row-hover"
                     style={{ borderBottom: '1px solid rgba(30,45,66,0.5)' }}
                   >
-                    <td style={{ padding: '8px 14px' }}>
+                    <td style={{ padding: '10px 14px' }}>
                       <span className="mono" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
                         {new Date(p.timestamp).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </td>
-                    <td style={{ padding: '8px 14px' }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color, background: `${color}22`, padding: '2px 6px', borderRadius: 4 }}>
+                    <td style={{ padding: '10px 14px' }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color, background: `${color}22`, padding: '2px 8px', borderRadius: 6 }}>
                         {EXCHANGE_NAMES[p.exchange as ExchangeId] || p.exchange.toUpperCase()}
                       </span>
                     </td>
-                    <td style={{ padding: '8px 14px' }}>
+                    <td style={{ padding: '10px 14px' }}>
                       <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text)' }}>
                         {p.symbol.split('/')[0]}
                       </span>
                     </td>
-                    <td style={{ padding: '8px 14px' }}>
+                    <td style={{ padding: '10px 14px' }}>
                       <span style={{ fontSize: 11, color: p.side === 'long' ? '#10b981' : '#ef4444', fontWeight: 600 }}>
                         {p.side === 'long' ? '↑ 롱' : '↓ 숏'}
                       </span>
                     </td>
-                    <td style={{ padding: '8px 14px' }}>
+                    <td style={{ padding: '10px 14px' }}>
                       <span className="mono" style={{ fontSize: 11, color: isPositive ? '#10b981' : '#ef4444' }}>
                         {p.rate >= 0 ? '+' : ''}{(p.rate * 100).toFixed(4)}%
                       </span>
                     </td>
-                    <td style={{ padding: '8px 14px' }}>
+                    <td style={{ padding: '10px 14px' }}>
                       <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: isPositive ? '#10b981' : '#ef4444' }}>
                         {isPositive ? '+' : ''}${Math.abs(p.amount).toFixed(4)}
                       </span>

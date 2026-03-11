@@ -16,6 +16,14 @@
   --color-text: #e2e8f0;
   --color-text-muted: #94a3b8;
   --color-border: #1e2d42;
+  --color-sim: #a78bfa;
+
+  /* Standardized border-radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-pill: 20px;
 
   /* Exchange brand colors */
   --okx-color: #00C087;
