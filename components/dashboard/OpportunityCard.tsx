@@ -142,12 +142,12 @@ export default function OpportunityCard() {
     }
   }, [best, snipeScheduled, scheduleSnipe, cancelSnipe]);
 
-  // 로딩 중 (첫 로딩 or 아직 데이터 없음)
+  // 로딩 중 (첫 로딩 — 아직 한번도 데이터를 받은 적 없음)
   const isFirstLoading = isLoadingRates && !lastRatesUpdate;
-  // 에러 상태 (데이터도 없고 에러 발생)
-  const isErrorState = ratesStatus === 'error' && !best;
-  // 빈 결과 (로딩 완료했지만 기회 없음)
-  const isEmptyResult = !best && ratesStatus === 'success';
+  // 에러 상태 (데이터도 없고 에러 발생 — 첫 로딩 실패)
+  const isErrorState = ratesStatus === 'error' && !best && !lastRatesUpdate;
+  // 빈 결과 (로딩 완료했거나 재폴링 중이지만 기회 없음 — 이전 데이터 있음)
+  const isEmptyResult = !best && lastRatesUpdate;
 
   if (!best) {
     return (
@@ -188,7 +188,7 @@ export default function OpportunityCard() {
             </span>
           </div>
         ) : isEmptyResult ? (
-          /* 데이터는 왔지만 기회 없음 */
+          /* 데이터는 왔지만 기회 없음 (재폴링 중에도 이 상태 유지) */
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 24 }}>📊</span>
             <span style={{ color: 'var(--color-text-muted)', fontSize: 14, fontWeight: 600 }}>
@@ -197,18 +197,26 @@ export default function OpportunityCard() {
             <span style={{ color: 'var(--color-text-muted)', fontSize: 12 }}>
               스프레드가 최소 기준 미만이거나 데이터가 부족합니다
             </span>
-            {lastRatesUpdate && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {isLoadingRates && (
+                <div style={{ width: 10, height: 10, border: '1.5px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+              )}
               <span style={{ color: 'var(--color-text-muted)', fontSize: 11 }}>
-                마지막 업데이트: {new Date(lastRatesUpdate).toLocaleTimeString('ko-KR')}
+                {isLoadingRates ? '갱신 중...' : `마지막 업데이트: ${new Date(lastRatesUpdate).toLocaleTimeString('ko-KR')}`}
+              </span>
+            </div>
+            {ratesStatus === 'error' && ratesError && (
+              <span style={{ color: '#f59e0b', fontSize: 11 }}>
+                ⚠ {ratesError} — 자동 재시도 중
               </span>
             )}
           </div>
         ) : (
-          /* 기본 로딩 (재시도 중 등) */
+          /* 초기 상태 (idle) — 곧 첫 로딩 시작됨 */
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ width: 20, height: 20, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
             <span style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>
-              펀딩률 데이터 갱신 중...
+              초기화 중...
             </span>
           </div>
         )}
@@ -376,10 +384,10 @@ export default function OpportunityCard() {
             }}
           >
             {[
-              { label: '8h 수익', value: profit.perFunding, compoundValue: profit.perFunding, roi: profit.roiPerFunding, compoundRoi: profit.roiPerFunding },
-              { label: '일 수익', value: profit.perDay, compoundValue: profit.compound.perDay, roi: profit.roiPerDay, compoundRoi: profit.compound.roiPerDay },
-              { label: '월 수익', value: profit.perMonth, compoundValue: profit.compound.perMonth, roi: profit.roiPerMonth, compoundRoi: profit.compound.roiPerMonth },
-              { label: '연 수익', value: profit.perYear, compoundValue: profit.compound.perYear, roi: profit.roiPerYear, compoundRoi: profit.compound.roiPerYear },
+              { label: '8h 순수익', value: profit.netPerFunding, compoundValue: profit.netPerFunding, roi: profit.roiPerFunding, compoundRoi: profit.roiPerFunding },
+              { label: '일 순수익', value: profit.perDay, compoundValue: profit.compound.perDay, roi: profit.roiPerDay, compoundRoi: profit.compound.roiPerDay },
+              { label: '월 순수익', value: profit.perMonth, compoundValue: profit.compound.perMonth, roi: profit.roiPerMonth, compoundRoi: profit.compound.roiPerMonth },
+              { label: '연 순수익', value: profit.perYear, compoundValue: profit.compound.perYear, roi: profit.roiPerYear, compoundRoi: profit.compound.roiPerYear },
             ].map(({ label, value, compoundValue, roi, compoundRoi }) => {
               const displayValue = compoundMode ? compoundValue : value;
               const displayRoi = compoundMode ? compoundRoi : roi;
@@ -404,6 +412,23 @@ export default function OpportunityCard() {
                 </div>
               );
             })}
+          </div>
+
+          {/* 수수료 요약 */}
+          <div style={{
+            padding: '6px 10px',
+            borderRadius: 6,
+            background: profit.netPerFunding > 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+            border: `1px solid ${profit.netPerFunding > 0 ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+            fontSize: 11,
+            color: 'var(--color-text-muted)',
+            display: 'flex',
+            justifyContent: 'space-between',
+          }}>
+            <span>왕복 수수료: <span className="mono" style={{ color: '#ef4444' }}>-${profit.totalFees.toFixed(2)}</span></span>
+            <span>순수익: <span className="mono" style={{ fontWeight: 700, color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444' }}>
+              {profit.netPerFunding > 0 ? '+' : ''}${profit.netPerFunding.toFixed(2)}
+            </span></span>
           </div>
 
           {/* 메인 버튼: 스나이핑 예약 ↔ 진행 중 (전체 청산) */}

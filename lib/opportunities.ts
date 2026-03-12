@@ -67,13 +67,15 @@ export function findOpportunities(
 }
 
 export interface ProfitEstimate {
-  perFunding: number;
+  perFunding: number;       // 펀딩 수익 (수수료 전)
+  netPerFunding: number;    // 순수익 (1회 펀딩 기준, 수수료 후)
+  totalFees: number;        // 왕복 수수료 합계
   totalCapital: number;
-  actualPortfolio: number; // 실제/시뮬 총 자산
+  actualPortfolio: number;  // 실제/시뮬 총 자산
   perDay: number;
   perMonth: number;
   perYear: number;
-  roiPerFunding: number;   // 총 자산 대비 8h 수익률 (%)
+  roiPerFunding: number;    // 총 자산 대비 8h 수익률 (%)
   roiPerDay: number;
   roiPerMonth: number;
   roiPerYear: number;
@@ -100,25 +102,35 @@ export function estimateProfit(
   const notional = investmentUSDT * leverage; // 한쪽 포지션 명목가치
   const perFunding = notional * opportunity.spread; // 8h당 양쪽 합산 수익
 
-  // Simple interest (단리: 수익률 고정, 재투자 없음)
-  const perDay = perFunding * 3;
-  const perMonth = perFunding * 3 * 30;
-  const perYear = perFunding * 3 * 365;
+  // 왕복 수수료: 진입(숏+롱) + 청산(숏+롱) = 4 × 0.05%
+  const TAKER_FEE = 0.0005;
+  const totalFees = notional * TAKER_FEE * 4; // 왕복 수수료 합계
+  const netPerFunding = perFunding - totalFees; // 1회 펀딩 순수익
+
+  // Simple interest (단리: 순수익 기준)
+  // 수수료는 진입/청산 시 1회만 발생, 보유 중 펀딩은 매 8h 순수익
+  // 스나이핑(1회): netPerFunding
+  // 장기보유(N회): perFunding * N - totalFees (수수료는 1번만)
+  const perDay = perFunding * 3 - totalFees; // 하루 보유: 3회 펀딩 - 1회 수수료
+  const perMonth = perFunding * 3 * 30 - totalFees;
+  const perYear = perFunding * 3 * 365 - totalFees;
 
   // ROI based on actual portfolio
-  const roiPerFunding = (perFunding / portfolio) * 100;
+  const roiPerFunding = (netPerFunding / portfolio) * 100;
   const roiPerDay = (perDay / portfolio) * 100;
   const roiPerMonth = (perMonth / portfolio) * 100;
   const roiPerYear = (perYear / portfolio) * 100;
 
-  // Compound interest (복리: 수익 재투자)
-  const ratePerPeriod = perFunding / portfolio;
+  // Compound interest (복리: 순수익 기준)
+  const ratePerPeriod = Math.max(0, netPerFunding / portfolio);
   const compoundDay = portfolio * (Math.pow(1 + ratePerPeriod, 3) - 1);
   const compoundMonth = portfolio * (Math.pow(1 + ratePerPeriod, 90) - 1);
   const compoundYear = portfolio * (Math.pow(1 + ratePerPeriod, 1095) - 1);
 
   return {
     perFunding,
+    netPerFunding,
+    totalFees,
     totalCapital,
     actualPortfolio: portfolio,
     perDay,

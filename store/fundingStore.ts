@@ -22,6 +22,14 @@ import type { WsRateUpdate } from '@/lib/websocket/parsers';
 type WsStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
 
 // ─────────────────────────────────────────────
+// Fee constants
+// ─────────────────────────────────────────────
+const TAKER_FEE = 0.0005; // 0.05% per side
+// 왕복 수수료: 진입(숏+롱) + 청산(숏+롱) = 4 × 0.05% = 0.2%
+const ROUND_TRIP_FEE = TAKER_FEE * 4; // 0.002 (0.2%)
+const ROUND_TRIP_FEE_PERCENT = ROUND_TRIP_FEE * 100; // 0.2%
+
+// ─────────────────────────────────────────────
 // State shape
 // ─────────────────────────────────────────────
 interface FundingState {
@@ -140,7 +148,6 @@ function makeApiHeaders(config: ApiConfig): Record<string, string> {
 let logCounter = 0;
 // 시뮬 잔고 = 투자금 + 수수료 버퍼 (진입/청산 taker fee 커버)
 function simBalanceFor(investmentUSDT: number, leverage: number = 5): number {
-  const TAKER_FEE = 0.0005;
   const feeBuffer = investmentUSDT * leverage * TAKER_FEE * 2; // 진입+청산 양쪽
   return investmentUSDT + feeBuffer;
 }
@@ -169,7 +176,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   strategyConfig: {
     investmentUSDT: 1000,
     leverage: 5,
-    minSpreadPercent: 0.05,
+    minSpreadPercent: 0.25, // 왕복 수수료(0.2%) + 마진
     autoExecute: false,
     closeOnSpreadReverse: false,
     maxPositionAgeHours: 72,
@@ -385,11 +392,30 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const { apiConfigs, strategyConfig, simulationMode, simBalances } = get();
 
     // Guard: minimum spread check
-    if (opportunity.spreadPercent < strategyConfig.minSpreadPercent) {
+    const effectiveMinSpread = Math.max(strategyConfig.minSpreadPercent, ROUND_TRIP_FEE_PERCENT);
+    if (opportunity.spreadPercent < effectiveMinSpread) {
       get().addLog('warning',
-        `스프레드 ${opportunity.spreadPercent.toFixed(4)}%가 최소 기준 ${strategyConfig.minSpreadPercent}% 미만 — 진입 스킵`,
+        `스프레드 ${opportunity.spreadPercent.toFixed(4)}%가 최소 기준 ${effectiveMinSpread}% 미만 — 진입 스킵`,
         undefined,
-        `${opportunity.baseAsset} ${opportunity.shortExchange}↔${opportunity.longExchange}`,
+        `${opportunity.baseAsset} ${opportunity.shortExchange}↔${opportunity.longExchange} | 왕복수수료: ${ROUND_TRIP_FEE_PERCENT}%`,
+      );
+      return false;
+    }
+
+    // Guard: 순수익 검증 — 스프레드 수익이 왕복 수수료를 초과해야 진입
+    const notionalEst = (strategyConfig.compoundInvesting
+      ? Math.min(
+          (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
+          (simBalances[opportunity.longExchange] ?? 0) * 0.9,
+        )
+      : strategyConfig.investmentUSDT) * strategyConfig.leverage;
+    const estFundingRevenue = notionalEst * opportunity.spread;
+    const estTotalFees = notionalEst * ROUND_TRIP_FEE;
+    if (estFundingRevenue <= estTotalFees) {
+      get().addLog('warning',
+        `[수익성 검증 실패] ${opportunity.baseAsset} 펀딩수익 $${estFundingRevenue.toFixed(2)} ≤ 수수료 $${estTotalFees.toFixed(2)} — 진입 스킵`,
+        undefined,
+        `스프레드: ${opportunity.spreadPercent.toFixed(4)}% | 필요 최소: ${ROUND_TRIP_FEE_PERCENT}%`,
       );
       return false;
     }
@@ -405,7 +431,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         : strategyConfig.investmentUSDT;
       const leverage = strategyConfig.leverage;
       const notional = margin * leverage;
-      const TAKER_FEE = 0.0005; // 0.05% taker fee (typical exchange fee)
       const entryFee = notional * TAKER_FEE; // per-side entry fee
       const totalCostPerSide = margin + entryFee;
       const { shortExchange, longExchange } = opportunity;
@@ -494,10 +519,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           positionsOpened: s.automationStats.positionsOpened + 1,
         },
       }));
+      const totalRoundTripFees = notional * ROUND_TRIP_FEE;
+      const netProfit = perFunding - totalRoundTripFees;
       get().addLog('success',
         `[SIM] ${opportunity.baseAsset} 헷징 진입 완료`,
         undefined,
-        `숏:${shortExchange.toUpperCase()} 롱:${longExchange.toUpperCase()} | 8h예상수익: $${perFunding.toFixed(2)} | 수수료: -$${totalEntryFees.toFixed(2)}`,
+        `숏:${shortExchange.toUpperCase()} 롱:${longExchange.toUpperCase()} | 8h순수익: $${netProfit.toFixed(2)} (펀딩: $${perFunding.toFixed(2)} - 수수료: $${totalRoundTripFees.toFixed(2)})`,
       );
       return true;
     }
@@ -680,7 +707,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   closeSimPosition(simId) {
     const pos = get().simPositions.find(p => p.simId === simId);
     if (!pos) return;
-    const TAKER_FEE = 0.0005; // 0.05% exit fee
     const exitFee = pos.sizeUSD * TAKER_FEE;
     // 반환 = 마진 + 미실현 손익 + 수령 펀딩 - 청산 수수료
     const returnAmount = pos.margin + pos.unrealizedPnl + pos.fundingCollected - exitFee;
@@ -949,8 +975,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const bestNow = currentOpps.length > 0
         ? currentOpps.reduce((best, o) => o.spread > best.spread ? o : best, currentOpps[0])
         : null;
-      const target = bestNow && bestNow.spread > 0 ? bestNow : opportunity;
+      const target = bestNow && bestNow.spread > ROUND_TRIP_FEE ? bestNow : opportunity;
       const switched = target.baseAsset !== opportunity.baseAsset;
+
+      // 수익성 검증: 스프레드가 왕복 수수료를 커버 못하면 진입 거부
+      if (target.spread <= ROUND_TRIP_FEE) {
+        get().addLog('warning',
+          `[스나이핑] 스프레드 ${target.spreadPercent.toFixed(4)}%가 왕복수수료 ${ROUND_TRIP_FEE_PERCENT}% 이하 — 진입 거부`,
+          undefined,
+          `수수료를 커버할 수 없어 손실 확정. 더 큰 스프레드를 기다리세요.`,
+        );
+        set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
+        return;
+      }
 
       set({ snipeScheduled: true, snipeTargetTime: targetTime });
       if (switched) {
@@ -984,11 +1021,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const bestNow = opportunities.length > 0
         ? opportunities.reduce((best, o) => o.spread > best.spread ? o : best, opportunities[0])
         : null;
-      const target = bestNow && bestNow.spread > 0 ? bestNow : capturedOpportunity;
+      const target = bestNow && bestNow.spread > ROUND_TRIP_FEE ? bestNow : capturedOpportunity;
       const switched = target.baseAsset !== capturedOpportunity.baseAsset;
 
-      if (target.spread <= 0) {
-        get().addLog('warning', '[스나이핑] 진입 시점에 유효한 기회 없음 — 취소됨');
+      if (target.spread <= ROUND_TRIP_FEE) {
+        get().addLog('warning',
+          `[스나이핑] 진입 시점 스프레드 ${target.spreadPercent.toFixed(4)}%가 왕복수수료 ${ROUND_TRIP_FEE_PERCENT}% 이하 — 손실 방지를 위해 취소`,
+          undefined,
+          `최적 코인: ${target.baseAsset} | 필요 최소 스프레드: ${ROUND_TRIP_FEE_PERCENT}%`,
+        );
         set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
         return;
       }

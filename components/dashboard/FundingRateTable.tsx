@@ -156,7 +156,7 @@ export default function FundingRateTable() {
             {paged.length === 0 ? (
               <tr>
                 <td colSpan={10} style={{ padding: 40, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>
-                  {isLoadingRates ? (
+                  {isLoadingRates && opportunities.length === 0 ? (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
                       <div style={{ width: 16, height: 16, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
                       5개 거래소 펀딩률 데이터 조회 중...
@@ -213,8 +213,11 @@ export default function FundingRateTable() {
                       </span>
                     </td>
                     <td style={{ padding: '10px 14px' }}>
-                      <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: '#3b82f6' }}>
-                        ${profit.perFunding.toFixed(2)}
+                      <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444' }}>
+                        ${profit.netPerFunding.toFixed(2)}
+                      </span>
+                      <span style={{ fontSize: 9, color: 'var(--color-text-muted)', display: 'block' }}>
+                        수수료 -${profit.totalFees.toFixed(2)}
                       </span>
                     </td>
                     <td style={{ padding: '10px 14px' }}>

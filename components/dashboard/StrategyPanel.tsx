@@ -192,10 +192,10 @@ export default function StrategyPanel() {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {[
-                  { label: '8h 펀딩 수익', value: profit.perFunding },
-                  { label: '일 수익 (3회)', value: profit.perDay },
-                  { label: '월 수익', value: profit.perMonth },
-                  { label: '연 수익', value: profit.perYear },
+                  { label: '8h 순수익', value: profit.netPerFunding },
+                  { label: '일 순수익 (3회)', value: profit.perDay },
+                  { label: '월 순수익', value: profit.perMonth },
+                  { label: '연 순수익', value: profit.perYear },
                 ].map(({ label, value }) => (
                   <div key={label} style={{ background: 'var(--bg-accent)', borderRadius: 8, padding: '8px 12px' }}>
                     <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{label}</div>
