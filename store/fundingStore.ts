@@ -176,7 +176,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     autoExecute: false,
     closeOnSpreadReverse: false,
     maxPositionAgeHours: 72,
-    compoundInvesting: false,
+    compoundInvesting: true, // 복리 모드 기본
   },
   fundingHistory: [],
   simulationMode: true,

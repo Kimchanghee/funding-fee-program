@@ -86,7 +86,7 @@ function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: numbe
 
 export default function OpportunityCard() {
   const { opportunities, strategyConfig, setShowStrategyPanel, apiConfigs, simulationMode, simBalances, automationActive, automationStartedAt, automationStats, simPositions, stopAutomation, snipeScheduled, snipeTargetTime, scheduleSnipe, cancelSnipe, closeSimPosition, ratesStatus, ratesError, isLoadingRates, lastRatesUpdate } = useFundingStore();
-  const [compoundMode, setCompoundMode] = useState(false);
+  const [compoundMode, setCompoundMode] = useState(true);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' | 'error' } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false); // 진입/청산 처리 중 방지
   const best = opportunities[0];
@@ -240,13 +240,8 @@ export default function OpportunityCard() {
   const profit = estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage, totalPortfolio);
   const hasShortConfig = !!apiConfigs[best.shortExchange];
   const hasLongConfig = !!apiConfigs[best.longExchange];
-  // executeStrategy와 동일한 수수료 포함 잔고 체크
-  const TAKER_FEE = 0.0005;
-  const simCostPerSide = strategyConfig.investmentUSDT + (strategyConfig.investmentUSDT * strategyConfig.leverage * TAKER_FEE);
-  const canExecute = simulationMode
-    ? (simBalances[best.shortExchange] ?? 0) >= simCostPerSide &&
-      (simBalances[best.longExchange] ?? 0) >= simCostPerSide
-    : hasShortConfig && hasLongConfig;
+  // 시뮬레이션: 항상 진입 가능 (잔고 자동 충전), 실거래: API 키 필요
+  const canExecute = simulationMode ? true : hasShortConfig && hasLongConfig;
 
   return (
     <>
@@ -534,11 +529,9 @@ export default function OpportunityCard() {
             </div>
           )}
 
-          {!canExecute && !isRunning && (
+          {!canExecute && !isRunning && !simulationMode && (
             <div style={{ fontSize: 11, color: 'var(--color-warning)', textAlign: 'center' }}>
-              {simulationMode
-                ? `시뮬 잔고 부족 (필요: $${strategyConfig.investmentUSDT})`
-                : `${!hasShortConfig ? best.shortExchange.toUpperCase() : best.longExchange.toUpperCase()} API 키 필요`}
+              {`${!hasShortConfig ? best.shortExchange.toUpperCase() : best.longExchange.toUpperCase()} API 키 필요`}
             </div>
           )}
 
@@ -547,6 +540,9 @@ export default function OpportunityCard() {
             <span>거래소당: <strong style={{ color: 'var(--color-text)' }}>${strategyConfig.investmentUSDT.toLocaleString()}</strong></span>
             <span>총 투자금: <strong style={{ color: '#f59e0b' }}>${(strategyConfig.investmentUSDT * 2).toLocaleString()}</strong></span>
             <span>레버리지: <strong style={{ color: 'var(--color-text)' }}>{strategyConfig.leverage}x</strong></span>
+            <span style={{ color: strategyConfig.compoundInvesting ? '#a78bfa' : '#10b981', fontWeight: 700 }}>
+              {strategyConfig.compoundInvesting ? '복리' : '단리'}
+            </span>
             <button
               onClick={() => setShowStrategyPanel(true)}
               style={{ background: 'none', border: 'none', color: 'var(--color-primary)', cursor: 'pointer', fontSize: 11, padding: 0 }}
