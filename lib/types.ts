@@ -136,7 +136,7 @@ export interface SimPosition extends Position {
   entryFee: number;         // 진입 수수료 (WS 가격 갱신 시 PnL에 반영)
 }
 
-export const SIM_INITIAL_BALANCE = 1500;
+export const SIM_INITIAL_BALANCE = 2000;
 
 export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate'];
 

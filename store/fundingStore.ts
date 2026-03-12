@@ -146,11 +146,7 @@ function makeApiHeaders(config: ApiConfig): Record<string, string> {
 }
 
 let logCounter = 0;
-// 시뮬 잔고 = 투자금 + 수수료 버퍼 (진입/청산 taker fee 커버)
-function simBalanceFor(investmentUSDT: number, leverage: number = 5): number {
-  const feeBuffer = investmentUSDT * leverage * TAKER_FEE * 2; // 진입+청산 양쪽
-  return investmentUSDT + feeBuffer;
-}
+const SIM_BALANCE_PER_EXCHANGE = 2000; // 각 거래소 시뮬 초기 잔고 (USDT)
 
 function makeLog(level: LogLevel, message: string, exchange?: ExchangeId, detail?: string): LogEntry {
   return {
@@ -184,7 +180,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
   fundingHistory: [],
   simulationMode: true,
-  simBalances: { binance: simBalanceFor(1000), bybit: simBalanceFor(1000), okx: simBalanceFor(1000), bitget: simBalanceFor(1000), gate: simBalanceFor(1000) },
+  simBalances: { binance: SIM_BALANCE_PER_EXCHANGE, bybit: SIM_BALANCE_PER_EXCHANGE, okx: SIM_BALANCE_PER_EXCHANGE, bitget: SIM_BALANCE_PER_EXCHANGE, gate: SIM_BALANCE_PER_EXCHANGE },
   simPositions: [],
   simTotalFundingEarned: 0,
   automationActive: false,
@@ -248,16 +244,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   setStrategyConfig(config) {
     set((s) => {
       const next = { ...s.strategyConfig, ...config };
-      // 투자금 변경 시 시뮬 잔고 자동 동기화
-      if (config.investmentUSDT !== undefined && config.investmentUSDT !== s.strategyConfig.investmentUSDT) {
-        const bal = simBalanceFor(config.investmentUSDT, next.leverage);
-        return {
-          strategyConfig: next,
-          simBalances: { binance: bal, bybit: bal, okx: bal, bitget: bal, gate: bal },
-          simPositions: [],
-          simTotalFundingEarned: 0,
-        };
-      }
       return { strategyConfig: next };
     });
   },
@@ -389,7 +375,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── Execute strategy ──────────────────────────
   async executeStrategy(opportunity) {
-    const { apiConfigs, strategyConfig, simulationMode, simBalances } = get();
+    const { apiConfigs, strategyConfig, simulationMode, simBalances, balances } = get();
 
     // Guard: minimum spread check
     const effectiveMinSpread = Math.max(strategyConfig.minSpreadPercent, ROUND_TRIP_FEE_PERCENT);
@@ -435,13 +421,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const totalCostPerSide = margin + entryFee;
       const { shortExchange, longExchange } = opportunity;
 
+      // 시뮬레이션: 잔고 부족 시 자동 충전 (시뮬이므로 차단하지 않음)
       if ((simBalances[shortExchange] ?? 0) < totalCostPerSide) {
-        get().addLog('error', `[SIM] ${shortExchange.toUpperCase()} 시뮬 잔고 부족 ($${simBalances[shortExchange]?.toFixed(2)}, 필요: $${totalCostPerSide.toFixed(2)} 마진+수수료)`, shortExchange);
-        return false;
+        const topUp = totalCostPerSide - (simBalances[shortExchange] ?? 0) + SIM_BALANCE_PER_EXCHANGE;
+        set(s => ({ simBalances: { ...s.simBalances, [shortExchange]: (s.simBalances[shortExchange] ?? 0) + topUp } }));
+        get().addLog('info', `[SIM] ${shortExchange.toUpperCase()} 잔고 자동 충전 +$${topUp.toFixed(0)}`, shortExchange);
       }
       if ((simBalances[longExchange] ?? 0) < totalCostPerSide) {
-        get().addLog('error', `[SIM] ${longExchange.toUpperCase()} 시뮬 잔고 부족 ($${simBalances[longExchange]?.toFixed(2)}, 필요: $${totalCostPerSide.toFixed(2)} 마진+수수료)`, longExchange);
-        return false;
+        const topUp = totalCostPerSide - (simBalances[longExchange] ?? 0) + SIM_BALANCE_PER_EXCHANGE;
+        set(s => ({ simBalances: { ...s.simBalances, [longExchange]: (s.simBalances[longExchange] ?? 0) + topUp } }));
+        get().addLog('info', `[SIM] ${longExchange.toUpperCase()} 잔고 자동 충전 +$${topUp.toFixed(0)}`, longExchange);
       }
 
       const ts = Date.now();
@@ -542,11 +531,24 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return false;
     }
 
-    const profit = estimateProfit(opportunity, strategyConfig.investmentUSDT, strategyConfig.leverage);
+    // 복리 모드: 실제 잔고 기반 투자금 계산
+    let realInvestment = strategyConfig.investmentUSDT;
+    if (strategyConfig.compoundInvesting) {
+      const shortBal = balances[opportunity.shortExchange]?.availableUSDT ?? 0;
+      const longBal = balances[opportunity.longExchange]?.availableUSDT ?? 0;
+      realInvestment = Math.min(shortBal, longBal) * 0.9; // 잔고의 90%
+      if (realInvestment < strategyConfig.investmentUSDT * 0.5) {
+        get().addLog('warning', `[복리] 실잔고 부족 — 최소 투자금으로 대체`, undefined,
+          `숏: $${shortBal.toFixed(0)} 롱: $${longBal.toFixed(0)} → 투자금: $${realInvestment.toFixed(0)}`);
+        realInvestment = strategyConfig.investmentUSDT; // fallback
+      }
+    }
+
+    const profit = estimateProfit(opportunity, realInvestment, strategyConfig.leverage);
     get().addLog('info',
       `전략 실행 시작: ${opportunity.baseAsset} | 숏:${opportunity.shortExchange.toUpperCase()} 롱:${opportunity.longExchange.toUpperCase()}`,
       undefined,
-      `예상 8h수익: $${profit.perFunding.toFixed(2)}`,
+      `투자금: $${realInvestment.toFixed(0)} | 예상 8h순수익: $${profit.netPerFunding.toFixed(2)} (수수료: -$${profit.totalFees.toFixed(2)})`,
     );
 
     set({ strategyRunning: true });
@@ -557,7 +559,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           opportunity,
-          investmentUSDT: strategyConfig.investmentUSDT,
+          investmentUSDT: realInvestment,
           leverage: strategyConfig.leverage,
           apiConfigs,
         }),
@@ -687,21 +689,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Simulation ────────────────────────────────
   toggleSimulationMode() {
     const next = !get().simulationMode;
-    const { investmentUSDT, leverage } = get().strategyConfig;
-    const bal = simBalanceFor(investmentUSDT, leverage);
     set({ simulationMode: next });
-    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${bal.toFixed(0)} 가상 잔고` : '[SIM] 시뮬레이션 모드 OFF');
+    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${SIM_BALANCE_PER_EXCHANGE} 가상 잔고` : '[SIM] 시뮬레이션 모드 OFF');
   },
 
   resetSimulation() {
-    const { investmentUSDT, leverage } = get().strategyConfig;
-    const bal = simBalanceFor(investmentUSDT, leverage);
+    const bal = SIM_BALANCE_PER_EXCHANGE;
     set({
       simPositions: [],
       simBalances: { binance: bal, bybit: bal, okx: bal, bitget: bal, gate: bal },
       simTotalFundingEarned: 0,
     });
-    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal.toFixed(0)} 리셋`);
+    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal} 리셋`);
   },
 
   closeSimPosition(simId) {
