@@ -25,13 +25,11 @@ export function findOpportunities(
     // Sort descending by rate
     const sorted = [...assetRates].sort((a, b) => b.rate - a.rate);
     const high = sorted[0]; // highest rate → go SHORT
-    const low = sorted[sorted.length - 1]; // lowest rate → go LONG
+    const low = high
+      ? [...sorted].reverse().find((r) => r.exchange !== high.exchange)
+      : undefined; // lowest rate on a different exchange → go LONG
 
     if (!high || !low) continue;
-    if (high.exchange === low.exchange) {
-      // Use second lowest if same exchange
-      if (sorted.length < 2) continue;
-    }
 
     const spread = high.rate - low.rate;
     if (spread <= 0) continue;
@@ -121,11 +119,12 @@ export function estimateProfit(
   const roiPerMonth = (perMonth / portfolio) * 100;
   const roiPerYear = (perYear / portfolio) * 100;
 
-  // Compound interest (복리: 순수익 기준)
-  const ratePerPeriod = Math.max(0, netPerFunding / portfolio);
-  const compoundDay = portfolio * (Math.pow(1 + ratePerPeriod, 3) - 1);
-  const compoundMonth = portfolio * (Math.pow(1 + ratePerPeriod, 90) - 1);
-  const compoundYear = portfolio * (Math.pow(1 + ratePerPeriod, 1095) - 1);
+  // Compound interest (복리: 펀딩 수익만 복리, 수수료는 1회만)
+  // 수수료는 진입/청산 시 1회 발생 — 복리 기간마다 차감하면 안 됨
+  const grossRatePerPeriod = perFunding / portfolio;
+  const compoundDay = portfolio * (Math.pow(1 + grossRatePerPeriod, 3) - 1) - totalFees;
+  const compoundMonth = portfolio * (Math.pow(1 + grossRatePerPeriod, 90) - 1) - totalFees;
+  const compoundYear = portfolio * (Math.pow(1 + grossRatePerPeriod, 1095) - 1) - totalFees;
 
   return {
     perFunding,

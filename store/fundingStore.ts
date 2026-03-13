@@ -215,6 +215,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const connected = Object.keys(saved) as ExchangeId[];
     set({ connectedExchanges: connected });
     get().addLog('info', '펀딩피 프로그램 초기화 완료', undefined, `저장된 거래소: ${connected.join(', ') || '없음'}`);
+    // 즉시 loading 상태로 전환 (idle → loading) → "초기화 중..." 표시 최소화
+    set({ ratesStatus: 'loading' });
     get().refreshRates();
     get().startPolling();
   },
@@ -416,6 +418,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           )
         : strategyConfig.investmentUSDT;
       const leverage = strategyConfig.leverage;
+      if (opportunity.shortMarkPrice <= 0 || opportunity.longMarkPrice <= 0) {
+        get().addLog(
+          'warning',
+          `[SIM] ${opportunity.baseAsset} 진입 스킵: 유효하지 않은 마크가격`,
+          undefined,
+          `숏 ${opportunity.shortExchange.toUpperCase()}: ${opportunity.shortMarkPrice}, 롱 ${opportunity.longExchange.toUpperCase()}: ${opportunity.longMarkPrice}`,
+        );
+        return false;
+      }
       const notional = margin * leverage;
       const entryFee = notional * TAKER_FEE; // per-side entry fee
       const totalCostPerSide = margin + entryFee;
@@ -434,9 +445,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
 
       const ts = Date.now();
+      const pairId = `pair-${ts}-${Math.random().toString(36).slice(2, 8)}`;
       const isSnipe = get().snipeScheduled;
       const shortPos: SimPosition = {
         simId: `sim-${ts}-short`,
+        pairId,
         exchange: shortExchange,
         symbol: opportunity.shortSymbol,
         displaySymbol: `${opportunity.baseAsset}/USDT`,
@@ -463,6 +476,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       };
       const longPos: SimPosition = {
         simId: `sim-${ts}-long`,
+        pairId,
         exchange: longExchange,
         symbol: opportunity.longSymbol,
         displaySymbol: `${opportunity.baseAsset}/USDT`,
@@ -489,7 +503,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       };
 
       const perFunding = notional * opportunity.spread;
-      const totalEntryFees = entryFee * 2; // 양쪽 합산 진입 수수료
       set(s => ({
         simPositions: [...s.simPositions, shortPos, longPos],
         simBalances: {
@@ -707,9 +720,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const pos = get().simPositions.find(p => p.simId === simId);
     if (!pos) return;
     const exitFee = pos.sizeUSD * TAKER_FEE;
-    // 반환 = 마진 + 미실현 손익 + 수령 펀딩 - 청산 수수료
-    const returnAmount = pos.margin + pos.unrealizedPnl + pos.fundingCollected - exitFee;
-    const netPnl = pos.unrealizedPnl + pos.fundingCollected - exitFee;
+    const pricePnl = pos.side === 'short'
+      ? (pos.entryPrice - pos.markPrice) * pos.size
+      : (pos.markPrice - pos.entryPrice) * pos.size;
+    // 펀딩은 tickSimFunding에서 잔고에 즉시 반영되므로 청산 시 중복 반영하지 않는다.
+    const returnAmount = pos.margin + pricePnl - exitFee;
+    const netPnl = pricePnl + pos.fundingCollected - (pos.entryFee ?? 0) - exitFee;
     set(s => ({
       simPositions: s.simPositions.filter(p => p.simId !== simId),
       simBalances: { ...s.simBalances, [pos.exchange]: s.simBalances[pos.exchange] + returnAmount },
@@ -717,7 +733,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     get().addLog(netPnl >= 0 ? 'success' : 'warning',
       `[SIM] 포지션 청산: ${pos.displaySymbol} ${pos.side.toUpperCase()}`,
       pos.exchange,
-      `순손익: ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)} (펀딩: $${pos.fundingCollected.toFixed(4)}, PnL: $${pos.unrealizedPnl.toFixed(2)}, 수수료: -$${exitFee.toFixed(2)})`,
+      `순손익: ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)} (펀딩: $${pos.fundingCollected.toFixed(4)}, 가격손익: $${pricePnl.toFixed(2)}, 수수료: -$${((pos.entryFee ?? 0) + exitFee).toFixed(2)})`,
     );
   },
 
@@ -755,8 +771,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         fundingReceived: (pos.fundingReceived ?? 0) + 1,
       };
     });
-
-    if (totalNew === 0) { set({ simPositions: updated }); return; }
 
     // 스나이핑 포지션: 펀딩 수령 후 즉시 자동 청산
     const snipeToClose = updated.filter(p => p.isSnipe && (p.fundingReceived ?? 0) >= 1);
@@ -843,9 +857,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const prev = s._recalcTimeout;
       if (prev) clearTimeout(prev);
       const timeout = setTimeout(() => {
-        const { fundingRates: current } = useFundingStore.getState();
-        const opps = findOpportunities(current);
-        useFundingStore.setState({ opportunities: opps, _recalcTimeout: null });
+        const state = useFundingStore.getState();
+        const opps = findOpportunities(state.fundingRates);
+        // WS 데이터로 기회를 찾으면 lastRatesUpdate도 갱신 → 로딩 화면 해제
+        const patch: Partial<FundingState> = { opportunities: opps, _recalcTimeout: null };
+        if (!state.lastRatesUpdate && state.fundingRates.length > 0) {
+          patch.lastRatesUpdate = Date.now();
+          patch.ratesStatus = 'success';
+        }
+        useFundingStore.setState(patch);
       }, 1000);
 
       // Update sim position markPrices + unrealizedPnl (including entry fee)
@@ -892,11 +912,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const now = Date.now();
     const positionsToClose: string[] = [];
 
-    // 헷지 페어별로 그룹핑 (같은 baseAsset, 같은 타임스탬프 기반)
+    // 헷지 페어별로 그룹핑 (새 pairId 우선, 없으면 레거시 키 fallback)
     const pairGroups = new Map<string, SimPosition[]>();
     for (const pos of simPositions) {
-      // 같은 시간(±1초)에 진입한 같은 코인 = 헷지 페어
-      const pairKey = `${pos.baseAsset}-${Math.floor(pos.openedAt / 1000)}`;
+      const pairKey = pos.pairId ?? `${pos.baseAsset}-${Math.floor(pos.openedAt / 1000)}`;
       const group = pairGroups.get(pairKey) ?? [];
       group.push(pos);
       pairGroups.set(pairKey, group);
