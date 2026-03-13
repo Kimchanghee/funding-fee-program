@@ -25,24 +25,39 @@ function cacheKey(exchanges: ExchangeId[]): string {
   return [...exchanges].sort().join(',');
 }
 
+const PER_EXCHANGE_TIMEOUT = 15_000; // 15s — 한 거래소가 전체를 지연시키지 않도록
+
 async function doFetch(exchanges: ExchangeId[], symbols: string[]): Promise<RatesCache> {
   const results = await Promise.allSettled(
-    exchanges.map((id) => fetchFundingRates(id, undefined, symbols)),
+    exchanges.map((id) =>
+      Promise.race([
+        fetchFundingRates(id, undefined, symbols),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`[${id}] 전체 타임아웃 (${PER_EXCHANGE_TIMEOUT / 1000}s)`)), PER_EXCHANGE_TIMEOUT),
+        ),
+      ]),
+    ),
   );
 
-  const allRates = results
-    .filter((r) => r.status === 'fulfilled')
-    .flatMap((r) => (r as PromiseFulfilledResult<ReturnType<typeof fetchFundingRates> extends Promise<infer T> ? T : never>).value);
-
-  // Map errors with correct exchange index (iterate full results, not filtered)
+  const allRates: FundingRate[] = [];
   const errors: { exchange: ExchangeId; error: string }[] = [];
+
   for (let i = 0; i < results.length; i++) {
-    if (results[i].status === 'rejected') {
+    const r = results[i];
+    if (r.status === 'fulfilled') {
+      allRates.push(...(r.value as FundingRate[]));
+    } else {
       errors.push({
         exchange: exchanges[i],
-        error: (results[i] as PromiseRejectedResult).reason?.message,
+        error: (r as PromiseRejectedResult).reason?.message || 'unknown error',
       });
     }
+  }
+
+  if (allRates.length === 0) {
+    throw new Error(
+      errors.map((e) => `${e.exchange}:${e.error}`).join(' | ') || 'all exchanges failed',
+    );
   }
 
   const opportunities = findOpportunities(allRates);
@@ -51,6 +66,29 @@ async function doFetch(exchanges: ExchangeId[], symbols: string[]): Promise<Rate
   saveSnapshotIfRankChanged(allRates, opportunities).catch(() => {});
 
   return { rates: allRates, opportunities, errors, timestamp: Date.now() };
+}
+
+async function refreshCacheWithRetry(
+  key: string,
+  exchanges: ExchangeId[],
+  symbols: string[],
+): Promise<void> {
+  try {
+    const result = await doFetch(exchanges, symbols);
+    cacheMap.set(key, result);
+    return;
+  } catch {
+    // Retry once after 2s on failure instead of serving stale indefinitely
+    await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+    try {
+      const retry = await doFetch(exchanges, symbols);
+      cacheMap.set(key, retry);
+    } catch {
+      // keep stale cache
+    }
+  } finally {
+    refreshSet.delete(key);
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -85,17 +123,7 @@ export async function GET(req: NextRequest) {
   if (cache) {
     if (!refreshSet.has(key)) {
       refreshSet.add(key);
-      doFetch(exchanges, symbols)
-        .then((result) => { cacheMap.set(key, result); })
-        .catch(() => {
-          // Retry once after 2s on failure instead of serving stale indefinitely
-          setTimeout(() => {
-            doFetch(exchanges, symbols)
-              .then((result) => { cacheMap.set(key, result); })
-              .catch(() => {});
-          }, 2000);
-        })
-        .finally(() => { refreshSet.delete(key); });
+      void refreshCacheWithRetry(key, exchanges, symbols);
     }
 
     return NextResponse.json({
