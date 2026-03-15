@@ -9,19 +9,15 @@ import PositionsTable from '@/components/dashboard/PositionsTable';
 import LogPanel from '@/components/dashboard/LogPanel';
 import ApiPanel from '@/components/dashboard/ApiPanel';
 import StrategyPanel from '@/components/dashboard/StrategyPanel';
-import WsStatusBar from '@/components/dashboard/WsStatusBar';
+import DataStatusBar from '@/components/dashboard/DataStatusBar';
 import FundingHistory from '@/components/dashboard/FundingHistory';
 import { useFundingStore } from '@/store/fundingStore';
-import { useWebSockets } from '@/hooks/useWebSockets';
 
 export default function DashboardPage() {
   const { init, showApiPanel, showStrategyPanel } = useFundingStore();
 
-  useWebSockets();
-
   useEffect(() => {
     init();
-    // Cleanup polling on unmount
     return () => {
       useFundingStore.getState().stopPolling();
     };
@@ -42,8 +38,8 @@ export default function DashboardPage() {
           gap: 16,
         }}
       >
-        {/* WebSocket Status */}
-        <WsStatusBar />
+        {/* Data Fetch Status */}
+        <DataStatusBar />
 
         {/* Best Opportunity (Hero) */}
         <OpportunityCard />
@@ -65,7 +61,7 @@ export default function DashboardPage() {
 
         {/* Footer */}
         <div style={{ textAlign: 'center', padding: '16px 0', fontSize: 11, color: 'var(--color-text-muted)' }}>
-          펀딩피 헷징 프로그램 • 5개 거래소 실시간 모니터링 • 8시간마다 펀딩 수령
+          펀딩피 헷징 프로그램 • 5개 거래소 REST API 모니터링 • 8시간마다 펀딩 수령
         </div>
       </main>
 

@@ -128,6 +128,7 @@ export interface FundingPayment {
 
 export interface SimPosition extends Position {
   simId: string;
+  pairId?: string;          // hedge pair identifier for robust auto-exit grouping
   fundingCollected: number;
   spread: number;           // shortRate - longRate at entry
   nextFundingTime: number;  // ms timestamp of next funding

@@ -3,7 +3,7 @@ import * as ccxt from 'ccxt';
 import type { ApiConfig, ExchangeId, FundingRate, Balance, Position } from '../types';
 import { normalizeFundingRate } from './utils';
 
-// ── Exchange instance cache (avoids re-creating + re-loading markets every call) ──
+// ── Exchange instance cache ──
 const publicExchangeCache = new Map<ExchangeId, any>();
 const MAX_PRIVATE_CACHE = 20;
 const privateExchangeCache = new Map<string, any>();
@@ -17,11 +17,9 @@ function getPublicExchange(id: ExchangeId): any {
 }
 
 function getPrivateExchange(id: ExchangeId, config: ApiConfig): any {
-  // Use full apiKey + secret for unique cache key (avoids collision from partial matching)
   const key = `${id}:${config.apiKey}:${config.secret}:${config.passphrase || ''}`;
   let ex = privateExchangeCache.get(key);
   if (ex) return ex;
-  // Evict oldest entry if cache is full
   if (privateExchangeCache.size >= MAX_PRIVATE_CACHE) {
     const oldest = privateExchangeCache.keys().next().value;
     if (oldest) privateExchangeCache.delete(oldest);
@@ -41,6 +39,7 @@ function createExchange(id: ExchangeId, config?: ApiConfig): any {
     secret: config?.secret || '',
     options: { defaultType: 'swap' },
     enableRateLimit: true,
+    timeout: 15000, // 15s global timeout for all requests
   };
 
   switch (id) {
@@ -61,6 +60,16 @@ function createExchange(id: ExchangeId, config?: ApiConfig): any {
   }
 }
 
+/** Evict a cached exchange instance so the next call creates a fresh one */
+function evictExchangeCache(id: ExchangeId, config?: ApiConfig): void {
+  if (config?.apiKey) {
+    const key = `${id}:${config.apiKey}:${config.secret}:${config.passphrase || ''}`;
+    privateExchangeCache.delete(key);
+  } else {
+    publicExchangeCache.delete(id);
+  }
+}
+
 function normalizeFr(id: ExchangeId, sym: string, fr: any): FundingRate | null {
   if (fr.fundingRate === undefined || fr.fundingRate === null) return null;
   return normalizeFundingRate(
@@ -76,6 +85,33 @@ function normalizeFr(id: ExchangeId, sym: string, fr: any): FundingRate | null {
   );
 }
 
+// ── Load markets with timeout and retry ──
+async function ensureMarkets(ex: any, id: ExchangeId, config?: ApiConfig): Promise<void> {
+  try {
+    await Promise.race([
+      ex.loadMarkets() as Promise<unknown>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[${id}] loadMarkets timeout (10s)`)), 10000),
+      ),
+    ]);
+  } catch {
+    // First attempt failed — evict cache, create fresh instance, retry once
+    evictExchangeCache(id, config);
+    const freshEx = config?.apiKey ? getPrivateExchange(id, config) : getPublicExchange(id);
+    await Promise.race([
+      freshEx.loadMarkets() as Promise<unknown>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[${id}] loadMarkets retry timeout (10s)`)), 10000),
+      ),
+    ]);
+  }
+}
+
+/**
+ * Fetch funding rates for a single exchange.
+ * Strategy: bulk fetch first → fallback to per-symbol fetch on failure.
+ * Each step has its own timeout to prevent hangs.
+ */
 export async function fetchFundingRates(
   id: ExchangeId,
   config?: ApiConfig,
@@ -84,12 +120,14 @@ export async function fetchFundingRates(
   const ex = makeExchange(id, config);
   const symbolSet = symbols ? new Set(symbols) : null;
 
+  await ensureMarkets(ex, id, config);
+
   try {
-    // ── Bulk fetch (1 API call) with 20s timeout ──────────────────────────
+    // ── Bulk fetch (1 API call) with 12s timeout ──
     const frs = await Promise.race([
       ex.fetchFundingRates() as Promise<Record<string, any>>,
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout`)), 10000),
+        setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout (12s)`)), 12000),
       ),
     ]);
     const results: FundingRate[] = [];
@@ -101,23 +139,40 @@ export async function fetchFundingRates(
     }
     return results;
   } catch {
-    // ── Fallback: individual fetches in parallel with per-symbol timeout ──
-    if (!symbols || symbols.length === 0) throw new Error(`[${id}] fetchFundingRates failed`);
+    // ── Fallback: per-symbol fetch ──
+    if (!symbols || symbols.length === 0) {
+      evictExchangeCache(id, config);
+      throw new Error(`[${id}] fetchFundingRates bulk failed, no symbols for fallback`);
+    }
+
     const results: FundingRate[] = [];
-    await Promise.allSettled(
-      symbols.map(async (sym) => {
-        try {
-          const fr = await Promise.race([
-            ex.fetchFundingRate(sym),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error(`[${id}] fetchFundingRate(${sym}) timeout`)), 8000),
-            ),
-          ]);
-          const normalized = normalizeFr(id, sym, fr);
-          if (normalized) results.push(normalized);
-        } catch { /* skip */ }
-      }),
-    );
+    // Batch symbols into chunks of 10 to avoid overwhelming
+    const chunks: string[][] = [];
+    for (let i = 0; i < symbols.length; i += 10) {
+      chunks.push(symbols.slice(i, i + 10));
+    }
+
+    for (const chunk of chunks) {
+      await Promise.allSettled(
+        chunk.map(async (sym) => {
+          try {
+            const fr = await Promise.race([
+              ex.fetchFundingRate(sym),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error(`timeout`)), 8000),
+              ),
+            ]);
+            const normalized = normalizeFr(id, sym, fr);
+            if (normalized) results.push(normalized);
+          } catch { /* skip failed symbol */ }
+        }),
+      );
+    }
+
+    if (results.length === 0) {
+      evictExchangeCache(id, config);
+      throw new Error(`[${id}] all fetch methods failed`);
+    }
     return results;
   }
 }
@@ -192,10 +247,8 @@ export async function openPosition(
 ): Promise<{ orderId: string; price: number; amount: number }> {
   const ex = makeExchange(id, config);
   try {
-    // Set leverage
     await ex.setLeverage(leverage, symbol).catch(() => {});
 
-    // Get mark price to calculate quantity
     const ticker = await ex.fetchTicker(symbol);
     const price = (ticker.last as number) || (ticker.close as number) || 0;
     if (!price) throw new Error('Could not fetch price');
@@ -213,7 +266,7 @@ export async function openPosition(
     return {
       orderId: (order.id as string) || '',
       price: (order.average as number) || price,
-      amount: (order.filled as number) ?? contractAmount, // actual filled qty for accurate rollback
+      amount: (order.filled as number) ?? contractAmount,
     };
   } catch (err) {
     throw new Error(`[${id}] openPosition failed: ${(err as Error).message}`);
@@ -251,11 +304,9 @@ export async function fetchFundingHistory(
   try {
     let history: any[] = [];
 
-    // Different exchanges have different methods
     if (typeof ex.fetchFundingHistory === 'function') {
       history = await ex.fetchFundingHistory(symbol, undefined, limit);
     } else if (typeof ex.fetchIncome === 'function') {
-      // Binance-style
       history = await ex.fetchIncome({ incomeType: 'FUNDING_FEE', limit });
     }
 

@@ -7,7 +7,7 @@ import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, SIM_INITIAL_BALANCE } from '@/lib/types';
 import { estimateProfit } from '@/lib/opportunities';
 
-function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: number; side: 'long' | 'short' }) {
+function ExchangeBadge({ exchange, rate, side, baseAsset }: { exchange: string; rate: number; side: 'long' | 'short'; baseAsset: string }) {
   const id = exchange as keyof typeof EXCHANGE_COLORS;
   const color = EXCHANGE_COLORS[id] || '#94a3b8';
   return (
@@ -52,7 +52,7 @@ function ExchangeBadge({ exchange, rate, side }: { exchange: string; rate: numbe
         {EXCHANGE_NAMES[id as keyof typeof EXCHANGE_NAMES] || exchange.toUpperCase()}
       </span>
       <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--color-text)', letterSpacing: '-0.01em' }}>
-        {exchange.toUpperCase().slice(0, 3)}USDT
+        {baseAsset}/USDT
       </span>
       {(() => {
         // 내 포지션 기준 실효 금액: 숏은 rate 그대로, 롱은 부호 반전
@@ -296,6 +296,7 @@ export default function OpportunityCard() {
           exchange={best.shortExchange}
           rate={best.shortRate}
           side="short"
+          baseAsset={best.baseAsset}
         />
 
         {/* Center metrics */}
@@ -557,6 +558,7 @@ export default function OpportunityCard() {
           exchange={best.longExchange}
           rate={best.longRate}
           side="long"
+          baseAsset={best.baseAsset}
         />
       </div>
     </div>

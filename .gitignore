@@ -33,5 +33,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# data snapshots (local logging)
+# data (local logging, snapshots, trade history)
 /data/snapshots/
+/data/logs/
+/data/trades/

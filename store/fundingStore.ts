@@ -17,9 +17,6 @@ import type {
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs } from '@/lib/keyStore';
 import { estimateProfit, findOpportunities } from '@/lib/opportunities';
-import type { WsRateUpdate } from '@/lib/websocket/parsers';
-
-type WsStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
 
 // ─────────────────────────────────────────────
 // Fee constants
@@ -53,9 +50,12 @@ interface FundingState {
   connectedExchanges: ExchangeId[];
   lastRatesUpdate: number | null;
   lastPositionsUpdate: number | null;
-  wsStatuses: Partial<Record<ExchangeId, WsStatus>>;
   ratesStatus: 'idle' | 'loading' | 'success' | 'error';
   ratesError: string | null;
+
+  // Per-exchange fetch status
+  exchangeFetchStatus: Partial<Record<ExchangeId, 'ok' | 'error' | 'loading'>>;
+  exchangeFetchErrors: Partial<Record<ExchangeId, string>>;
 
   // Simulation
   simulationMode: boolean;
@@ -68,7 +68,7 @@ interface FundingState {
   automationStartedAt: number | null;
   automationStats: { fundingCollected: number; positionsOpened: number; autoExits: number };
 
-  // Snipe mode (펀딩 직전 진입 → 수령 → 즉시 청산)
+  // Snipe mode
   snipeScheduled: boolean;
   snipeTargetTime: number | null;
   _snipeTimer: ReturnType<typeof setTimeout> | null;
@@ -76,14 +76,13 @@ interface FundingState {
   // UI state
   showApiPanel: boolean;
   showStrategyPanel: boolean;
-  rateFilter: string; // base asset filter
+  rateFilter: string;
   exchangeFilter: ExchangeId[];
   positionToClose: Position | null;
 
   // Polling interval handles
   _ratesInterval: ReturnType<typeof setInterval> | null;
   _positionsInterval: ReturnType<typeof setInterval> | null;
-  _recalcTimeout: ReturnType<typeof setTimeout> | null;
 
   // Actions
   init: () => void;
@@ -126,9 +125,6 @@ interface FundingState {
   setExchangeFilter: (v: ExchangeId[]) => void;
   setPositionToClose: (v: Position | null) => void;
 
-  // WebSocket actions
-  updateFundingRateWs: (update: WsRateUpdate) => void;
-  setWsStatus: (exchange: ExchangeId, status: WsStatus) => void;
   fetchFundingHistory: () => Promise<void>;
 }
 
@@ -146,7 +142,7 @@ function makeApiHeaders(config: ApiConfig): Record<string, string> {
 }
 
 let logCounter = 0;
-const SIM_BALANCE_PER_EXCHANGE = 2000; // 각 거래소 시뮬 초기 잔고 (USDT)
+const SIM_BALANCE_PER_EXCHANGE = 2000;
 
 function makeLog(level: LogLevel, message: string, exchange?: ExchangeId, detail?: string): LogEntry {
   return {
@@ -157,6 +153,67 @@ function makeLog(level: LogLevel, message: string, exchange?: ExchangeId, detail
     exchange,
     detail,
   };
+}
+
+// ─────────────────────────────────────────────
+// File persistence: batch log/trade sending
+// ─────────────────────────────────────────────
+interface PendingLog {
+  timestamp: number;
+  level: string;
+  message: string;
+  exchange?: string;
+  detail?: string;
+}
+
+interface PendingTrade {
+  timestamp: number;
+  type: string;
+  simulation: boolean;
+  [key: string]: unknown;
+}
+
+let logBatch: PendingLog[] = [];
+let tradeBatch: PendingTrade[] = [];
+let logFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let tradeFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function queueLog(level: string, message: string, exchange?: string, detail?: string) {
+  logBatch.push({ timestamp: Date.now(), level, message, exchange, detail });
+  if (!logFlushTimer) {
+    logFlushTimer = setTimeout(flushLogs, 2000); // 2초마다 배치 전송
+  }
+}
+
+function queueTrade(event: PendingTrade) {
+  tradeBatch.push(event);
+  if (!tradeFlushTimer) {
+    tradeFlushTimer = setTimeout(flushTrades, 1000); // 거래는 1초마다 즉시 전송
+  }
+}
+
+function flushLogs() {
+  logFlushTimer = null;
+  if (logBatch.length === 0) return;
+  const entries = [...logBatch];
+  logBatch = [];
+  fetch('/api/logs/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entries }),
+  }).catch(() => { /* silent — don't break UI for log persistence */ });
+}
+
+function flushTrades() {
+  tradeFlushTimer = null;
+  if (tradeBatch.length === 0) return;
+  const events = [...tradeBatch];
+  tradeBatch = [];
+  fetch('/api/trades/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ events }),
+  }).catch(() => { /* silent */ });
 }
 
 // ─────────────────────────────────────────────
@@ -172,11 +229,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   strategyConfig: {
     investmentUSDT: 1000,
     leverage: 5,
-    minSpreadPercent: 0.25, // 왕복 수수료(0.2%) + 마진
+    minSpreadPercent: 0.25,
     autoExecute: false,
     closeOnSpreadReverse: false,
     maxPositionAgeHours: 72,
-    compoundInvesting: true, // 복리 모드 기본
+    compoundInvesting: true,
   },
   fundingHistory: [],
   simulationMode: true,
@@ -196,9 +253,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   connectedExchanges: [],
   lastRatesUpdate: null,
   lastPositionsUpdate: null,
-  wsStatuses: {},
   ratesStatus: 'idle',
   ratesError: null,
+  exchangeFetchStatus: {},
+  exchangeFetchErrors: {},
   showApiPanel: false,
   showStrategyPanel: false,
   rateFilter: '',
@@ -206,7 +264,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   positionToClose: null,
   _ratesInterval: null,
   _positionsInterval: null,
-  _recalcTimeout: null,
 
   // ── Init ──────────────────────────────────────
   init() {
@@ -215,7 +272,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const connected = Object.keys(saved) as ExchangeId[];
     set({ connectedExchanges: connected });
     get().addLog('info', '펀딩피 프로그램 초기화 완료', undefined, `저장된 거래소: ${connected.join(', ') || '없음'}`);
-    // 즉시 loading 상태로 전환 (idle → loading) → "초기화 중..." 표시 최소화
     set({ ratesStatus: 'loading' });
     get().refreshRates();
     get().startPolling();
@@ -250,12 +306,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     });
   },
 
-  // ── Refresh rates ─────────────────────────────
+  // ── Refresh rates (REST only) ─────────────────
   async refreshRates() {
-    if (get().isLoadingRates) return; // prevent duplicate requests
+    if (get().isLoadingRates) return;
     set({ isLoadingRates: true, ratesStatus: 'loading', ratesError: null });
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timer = setTimeout(() => controller.abort(), 20000);
     try {
       const res = await fetch('/api/funding-rates', { signal: controller.signal });
       const json = await res.json() as {
@@ -265,20 +321,60 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           rates: FundingRate[];
           opportunities: ArbitrageOpportunity[];
           errors: { exchange: ExchangeId; error: string }[];
+          exchangeStatus: Record<string, 'ok' | 'error'>;
         };
         timestamp: number;
       };
 
       if (json.success) {
+        // Update per-exchange status
+        const fetchStatus: Partial<Record<ExchangeId, 'ok' | 'error'>> = {};
+        const fetchErrors: Partial<Record<ExchangeId, string>> = {};
+        if (json.data.exchangeStatus) {
+          for (const [ex, status] of Object.entries(json.data.exchangeStatus)) {
+            fetchStatus[ex as ExchangeId] = status;
+          }
+        }
+        if (json.data.errors) {
+          for (const e of json.data.errors) {
+            fetchStatus[e.exchange] = 'error';
+            fetchErrors[e.exchange] = e.error;
+          }
+        }
+
         set({
           fundingRates: json.data.rates,
           opportunities: json.data.opportunities,
           lastRatesUpdate: json.timestamp,
           ratesStatus: 'success',
           ratesError: null,
+          exchangeFetchStatus: fetchStatus,
+          exchangeFetchErrors: fetchErrors,
         });
-        get().addLog('success', `펀딩률 업데이트: ${json.data.rates.length}개 데이터`, undefined,
-          `기회: ${json.data.opportunities.length}개`);
+
+        // Update sim position mark prices from new funding rates
+        const { simPositions, fundingRates: newRates } = get();
+        if (simPositions.length > 0) {
+          const updatedSim = simPositions.map(pos => {
+            const liveRate = newRates.find(
+              r => r.exchange === pos.exchange && r.symbol === pos.symbol,
+            );
+            if (!liveRate) return pos;
+            const mp = liveRate.markPrice || pos.markPrice;
+            const pricePnl = pos.side === 'short'
+              ? (pos.entryPrice - mp) * pos.size
+              : (mp - pos.entryPrice) * pos.size;
+            const pnl = pricePnl - (pos.entryFee ?? 0);
+            return {
+              ...pos,
+              markPrice: mp,
+              unrealizedPnl: pnl,
+              unrealizedPnlPercent: (pnl / pos.margin) * 100,
+              fundingRate: liveRate.rate,
+            };
+          });
+          set({ simPositions: updatedSim });
+        }
 
         if (json.data.errors.length > 0) {
           for (const e of json.data.errors) {
@@ -286,7 +382,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           }
         }
       } else {
-        // Server returned success: false — an actual error
         const errMsg = json.error || '서버에서 펀딩률 데이터를 가져오지 못했습니다';
         set({ ratesStatus: 'error', ratesError: errMsg });
         get().addLog('error', '펀딩률 조회 실패', undefined, errMsg);
@@ -294,8 +389,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     } catch (err) {
       const name = (err as Error).name;
       if (name === 'AbortError') {
-        set({ ratesStatus: 'error', ratesError: '펀딩률 조회 타임아웃 (15s)' });
-        get().addLog('warning', '펀딩률 조회 타임아웃 (15s) — 10초 후 재시도', undefined);
+        set({ ratesStatus: 'error', ratesError: '펀딩률 조회 타임아웃 (20s)' });
+        get().addLog('warning', '펀딩률 조회 타임아웃 (20s) — 다음 주기 재시도');
       } else {
         const msg = (err as Error).message;
         set({ ratesStatus: 'error', ratesError: msg });
@@ -354,16 +449,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     if (s._ratesInterval) clearInterval(s._ratesInterval);
     if (s._positionsInterval) clearInterval(s._positionsInterval);
 
+    // 8초 간격 펀딩률 폴링 (REST only, WS 없이 빠르게)
     const ratesInterval = setInterval(() => {
       get().refreshRates();
-    }, 10_000); // 10s — faster refresh for real-time arbitrage
+    }, 8_000);
 
     const positionsInterval = setInterval(() => {
       get().refreshPositions();
       get().refreshBalances();
       get().tickSimFunding();
       get().checkAutoExit();
-    }, 15_000); // 15s
+    }, 15_000);
 
     set({ _ratesInterval: ratesInterval, _positionsInterval: positionsInterval });
   },
@@ -387,10 +483,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         undefined,
         `${opportunity.baseAsset} ${opportunity.shortExchange}↔${opportunity.longExchange} | 왕복수수료: ${ROUND_TRIP_FEE_PERCENT}%`,
       );
+      queueTrade({
+        timestamp: Date.now(), type: 'guard_block', simulation: get().simulationMode,
+        baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
+        spreadPercent: opportunity.spreadPercent, reason: `스프레드 ${opportunity.spreadPercent.toFixed(4)}% < 최소 ${effectiveMinSpread}%`,
+      });
       return false;
     }
 
-    // Guard: 순수익 검증 — 스프레드 수익이 왕복 수수료를 초과해야 진입
+    // Guard: 순수익 검증
     const notionalEst = (strategyConfig.compoundInvesting
       ? Math.min(
           (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
@@ -405,12 +506,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         undefined,
         `스프레드: ${opportunity.spreadPercent.toFixed(4)}% | 필요 최소: ${ROUND_TRIP_FEE_PERCENT}%`,
       );
+      queueTrade({
+        timestamp: Date.now(), type: 'guard_block', simulation: get().simulationMode,
+        baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
+        spreadPercent: opportunity.spreadPercent, reason: `수익성 실패: 펀딩 $${estFundingRevenue.toFixed(2)} ≤ 수수료 $${estTotalFees.toFixed(2)}`,
+      });
       return false;
     }
 
     // ── Simulation branch ──────────────────────
     if (simulationMode) {
-      // compoundInvesting: use proportional balance instead of fixed amount
       const margin = strategyConfig.compoundInvesting
         ? Math.min(
             (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
@@ -428,11 +533,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         return false;
       }
       const notional = margin * leverage;
-      const entryFee = notional * TAKER_FEE; // per-side entry fee
+      const entryFee = notional * TAKER_FEE;
       const totalCostPerSide = margin + entryFee;
       const { shortExchange, longExchange } = opportunity;
 
-      // 시뮬레이션: 잔고 부족 시 자동 충전 (시뮬이므로 차단하지 않음)
       if ((simBalances[shortExchange] ?? 0) < totalCostPerSide) {
         const topUp = totalCostPerSide - (simBalances[shortExchange] ?? 0) + SIM_BALANCE_PER_EXCHANGE;
         set(s => ({ simBalances: { ...s.simBalances, [shortExchange]: (s.simBalances[shortExchange] ?? 0) + topUp } }));
@@ -511,7 +615,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           [longExchange]: s.simBalances[longExchange] - totalCostPerSide,
         },
       }));
-      // 자동화 활성화 + 통계 업데이트
       if (!get().automationActive) {
         get().startAutomation();
       }
@@ -528,6 +631,25 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         undefined,
         `숏:${shortExchange.toUpperCase()} 롱:${longExchange.toUpperCase()} | 8h순수익: $${netProfit.toFixed(2)} (펀딩: $${perFunding.toFixed(2)} - 수수료: $${totalRoundTripFees.toFixed(2)})`,
       );
+      // Persist trade event
+      queueTrade({
+        timestamp: Date.now(),
+        type: isSnipe ? 'snipe_entry' : 'entry',
+        simulation: true,
+        baseAsset: opportunity.baseAsset,
+        shortExchange,
+        longExchange,
+        spread: opportunity.spread,
+        spreadPercent: opportunity.spreadPercent,
+        margin,
+        leverage,
+        notional,
+        entryFee,
+        netProfit,
+        perFunding,
+        totalRoundTripFees,
+        pairId,
+      });
       return true;
     }
 
@@ -544,16 +666,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return false;
     }
 
-    // 복리 모드: 실제 잔고 기반 투자금 계산
     let realInvestment = strategyConfig.investmentUSDT;
     if (strategyConfig.compoundInvesting) {
       const shortBal = balances[opportunity.shortExchange]?.availableUSDT ?? 0;
       const longBal = balances[opportunity.longExchange]?.availableUSDT ?? 0;
-      realInvestment = Math.min(shortBal, longBal) * 0.9; // 잔고의 90%
+      realInvestment = Math.min(shortBal, longBal) * 0.9;
       if (realInvestment < strategyConfig.investmentUSDT * 0.5) {
         get().addLog('warning', `[복리] 실잔고 부족 — 최소 투자금으로 대체`, undefined,
           `숏: $${shortBal.toFixed(0)} 롱: $${longBal.toFixed(0)} → 투자금: $${realInvestment.toFixed(0)}`);
-        realInvestment = strategyConfig.investmentUSDT; // fallback
+        realInvestment = strategyConfig.investmentUSDT;
       }
     }
 
@@ -612,11 +733,23 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         );
       }
 
-      // Refresh positions after entry
       setTimeout(() => get().refreshPositions(), 2000);
+      // Persist real trade result
+      queueTrade({
+        timestamp: Date.now(), type: 'entry', simulation: false,
+        baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
+        spread: opportunity.spread, spreadPercent: opportunity.spreadPercent,
+        margin: realInvestment, leverage: strategyConfig.leverage,
+        detail: `short:${json.short?.success ? 'OK' : json.short?.error} long:${json.long?.success ? 'OK' : json.long?.error}`,
+        success: json.success,
+      });
       return json.success === true;
     } catch (err) {
       get().addLog('error', '전략 실행 중 오류 발생', undefined, (err as Error).message);
+      queueTrade({
+        timestamp: Date.now(), type: 'error', simulation: false,
+        baseAsset: opportunity.baseAsset, reason: (err as Error).message,
+      });
       return false;
     } finally {
       set({ strategyRunning: false });
@@ -693,6 +826,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set((s) => ({
       logs: [makeLog(level, message, exchange, detail), ...s.logs].slice(0, 500),
     }));
+    // Auto-persist to file
+    queueLog(level, message, exchange, detail);
   },
 
   clearLogs() {
@@ -723,7 +858,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const pricePnl = pos.side === 'short'
       ? (pos.entryPrice - pos.markPrice) * pos.size
       : (pos.markPrice - pos.entryPrice) * pos.size;
-    // 펀딩은 tickSimFunding에서 잔고에 즉시 반영되므로 청산 시 중복 반영하지 않는다.
     const returnAmount = pos.margin + pricePnl - exitFee;
     const netPnl = pricePnl + pos.fundingCollected - (pos.entryFee ?? 0) - exitFee;
     set(s => ({
@@ -735,6 +869,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       pos.exchange,
       `순손익: ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)} (펀딩: $${pos.fundingCollected.toFixed(4)}, 가격손익: $${pricePnl.toFixed(2)}, 수수료: -$${((pos.entryFee ?? 0) + exitFee).toFixed(2)})`,
     );
+    queueTrade({
+      timestamp: Date.now(), type: pos.isSnipe ? 'snipe_exit' : 'exit', simulation: true,
+      baseAsset: pos.baseAsset, exchange: pos.exchange, side: pos.side, symbol: pos.symbol,
+      pnl: netPnl, fundingAmount: pos.fundingCollected, exitFee,
+      entryFee: pos.entryFee ?? 0, pricePnl,
+      detail: `margin:$${pos.margin.toFixed(2)} size:${pos.size.toFixed(6)} entry:${pos.entryPrice} exit:${pos.markPrice}`,
+    });
   },
 
   tickSimFunding() {
@@ -746,15 +887,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const updated = simPositions.map(pos => {
       if (pos.nextFundingTime > now) return pos;
-      // 실시간 펀딩률 조회 (없으면 진입 시 rate fallback)
       const liveRate = fundingRates.find(
         r => r.exchange === pos.exchange && r.symbol === pos.symbol,
       );
       const currentRate = liveRate?.rate ?? pos.fundingRate;
-      // Effective funding from this position's perspective
       const funding = pos.side === 'short'
-        ? pos.sizeUSD * currentRate            // short: positive rate = receive
-        : pos.sizeUSD * (-currentRate);         // long:  negative rate = receive
+        ? pos.sizeUSD * currentRate
+        : pos.sizeUSD * (-currentRate);
       totalNew += funding;
       balanceDelta[pos.exchange] = (balanceDelta[pos.exchange] ?? 0) + funding;
       get().addLog(
@@ -763,16 +902,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         pos.exchange,
         `$${Math.abs(funding).toFixed(4)} (${(currentRate * 100).toFixed(4)}%${liveRate ? '' : ' [진입시rate]'})`,
       );
+      queueTrade({
+        timestamp: Date.now(), type: 'funding', simulation: true,
+        baseAsset: pos.baseAsset, exchange: pos.exchange, side: pos.side, symbol: pos.symbol,
+        fundingAmount: funding, fundingRate: currentRate,
+        detail: `sizeUSD:$${pos.sizeUSD.toFixed(2)} cumulative:$${(pos.fundingCollected + funding).toFixed(4)}`,
+      });
       return {
         ...pos,
-        fundingRate: currentRate, // 최신 rate로 갱신
+        fundingRate: currentRate,
         fundingCollected: pos.fundingCollected + funding,
         nextFundingTime: pos.nextFundingTime + 8 * 3600 * 1000,
         fundingReceived: (pos.fundingReceived ?? 0) + 1,
       };
     });
 
-    // 스나이핑 포지션: 펀딩 수령 후 즉시 자동 청산
     const snipeToClose = updated.filter(p => p.isSnipe && (p.fundingReceived ?? 0) >= 1);
     if (snipeToClose.length > 0) {
       setTimeout(() => {
@@ -784,9 +928,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           undefined,
           `총 수령: $${snipeToClose.reduce((s, p) => s + p.fundingCollected, 0).toFixed(4)}`,
         );
-        // 스나이핑 상태 리셋
         set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
-      }, 500); // 약간의 딜레이로 UX 자연스럽게
+      }, 500);
     }
 
     set(s => {
@@ -813,76 +956,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   setExchangeFilter: (v) => set({ exchangeFilter: v }),
   setPositionToClose: (v) => set({ positionToClose: v }),
 
-  // ── WebSocket ─────────────────────────────────
-  setWsStatus(exchange, status) {
-    set((s) => ({ wsStatuses: { ...s.wsStatuses, [exchange]: status } }));
-  },
-
-  updateFundingRateWs(update) {
-    set((s) => {
-      const idx = s.fundingRates.findIndex(
-        (r) => r.exchange === update.exchange && r.symbol === update.symbol,
-      );
-      let next: FundingRate[];
-      if (idx >= 0) {
-        next = [...s.fundingRates];
-        next[idx] = {
-          ...next[idx],
-          rate: update.rate,
-          ratePercent: update.rate * 100,
-          markPrice: update.markPrice || next[idx].markPrice,
-          nextFundingTime: update.nextFundingTime,
-          updatedAt: Date.now(),
-        };
-      } else {
-        // New symbol from WS — add it
-        next = [
-          ...s.fundingRates,
-          {
-            exchange: update.exchange,
-            symbol: update.symbol,
-            displaySymbol: `${update.baseAsset}/USDT`,
-            baseAsset: update.baseAsset,
-            rate: update.rate,
-            ratePercent: update.rate * 100,
-            markPrice: update.markPrice,
-            nextFundingTime: update.nextFundingTime,
-            intervalHours: 8,
-            updatedAt: Date.now(),
-          },
-        ];
-      }
-
-      // Debounce opportunity recalculation (1s — fast enough for real-time)
-      const prev = s._recalcTimeout;
-      if (prev) clearTimeout(prev);
-      const timeout = setTimeout(() => {
-        const state = useFundingStore.getState();
-        const opps = findOpportunities(state.fundingRates);
-        // WS 데이터로 기회를 찾으면 lastRatesUpdate도 갱신 → 로딩 화면 해제
-        const patch: Partial<FundingState> = { opportunities: opps, _recalcTimeout: null };
-        if (!state.lastRatesUpdate && state.fundingRates.length > 0) {
-          patch.lastRatesUpdate = Date.now();
-          patch.ratesStatus = 'success';
-        }
-        useFundingStore.setState(patch);
-      }, 1000);
-
-      // Update sim position markPrices + unrealizedPnl (including entry fee)
-      const simPositions = get().simPositions.map(pos => {
-        if (pos.baseAsset !== update.baseAsset || pos.exchange !== update.exchange) return pos;
-        const mp = update.markPrice || pos.markPrice;
-        const pricePnl = pos.side === 'short'
-          ? (pos.entryPrice - mp) * pos.size
-          : (mp - pos.entryPrice) * pos.size;
-        const pnl = pricePnl - (pos.entryFee ?? 0); // 진입 수수료 차감
-        return { ...pos, markPrice: mp, unrealizedPnl: pnl, unrealizedPnlPercent: (pnl / pos.margin) * 100, fundingRate: update.rate };
-      });
-
-      return { fundingRates: next, simPositions, _recalcTimeout: timeout };
-    });
-  },
-
   // ── Automation ──────────────────────────────
   startAutomation() {
     set({
@@ -890,7 +963,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       automationStartedAt: Date.now(),
       automationStats: { fundingCollected: 0, positionsOpened: 0, autoExits: 0 },
     });
-    get().addLog('success', '🤖 풀 자동화 시작 — 스프레드 감시 + 자동 청산 활성화');
+    get().addLog('success', '풀 자동화 시작 — 스프레드 감시 + 자동 청산 활성화');
   },
 
   stopAutomation() {
@@ -899,7 +972,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const hours = (elapsed / 3600000).toFixed(1);
     set({ automationActive: false, automationStartedAt: null });
     get().addLog('info',
-      `🤖 자동화 중지 — ${hours}시간 운영`,
+      `자동화 중지 — ${hours}시간 운영`,
       undefined,
       `진입: ${stats.positionsOpened}회 | 자동청산: ${stats.autoExits}회 | 펀딩수령: $${stats.fundingCollected.toFixed(4)}`,
     );
@@ -912,7 +985,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const now = Date.now();
     const positionsToClose: string[] = [];
 
-    // 헷지 페어별로 그룹핑 (새 pairId 우선, 없으면 레거시 키 fallback)
     const pairGroups = new Map<string, SimPosition[]>();
     for (const pos of simPositions) {
       const pairKey = pos.pairId ?? `${pos.baseAsset}-${Math.floor(pos.openedAt / 1000)}`;
@@ -927,7 +999,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const longPos = pair.find(p => p.side === 'long');
       if (!shortPos || !longPos) continue;
 
-      // 1. 스프레드 역전 감지
       if (strategyConfig.closeOnSpreadReverse) {
         const currentShortRate = fundingRates.find(
           r => r.exchange === shortPos.exchange && r.symbol === shortPos.symbol,
@@ -940,7 +1011,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (currentSpread <= 0) {
           positionsToClose.push(shortPos.simId, longPos.simId);
           get().addLog('warning',
-            `🔄 [자동청산] ${shortPos.baseAsset} 스프레드 역전 감지`,
+            `[자동청산] ${shortPos.baseAsset} 스프레드 역전 감지`,
             undefined,
             `진입 스프레드: +${(shortPos.spread * 100).toFixed(4)}% → 현재: ${(currentSpread * 100).toFixed(4)}%`,
           );
@@ -948,12 +1019,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }
       }
 
-      // 2. 최대 보유시간 초과
       const ageHours = (now - shortPos.openedAt) / 3600000;
       if (ageHours >= strategyConfig.maxPositionAgeHours) {
         positionsToClose.push(shortPos.simId, longPos.simId);
         get().addLog('warning',
-          `⏰ [자동청산] ${shortPos.baseAsset} 최대 보유시간 ${strategyConfig.maxPositionAgeHours}시간 초과`,
+          `[자동청산] ${shortPos.baseAsset} 최대 보유시간 ${strategyConfig.maxPositionAgeHours}시간 초과`,
           undefined,
           `보유시간: ${ageHours.toFixed(1)}시간`,
         );
@@ -961,7 +1031,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }
 
-    // 청산 실행
     if (positionsToClose.length > 0) {
       for (const simId of positionsToClose) {
         if (simulationMode) {
@@ -977,18 +1046,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
   },
 
-  // ── Snipe (펀딩 직전 진입 → 수령 → 즉시 청산) ──
+  // ── Snipe ──
   scheduleSnipe(opportunity) {
     const { _snipeTimer } = get();
     if (_snipeTimer) clearTimeout(_snipeTimer);
 
     const now = Date.now();
-    const ENTRY_BEFORE_MS = 30_000; // 펀딩 30초 전 진입
+    const ENTRY_BEFORE_MS = 30_000;
     const targetTime = opportunity.nextFundingTime;
     const delay = Math.max(0, targetTime - now - ENTRY_BEFORE_MS);
 
     if (delay <= 0) {
-      // 이미 펀딩 시간 임박 → 즉시 진입 (최적 기회로 전환 가능)
       const { opportunities: currentOpps } = get();
       const bestNow = currentOpps.length > 0
         ? currentOpps.reduce((best, o) => o.spread > best.spread ? o : best, currentOpps[0])
@@ -996,7 +1064,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const target = bestNow && bestNow.spread > ROUND_TRIP_FEE ? bestNow : opportunity;
       const switched = target.baseAsset !== opportunity.baseAsset;
 
-      // 수익성 검증: 스프레드가 왕복 수수료를 커버 못하면 진입 거부
       if (target.spread <= ROUND_TRIP_FEE) {
         get().addLog('warning',
           `[스나이핑] 스프레드 ${target.spreadPercent.toFixed(4)}%가 왕복수수료 ${ROUND_TRIP_FEE_PERCENT}% 이하 — 진입 거부`,
@@ -1031,11 +1098,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return;
     }
 
-    // 실행 시점에 전체 opportunities에서 최적 기회를 선택 (예약 코인에 고정하지 않음)
     const capturedOpportunity = { ...opportunity };
     const timer = setTimeout(() => {
       const { opportunities } = get();
-      // 전체 기회 중 스프레드가 가장 큰 최적 기회를 선택
       const bestNow = opportunities.length > 0
         ? opportunities.reduce((best, o) => o.spread > best.spread ? o : best, opportunities[0])
         : null;
@@ -1069,7 +1134,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             `펀딩까지 ~30초 | 스프레드: +${target.spreadPercent.toFixed(4)}%${switched ? ` [${capturedOpportunity.baseAsset}에서 전환]` : ''}`,
           );
         } else {
-          // 진입 실패 시 스나이핑 상태 해제
           set({ snipeScheduled: false, snipeTargetTime: null, _snipeTimer: null });
           get().addLog('error', `[스나이핑] ${target.baseAsset} 자동 진입 실패 — 스나이핑 해제`);
         }
