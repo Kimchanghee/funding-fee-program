@@ -1650,10 +1650,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       ),
     ]);
 
-    const getIntervalBucket = (ms: number): '1h' | '4h' | '8h' => {
-      const hours = ms / 3600000;
-      if (hours <= 1.5) return '1h';
-      if (hours <= 5) return '4h';
+    // 다음 펀딩까지 남은 시간 기준 버킷 (주기가 아닌 실제 시점)
+    const now = Date.now();
+    const getTimeBucket = (nextFundingTime: number): '1h' | '4h' | '8h' => {
+      const hoursLeft = Math.max(0, (nextFundingTime - now) / 3600000);
+      if (hoursLeft <= 1.5) return '1h';
+      if (hoursLeft <= 5) return '4h';
       return '8h';
     };
 
@@ -1678,13 +1680,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (!snipeKey.endsWith(`:${mode}`)) continue;
         const asset = snipeKey.split(':')[0];
         const opp = opportunities.find(o => o.baseAsset === asset);
-        if (opp) scheduledBuckets.add(getIntervalBucket(opp.fundingIntervalMs ?? 8 * 3600000));
+        if (opp) scheduledBuckets.add(getTimeBucket(opp.nextFundingTime));
       }
 
       // 1) 펀딩 주기별 그룹화 (이미 해당 주기에 스케줄 있으면 제외)
       const buckets: Record<string, typeof filtered> = { '1h': [], '4h': [], '8h': [] };
       for (const opp of filtered) {
-        const bucket = getIntervalBucket(opp.fundingIntervalMs ?? 8 * 3600000);
+        const bucket = getTimeBucket(opp.nextFundingTime);
         if (scheduledBuckets.has(bucket)) continue;
         buckets[bucket].push(opp);
       }
@@ -1715,7 +1717,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       // 4) 스케줄 등록
       for (const opp of result) {
-        const bucket = getIntervalBucket(opp.fundingIntervalMs ?? 8 * 3600000);
+        const bucket = getTimeBucket(opp.nextFundingTime);
         get().addLog('info',
           `[스케줄-${isShort ? '숏온리' : '헷징'}] ${opp.baseAsset} 선택 — ${bucket} 주기`,
           undefined,
