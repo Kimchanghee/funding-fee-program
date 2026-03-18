@@ -145,10 +145,10 @@ export function estimateProfit(
   const roiPerMonth = (netPerMonth / totalCapital) * 100;
   const roiPerYear = (netPerYear / totalCapital) * 100;
 
-  // 복리: 수수료 차감 후 순수익률 기준
+  // 복리: 수수료 차감 후 순수익률 기준 (펀딩 간격 미만은 선형)
   const netRatePerFunding = netPerFunding / totalCapital;
-  const compound1h = totalCapital * (Math.pow(1 + netRatePerFunding / intervalH, 1) - 1);
-  const compound4h = totalCapital * (Math.pow(1 + netRatePerFunding / intervalH, 4) - 1);
+  const compound1h = netPer1h; // 1h 내 복리 불가 — 선형
+  const compound4h = intervalH <= 4 ? totalCapital * (Math.pow(1 + netRatePerFunding, 4 / intervalH) - 1) : netPer4h;
   const compoundDay = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay) - 1);
   const compoundWeek = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 7) - 1);
   const compoundMonth = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 30) - 1);

@@ -1534,9 +1534,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         );
 
         // 청산된 코인들 타이머 정리 + 다음 사이클 자동 재예약
-        const closedAssets = [...new Set(snipeToClose.map(p => p.baseAsset))];
-        for (const asset of closedAssets) {
-          get().cancelSnipeForAsset(asset);
+        const closedKeys = [...new Set(snipeToClose.map(p =>
+          `${p.baseAsset}:${p.positionType === 'short_only' ? 'shortOnly' : 'hedge'}`
+        ))];
+        for (const key of closedKeys) {
+          get().cancelSnipeForAsset(key);
         }
         if (get().snipeActive) {
           get().scheduleAllSnipes();

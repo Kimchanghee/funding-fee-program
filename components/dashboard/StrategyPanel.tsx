@@ -2,7 +2,7 @@
 
 import { X, DollarSign, TrendingUp, Info } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { estimateProfit } from '@/lib/opportunities';
+import { estimateProfit, estimateProfitShortOnly } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 
 export default function StrategyPanel() {
@@ -12,7 +12,9 @@ export default function StrategyPanel() {
   const best = opportunities[0];
 
   const profit = best
-    ? estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage)
+    ? (strategyConfig.strategyMode === 'shortOnly'
+      ? estimateProfitShortOnly(best, strategyConfig.investmentUSDT, strategyConfig.leverage)
+      : estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage))
     : null;
 
   return (

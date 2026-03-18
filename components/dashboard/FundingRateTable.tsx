@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react';
 import { Search, ChevronUp, ChevronDown, ArrowUpDown } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
-import { estimateProfit } from '@/lib/opportunities';
+import { estimateProfit, estimateProfitShortOnly } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 
 type SortField = 'spread' | 'annualReturn' | 'baseAsset' | 'minutesToFunding';
@@ -167,7 +167,9 @@ export default function FundingRateTable() {
               </tr>
             ) : (
               paged.map((opp, i) => {
-                const profit = estimateProfit(opp, strategyConfig.investmentUSDT, strategyConfig.leverage);
+                const profit = strategyConfig.strategyMode === 'shortOnly'
+                  ? estimateProfitShortOnly(opp, strategyConfig.investmentUSDT, strategyConfig.leverage)
+                  : estimateProfit(opp, strategyConfig.investmentUSDT, strategyConfig.leverage);
                 const rank = page * PAGE_SIZE + i + 1;
                 const isTop = rank <= 3;
                 return (
