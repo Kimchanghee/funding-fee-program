@@ -243,7 +243,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
   fundingHistory: [],
   simulationMode: true,
-  simBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000 },
+  simBalances: { binance: 1400, bybit: 1400, okx: 1400, bitget: 1400, gate: 1400 },
   simPositions: [],
   simTotalFundingEarned: 0,
   simTotalTopUps: 0,

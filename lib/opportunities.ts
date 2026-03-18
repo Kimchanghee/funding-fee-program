@@ -60,7 +60,7 @@ export function findOpportunities(
       longMarkPrice: low.markPrice,
       spread,
       spreadPercent: spread * 100,
-      annualReturnPercent: calcAnnualReturn(spread),
+      annualReturnPercent: calcAnnualReturn(spread, fundingIntervalMs),
       nextFundingTime: nearestFunding,
       minutesToFunding: getMinutesToFunding(nearestFunding),
       fundingIntervalMs,
@@ -107,7 +107,8 @@ export interface ProfitEstimate {
 }
 
 /**
- * 헷징용 수익 예측 — 펀딩 주기(1h/4h/8h) 실제 반영
+ * 헷징용 수익 예측 — 스나이프 전략 (매 펀딩마다 진입/청산)
+ * 수수료: 매 사이클 발생 (진입+청산 = 4 × 0.05% per cycle)
  * ROI 기준: 해당 쌍에 투입된 자본 = investmentUSDT × 2 (숏+롱)
  */
 export function estimateProfit(
@@ -115,52 +116,47 @@ export function estimateProfit(
   investmentUSDT: number,
   leverage: number,
 ): ProfitEstimate {
-  // 헷징: 숏 $700 + 롱 $700 = $1,400 / 쌍
   const totalCapital = investmentUSDT * 2;
   const notional = investmentUSDT * leverage;
   const intervalH = (opportunity.fundingIntervalMs ?? 8 * 3600000) / 3600000;
   const fundingsPerDay = 24 / intervalH;
 
-  const perFunding = notional * opportunity.spread;
+  const grossPerFunding = notional * opportunity.spread;
 
-  // 왕복 수수료: 진입(숏+롱) + 청산(숏+롱) = 4 × 0.05%
+  // 왕복 수수료: 매 스나이프 사이클 진입(숏+롱) + 청산(숏+롱) = 4 × 0.05%
   const TAKER_FEE = 0.0005;
-  const totalFees = notional * TAKER_FEE * 4;
+  const feesPerCycle = notional * TAKER_FEE * 4;
 
-  const netPerFunding = perFunding;
-  const per1h = perFunding / intervalH;
-  const per4h = per1h * 4;
-  const perDay = perFunding * fundingsPerDay;
-  const perWeek = perDay * 7;
-  const perMonth = perDay * 30;
-  const perYear = perDay * 365;
-
-  const netPerDay = perDay - totalFees;
-  const netPerWeek = perWeek - totalFees;
-  const netPerMonth = perMonth - totalFees;
-  const netPerYear = perYear - totalFees;
+  // 순수익 = 펀딩 수익 - 해당 사이클 수수료
+  const netPerFunding = grossPerFunding - feesPerCycle;
+  const netPer1h = netPerFunding / intervalH;
+  const netPer4h = netPer1h * 4;
+  const netPerDay = netPerFunding * fundingsPerDay;
+  const netPerWeek = netPerDay * 7;
+  const netPerMonth = netPerDay * 30;
+  const netPerYear = netPerDay * 365;
 
   // ROI: 해당 쌍 투입 자본 대비
   const roiPerFunding = (netPerFunding / totalCapital) * 100;
-  const roiPer1h = (per1h / totalCapital) * 100;
-  const roiPer4h = (per4h / totalCapital) * 100;
+  const roiPer1h = (netPer1h / totalCapital) * 100;
+  const roiPer4h = (netPer4h / totalCapital) * 100;
   const roiPerDay = (netPerDay / totalCapital) * 100;
   const roiPerWeek = (netPerWeek / totalCapital) * 100;
   const roiPerMonth = (netPerMonth / totalCapital) * 100;
   const roiPerYear = (netPerYear / totalCapital) * 100;
 
-  // 복리: 투입자본 기준 매 펀딩 수익률
-  const ratePerFunding = perFunding / totalCapital;
-  const compound1h = totalCapital * (Math.pow(1 + ratePerFunding / intervalH, 1) - 1);
-  const compound4h = totalCapital * (Math.pow(1 + ratePerFunding / intervalH, 4) - 1);
-  const compoundDay = totalCapital * (Math.pow(1 + ratePerFunding, fundingsPerDay) - 1) - totalFees;
-  const compoundWeek = totalCapital * (Math.pow(1 + ratePerFunding, fundingsPerDay * 7) - 1) - totalFees;
-  const compoundMonth = totalCapital * (Math.pow(1 + ratePerFunding, fundingsPerDay * 30) - 1) - totalFees;
-  const compoundYear = totalCapital * (Math.pow(1 + ratePerFunding, fundingsPerDay * 365) - 1) - totalFees;
+  // 복리: 수수료 차감 후 순수익률 기준
+  const netRatePerFunding = netPerFunding / totalCapital;
+  const compound1h = totalCapital * (Math.pow(1 + netRatePerFunding / intervalH, 1) - 1);
+  const compound4h = totalCapital * (Math.pow(1 + netRatePerFunding / intervalH, 4) - 1);
+  const compoundDay = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay) - 1);
+  const compoundWeek = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 7) - 1);
+  const compoundMonth = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 30) - 1);
+  const compoundYear = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 365) - 1);
 
   return {
-    perFunding: netPerFunding, netPerFunding, totalFees, totalCapital, actualPortfolio: totalCapital,
-    per1h, per4h, perDay: netPerDay, perMonth: netPerMonth, perWeek: netPerWeek, perYear: netPerYear,
+    perFunding: grossPerFunding, netPerFunding, totalFees: feesPerCycle, totalCapital, actualPortfolio: totalCapital,
+    per1h: netPer1h, per4h: netPer4h, perDay: netPerDay, perMonth: netPerMonth, perWeek: netPerWeek, perYear: netPerYear,
     roiPerFunding, roiPer1h, roiPer4h, roiPerDay, roiPerWeek, roiPerMonth, roiPerYear,
     compound: {
       per1h: compound1h, per4h: compound4h, perDay: compoundDay, perWeek: compoundWeek, perMonth: compoundMonth, perYear: compoundYear,
@@ -172,7 +168,8 @@ export function estimateProfit(
 }
 
 /**
- * 숏온리용 수익 예측 — shortRate 기반, 단일 포지션
+ * 숏온리용 수익 예측 — shortRate 기반, 스나이프 전략
+ * 수수료: 매 사이클 발생 (진입+청산 = 2 × 0.05% per cycle)
  * ROI 기준: investmentUSDT (숏 마진만)
  */
 export function estimateProfitShortOnly(
@@ -180,52 +177,44 @@ export function estimateProfitShortOnly(
   investmentUSDT: number,
   leverage: number,
 ): ProfitEstimate {
-  // 숏온리: $700 마진 1개
   const totalCapital = investmentUSDT;
   const notional = investmentUSDT * leverage;
   const intervalH = (opportunity.fundingIntervalMs ?? 8 * 3600000) / 3600000;
   const fundingsPerDay = 24 / intervalH;
 
-  // 숏 포지션: 양의 펀딩레이트 → 수령
-  const perFunding = notional * opportunity.shortRate;
+  const grossPerFunding = notional * opportunity.shortRate;
 
-  // 수수료: 숏 1개만 (진입+청산 = 2 × 0.05%)
+  // 수수료: 매 사이클 숏 진입+청산 = 2 × 0.05%
   const TAKER_FEE = 0.0005;
-  const totalFees = notional * TAKER_FEE * 2;
+  const feesPerCycle = notional * TAKER_FEE * 2;
 
-  const netPerFunding = perFunding;
-  const per1h = perFunding / intervalH;
-  const per4h = per1h * 4;
-  const perDay = perFunding * fundingsPerDay;
-  const perWeek = perDay * 7;
-  const perMonth = perDay * 30;
-  const perYear = perDay * 365;
+  const netPerFunding = grossPerFunding - feesPerCycle;
+  const netPer1h = netPerFunding / intervalH;
+  const netPer4h = netPer1h * 4;
+  const netPerDay = netPerFunding * fundingsPerDay;
+  const netPerWeek = netPerDay * 7;
+  const netPerMonth = netPerDay * 30;
+  const netPerYear = netPerDay * 365;
 
-  const netPerDay = perDay - totalFees;
-  const netPerWeek = perWeek - totalFees;
-  const netPerMonth = perMonth - totalFees;
-  const netPerYear = perYear - totalFees;
-
-  // ROI: 숏 마진 기준
   const roiPerFunding = (netPerFunding / totalCapital) * 100;
-  const roiPer1h = (per1h / totalCapital) * 100;
-  const roiPer4h = (per4h / totalCapital) * 100;
+  const roiPer1h = (netPer1h / totalCapital) * 100;
+  const roiPer4h = (netPer4h / totalCapital) * 100;
   const roiPerDay = (netPerDay / totalCapital) * 100;
   const roiPerWeek = (netPerWeek / totalCapital) * 100;
   const roiPerMonth = (netPerMonth / totalCapital) * 100;
   const roiPerYear = (netPerYear / totalCapital) * 100;
 
-  const ratePerFunding = perFunding / totalCapital;
-  const compound1h = totalCapital * (Math.pow(1 + ratePerFunding / intervalH, 1) - 1);
-  const compound4h = totalCapital * (Math.pow(1 + ratePerFunding / intervalH, 4) - 1);
-  const compoundDay = totalCapital * (Math.pow(1 + ratePerFunding, fundingsPerDay) - 1) - totalFees;
-  const compoundWeek = totalCapital * (Math.pow(1 + ratePerFunding, fundingsPerDay * 7) - 1) - totalFees;
-  const compoundMonth = totalCapital * (Math.pow(1 + ratePerFunding, fundingsPerDay * 30) - 1) - totalFees;
-  const compoundYear = totalCapital * (Math.pow(1 + ratePerFunding, fundingsPerDay * 365) - 1) - totalFees;
+  const netRatePerFunding = netPerFunding / totalCapital;
+  const compound1h = totalCapital * (Math.pow(1 + netRatePerFunding / intervalH, 1) - 1);
+  const compound4h = totalCapital * (Math.pow(1 + netRatePerFunding / intervalH, 4) - 1);
+  const compoundDay = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay) - 1);
+  const compoundWeek = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 7) - 1);
+  const compoundMonth = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 30) - 1);
+  const compoundYear = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 365) - 1);
 
   return {
-    perFunding: netPerFunding, netPerFunding, totalFees, totalCapital, actualPortfolio: totalCapital,
-    per1h, per4h, perDay: netPerDay, perMonth: netPerMonth, perWeek: netPerWeek, perYear: netPerYear,
+    perFunding: grossPerFunding, netPerFunding, totalFees: feesPerCycle, totalCapital, actualPortfolio: totalCapital,
+    per1h: netPer1h, per4h: netPer4h, perDay: netPerDay, perMonth: netPerMonth, perWeek: netPerWeek, perYear: netPerYear,
     roiPerFunding, roiPer1h, roiPer4h, roiPerDay, roiPerWeek, roiPerMonth, roiPerYear,
     compound: {
       per1h: compound1h, per4h: compound4h, perDay: compoundDay, perWeek: compoundWeek, perMonth: compoundMonth, perYear: compoundYear,

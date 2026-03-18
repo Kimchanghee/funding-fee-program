@@ -433,7 +433,9 @@ export default function OpportunityCard() {
             {/* Rows */}
             {scheduledCoins.map((item, idx) => {
               const isExpanded = expandedAsset === item.asset;
-              const profit = estimateProfit(item.opp, perExchangeInvestment, strategyConfig.leverage);
+              const profit = item.mode === 'shortOnly'
+                ? estimateProfitShortOnly(item.opp, perExchangeInvestment, strategyConfig.leverage)
+                : estimateProfit(item.opp, perExchangeInvestment, strategyConfig.leverage);
 
               return (
                 <div key={`${item.asset}:${item.mode}`}>

@@ -142,8 +142,6 @@ export interface SimPosition extends Position {
   fundingIntervalMs?: number; // 펀딩 주기 (ms) — 코인별 다름 (기본 8h)
 }
 
-export const SIM_INITIAL_BALANCE = 2000;
-
 export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate'];
 
 // Popular symbols to track (top coins by OI)
