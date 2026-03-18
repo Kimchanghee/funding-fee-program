@@ -1672,11 +1672,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
       if (filtered.length === 0) return;
 
-      // 이미 스케줄된 주기 확인 — 주기별 1개 제한
+      // 이미 스케줄된 주기 확인 — snipeTargets만 체크 (활성 포지션은 별개 코인이므로 차단 안 함)
       const scheduledBuckets = new Set<string>();
-      for (const key of activeKeys) {
-        if (!key.endsWith(`:${mode}`)) continue;
-        const asset = key.split(':')[0];
+      for (const snipeKey of Object.keys(snipeTargets)) {
+        if (!snipeKey.endsWith(`:${mode}`)) continue;
+        const asset = snipeKey.split(':')[0];
         const opp = opportunities.find(o => o.baseAsset === asset);
         if (opp) scheduledBuckets.add(getIntervalBucket(opp.fundingIntervalMs ?? 8 * 3600000));
       }
