@@ -145,7 +145,6 @@ function SimModeColumn({
   fundingEarned,
   fees,
   positions,
-  simBalances,
   enabledExchanges,
   mode,
 }: {
@@ -154,17 +153,18 @@ function SimModeColumn({
   fundingEarned: number;
   fees: number;
   positions: import('@/lib/types').SimPosition[];
-  simBalances: Record<ExchangeId, number>;
   enabledExchanges: ExchangeId[];
   mode: 'hedge' | 'shortOnly';
 }) {
-  const totalBal = Object.values(simBalances).reduce((s, v) => s + v, 0);
-  const modeMargin = positions
-    .filter(p => mode === 'hedge'
-      ? (p.positionType === 'hedge_long' || p.positionType === 'hedge_short')
-      : p.positionType === 'short_only')
-    .reduce((s, p) => s + p.margin, 0);
-  const netProfit = fundingEarned - fees;
+  const modePositions = positions.filter(p => mode === 'hedge'
+    ? (p.positionType === 'hedge_long' || p.positionType === 'hedge_short')
+    : p.positionType === 'short_only');
+  const modeMargin = modePositions.reduce((s, p) => s + p.margin, 0);
+  const modePnl = modePositions.reduce((s, p) => s + p.unrealizedPnl, 0);
+  const netProfit = fundingEarned - fees + modePnl;
+  const posCount = mode === 'hedge'
+    ? modePositions.filter(p => p.positionType === 'hedge_short').length
+    : modePositions.length;
 
   return (
     <div className="glass-card" style={{
@@ -178,11 +178,13 @@ function SimModeColumn({
         <span style={{ marginLeft: 'auto', fontSize: 9, color: accentColor, background: `${accentColor}20`, padding: '2px 6px', borderRadius: 4 }}>SIM</span>
       </div>
 
-      {/* 총 자산 (공유 풀 표시) */}
-      <div className="mono" style={{ fontSize: 18, fontWeight: 900, color: 'var(--color-text)', marginBottom: 2 }}>
-        ${(totalBal + modeMargin).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      {/* 순수익 (메인 숫자) */}
+      <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: netProfit >= 0 ? '#10b981' : '#ef4444', marginBottom: 2 }}>
+        {netProfit >= 0 ? '+' : ''}${fmtNum(netProfit, 2)}
       </div>
-      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8 }}>마진 ${fmtNum(modeMargin)}</div>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8 }}>
+        {posCount}개 포지션 | 마진 ${fmtNum(modeMargin)}
+      </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -195,8 +197,14 @@ function SimModeColumn({
           <span style={{ color: '#64748b' }}>수수료</span>
           <span className="mono" style={{ fontWeight: 700, color: '#ef4444' }}>-${fmtNum(fees, 4)}</span>
         </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: '#64748b' }}>미실현 PnL</span>
+          <span className="mono" style={{ fontWeight: 700, color: modePnl >= 0 ? '#10b981' : '#ef4444' }}>
+            {modePnl >= 0 ? '+' : ''}${fmtNum(modePnl, 4)}
+          </span>
+        </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `1px solid ${accentColor}20`, paddingTop: 3 }}>
-          <span style={{ color: accentColor, fontWeight: 600 }}>순수익</span>
+          <span style={{ color: accentColor, fontWeight: 600 }}>합계</span>
           <span className="mono" style={{ fontWeight: 800, color: netProfit >= 0 ? '#10b981' : '#ef4444' }}>
             {netProfit >= 0 ? '+' : ''}${fmtNum(netProfit, 2)}
           </span>
@@ -289,7 +297,6 @@ export default function BalanceCards() {
           fundingEarned={simTotalFundingEarned}
           fees={simTotalFees}
           positions={simPositions}
-          simBalances={simBalances}
           enabledExchanges={enabledExchanges}
           mode="hedge"
         />
@@ -299,7 +306,6 @@ export default function BalanceCards() {
           fundingEarned={simFundingShort}
           fees={simFeesShort}
           positions={simPositions}
-          simBalances={simBalances}
           enabledExchanges={enabledExchanges}
           mode="shortOnly"
         />
