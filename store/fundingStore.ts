@@ -1658,10 +1658,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
       if (filtered.length === 0) return;
 
-      // 1) 펀딩 주기별 그룹화
+      // 이미 스케줄된 주기 확인 — 주기별 1개 제한
+      const scheduledBuckets = new Set<string>();
+      for (const key of activeKeys) {
+        if (!key.endsWith(`:${mode}`)) continue;
+        const asset = key.split(':')[0];
+        const opp = opportunities.find(o => o.baseAsset === asset);
+        if (opp) scheduledBuckets.add(getIntervalBucket(opp.fundingIntervalMs ?? 8 * 3600000));
+      }
+
+      // 1) 펀딩 주기별 그룹화 (이미 해당 주기에 스케줄 있으면 제외)
       const buckets: Record<string, typeof filtered> = { '1h': [], '4h': [], '8h': [] };
       for (const opp of filtered) {
-        buckets[getIntervalBucket(opp.fundingIntervalMs ?? 8 * 3600000)].push(opp);
+        const bucket = getIntervalBucket(opp.fundingIntervalMs ?? 8 * 3600000);
+        if (scheduledBuckets.has(bucket)) continue;
+        buckets[bucket].push(opp);
       }
 
       // 2) 각 주기에서 최고 1개 (몰빵 = 최대 수익)
