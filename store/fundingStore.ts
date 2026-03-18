@@ -1661,16 +1661,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const scheduleForMode = (mode: 'hedge' | 'shortOnly') => {
       const isShort = mode === 'shortOnly';
+      // 헷징/숏온리 동일 기준: 스프레드 > 최소%, 거래소 활성화
+      // 차이점은 실행 시 롱 진입 여부뿐
       const filtered = opportunities.filter(o => {
         const key = `${o.baseAsset}:${mode}`;
         if (activeKeys.has(key)) return false;
-        if (isShort) {
-          return o.shortRate > (strategyConfig.minFundingRate ?? 0.003) &&
-            currentEnabled.includes(o.shortExchange);
-        }
-        return o.spreadPercent > effectiveMinPercent &&
-          currentEnabled.includes(o.shortExchange) &&
-          currentEnabled.includes(o.longExchange);
+        if (!currentEnabled.includes(o.shortExchange)) return false;
+        if (!isShort && !currentEnabled.includes(o.longExchange)) return false;
+        return o.spreadPercent > effectiveMinPercent;
       });
       if (filtered.length === 0) return;
 
@@ -1695,7 +1693,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const selected: typeof filtered = [];
       for (const bucket of Object.values(buckets)) {
         if (bucket.length === 0) continue;
-        bucket.sort((a, b) => isShort ? b.shortRate - a.shortRate : b.spreadPercent - a.spreadPercent);
+        bucket.sort((a, b) => b.spreadPercent - a.spreadPercent);
         selected.push(bucket[0]);
       }
 
