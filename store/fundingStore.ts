@@ -1650,15 +1650,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       ),
     ]);
 
-    // 다음 펀딩까지 남은 시간 기준 버킷 (주기가 아닌 실제 시점)
     const now = Date.now();
-    const getTimeBucket = (nextFundingTime: number): '1h' | '4h' | '8h' => {
-      const hoursLeft = Math.max(0, (nextFundingTime - now) / 3600000);
-      if (hoursLeft <= 1.5) return '1h';
-      if (hoursLeft <= 5) return '4h';
-      return '8h';
-    };
-
     const CONFLICT_WINDOW_MS = 2 * 60 * 1000;
 
     const scheduleForMode = (mode: 'hedge' | 'shortOnly') => {
@@ -1674,56 +1666,35 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
       if (filtered.length === 0) return;
 
-      // 이미 스케줄된 주기 확인 — snipeTargets만 체크 (활성 포지션은 별개 코인이므로 차단 안 함)
-      const scheduledBuckets = new Set<string>();
+      // 이미 스케줄된 펀딩 시간 수집 (2분 이내 겹침 체크용)
+      const scheduledTimes: number[] = [];
       for (const snipeKey of Object.keys(snipeTargets)) {
         if (!snipeKey.endsWith(`:${mode}`)) continue;
         const asset = snipeKey.split(':')[0];
         const opp = opportunities.find(o => o.baseAsset === asset);
-        if (opp) scheduledBuckets.add(getTimeBucket(opp.nextFundingTime));
+        if (opp) scheduledTimes.push(opp.nextFundingTime);
       }
 
-      // 1) 펀딩 주기별 그룹화 (이미 해당 주기에 스케줄 있으면 제외)
-      const buckets: Record<string, typeof filtered> = { '1h': [], '4h': [], '8h': [] };
-      for (const opp of filtered) {
-        const bucket = getTimeBucket(opp.nextFundingTime);
-        if (scheduledBuckets.has(bucket)) continue;
-        buckets[bucket].push(opp);
-      }
-
-      // 2) 각 주기에서 최고 1개 (몰빵 = 최대 수익)
-      const selected: typeof filtered = [];
-      for (const bucket of Object.values(buckets)) {
-        if (bucket.length === 0) continue;
-        bucket.sort((a, b) => b.spreadPercent - a.spreadPercent);
-        selected.push(bucket[0]);
-      }
-
-      // 3) 시간 충돌 해결
-      const sorted = [...selected].sort((a, b) => a.nextFundingTime - b.nextFundingTime);
+      // 스프레드 높은 순 정렬 → 시간 겹침만 제거하고 모두 선택
+      const sorted = [...filtered].sort((a, b) => b.spreadPercent - a.spreadPercent);
       const result: typeof filtered = [];
       for (const opp of sorted) {
-        const conflict = result.find(r => Math.abs(r.nextFundingTime - opp.nextFundingTime) < CONFLICT_WINDOW_MS);
-        if (conflict) {
-          const oppScore = isShort ? opp.shortRate : opp.spreadPercent;
-          const conflictScore = isShort ? conflict.shortRate : conflict.spreadPercent;
-          if (oppScore > conflictScore) {
-            result[result.indexOf(conflict)] = opp;
-          }
-        } else {
-          result.push(opp);
-        }
+        // 이미 스케줄된 시간과 2분 이내 겹치면 스킵
+        const conflictsWithScheduled = scheduledTimes.some(t => Math.abs(t - opp.nextFundingTime) < CONFLICT_WINDOW_MS);
+        if (conflictsWithScheduled) continue;
+        // 이번 라운드에서 선택된 것과 2분 이내 겹치면 스킵 (높은 스프레드가 먼저 선택됨)
+        const conflictsWithResult = result.some(r => Math.abs(r.nextFundingTime - opp.nextFundingTime) < CONFLICT_WINDOW_MS);
+        if (conflictsWithResult) continue;
+        result.push(opp);
       }
 
-      // 4) 스케줄 등록
+      // 스케줄 등록
       for (const opp of result) {
-        const bucket = getTimeBucket(opp.nextFundingTime);
+        const minsLeft = Math.round((opp.nextFundingTime - now) / 60000);
         get().addLog('info',
-          `[스케줄-${isShort ? '숏온리' : '헷징'}] ${opp.baseAsset} 선택 — ${bucket} 주기`,
+          `[스케줄-${isShort ? '숏온리' : '헷징'}] ${opp.baseAsset} 선택 — ${minsLeft}분 후 펀딩`,
           undefined,
-          isShort
-            ? `펀딩레이트: ${fmtNum(opp.shortRate * 100, 4)}% | ${opp.shortExchange.toUpperCase()}`
-            : `스프레드: +${fmtNum(opp.spreadPercent, 4)}% | ${opp.shortExchange}↔${opp.longExchange}`,
+          `스프레드: +${fmtNum(opp.spreadPercent, 4)}% | ${opp.shortExchange}↔${opp.longExchange}`,
         );
         get().scheduleSnipeForAsset(opp, mode);
         activeKeys.add(`${opp.baseAsset}:${mode}`);
