@@ -7,16 +7,26 @@ import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
 import { fmtNum } from '@/lib/format';
 
-/** 거래소 미니 카드 (통합 잔고) */
-function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
+/** 거래소 미니 카드 (통합 잔고, 모드 필터 옵션) */
+function ExchangeMiniCard({ exchange, mode }: { exchange: ExchangeId; mode?: 'hedge' | 'shortOnly' }) {
   const { simBalances, simPositions, fundingHistory } = useFundingStore();
   const color = EXCHANGE_COLORS[exchange];
 
   const bal = simBalances[exchange] ?? 0;
-  const exPositions = simPositions.filter(p => p.exchange === exchange);
+  const exPositions = simPositions.filter(p => {
+    if (p.exchange !== exchange) return false;
+    if (mode === 'hedge') return p.positionType === 'hedge_long' || p.positionType === 'hedge_short';
+    if (mode === 'shortOnly') return p.positionType === 'short_only';
+    return true;
+  });
   const margin = exPositions.reduce((s, p) => s + p.margin, 0);
   const funding = fundingHistory
-    .filter(p => p.exchange === exchange)
+    .filter(p => {
+      if (p.exchange !== exchange) return false;
+      if (mode === 'hedge') return p.mode === 'hedge';
+      if (mode === 'shortOnly') return p.mode === 'shortOnly';
+      return true;
+    })
     .reduce((s, p) => s + p.amount, 0);
 
   return (
@@ -128,8 +138,86 @@ function useTotalPnl() {
   return pnl;
 }
 
+/** 시뮬 모드 컬럼 카드 (헷징 or 숏온리) */
+function SimModeColumn({
+  title,
+  accentColor,
+  fundingEarned,
+  fees,
+  positions,
+  simBalances,
+  enabledExchanges,
+  mode,
+}: {
+  title: string;
+  accentColor: string;
+  fundingEarned: number;
+  fees: number;
+  positions: import('@/lib/types').SimPosition[];
+  simBalances: Record<ExchangeId, number>;
+  enabledExchanges: ExchangeId[];
+  mode: 'hedge' | 'shortOnly';
+}) {
+  const totalBal = Object.values(simBalances).reduce((s, v) => s + v, 0);
+  const modeMargin = positions
+    .filter(p => mode === 'hedge'
+      ? (p.positionType === 'hedge_long' || p.positionType === 'hedge_short')
+      : p.positionType === 'short_only')
+    .reduce((s, p) => s + p.margin, 0);
+  const netProfit = fundingEarned - fees;
+
+  return (
+    <div className="glass-card" style={{
+      flex: 1, minWidth: 0, padding: '14px 16px',
+      background: `linear-gradient(135deg, ${accentColor}12, var(--bg-card))`,
+      borderColor: `${accentColor}40`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <FlaskConical size={13} color={accentColor} />
+        <span style={{ fontSize: 12, fontWeight: 700, color: accentColor }}>{title}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 9, color: accentColor, background: `${accentColor}20`, padding: '2px 6px', borderRadius: 4 }}>SIM</span>
+      </div>
+
+      {/* 총 자산 (공유 풀 표시) */}
+      <div className="mono" style={{ fontSize: 18, fontWeight: 900, color: 'var(--color-text)', marginBottom: 2 }}>
+        ${(totalBal + modeMargin).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      </div>
+      <div style={{ fontSize: 10, color: '#64748b', marginBottom: 8 }}>마진 ${fmtNum(modeMargin)}</div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: '#64748b' }}>수령 펀딩</span>
+          <span className="mono" style={{ fontWeight: 700, color: fundingEarned >= 0 ? '#10b981' : '#ef4444' }}>
+            {fundingEarned >= 0 ? '+' : ''}${fmtNum(fundingEarned, 4)}
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: '#64748b' }}>수수료</span>
+          <span className="mono" style={{ fontWeight: 700, color: '#ef4444' }}>-${fmtNum(fees, 4)}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `1px solid ${accentColor}20`, paddingTop: 3 }}>
+          <span style={{ color: accentColor, fontWeight: 600 }}>순수익</span>
+          <span className="mono" style={{ fontWeight: 800, color: netProfit >= 0 ? '#10b981' : '#ef4444' }}>
+            {netProfit >= 0 ? '+' : ''}${fmtNum(netProfit, 2)}
+          </span>
+        </div>
+      </div>
+
+      {/* 거래소 미니 카드 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 6, marginTop: 10 }}>
+        {enabledExchanges.map(ex => <ExchangeMiniCard key={ex} exchange={ex} mode={mode} />)}
+      </div>
+    </div>
+  );
+}
+
 export default function BalanceCards() {
-  const { balances, simulationMode, simBalances, simPositions, simTotalFundingEarned, simTotalFees, enabledExchanges, strategyConfig, resetSimulation } = useFundingStore();
+  const {
+    balances, simulationMode, simBalances, simPositions,
+    simTotalFundingEarned, simTotalFees,
+    simFundingShort, simFeesShort,
+    enabledExchanges, strategyConfig, resetSimulation,
+  } = useFundingStore();
   const pnl = useTotalPnl();
 
   const totalUSDT = Object.values(balances)
@@ -158,16 +246,28 @@ export default function BalanceCards() {
     );
   }
 
-  // 시뮬: 통합 단일 풀
-  const simTotal = Object.values(simBalances).reduce((s, v) => s + v, 0)
+  // 시뮬: 통합 잔고, 분리 추적
+  const simPoolTotal = Object.values(simBalances).reduce((s, v) => s + v, 0)
     + simPositions.reduce((s, p) => s + p.margin, 0);
   const simInitial = enabledExchanges.length * strategyConfig.investmentUSDT * 2;
-  const netProfit = simTotal - simInitial;
+  const totalNetProfit = simPoolTotal - simInitial;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* 초기화 버튼 */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      {/* 초기화 버튼 + 통합 요약 */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span className="mono" style={{ fontSize: 13, fontWeight: 800, color: 'var(--color-text)' }}>
+            ${simPoolTotal.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+          <span style={{
+            fontSize: 11, fontWeight: 700,
+            color: totalNetProfit >= 0 ? '#10b981' : '#ef4444',
+          }}>
+            {totalNetProfit >= 0 ? '+' : ''}${fmtNum(totalNetProfit, 2)}
+          </span>
+          <span style={{ fontSize: 10, color: '#64748b' }}>{pnl.count}건</span>
+        </div>
         <button
           onClick={() => { if (confirm('시뮬레이션을 초기화하시겠습니까?')) resetSimulation(); }}
           style={{
@@ -181,47 +281,28 @@ export default function BalanceCards() {
         </button>
       </div>
 
-      {/* 통합 요약 카드 */}
-      <div className="glass-card" style={{
-        padding: '14px 16px',
-        background: 'linear-gradient(135deg, rgba(59,130,246,0.12), var(--bg-card))',
-        borderColor: 'rgba(59,130,246,0.4)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <FlaskConical size={13} color="#3b82f6" />
-          <span style={{ fontSize: 12, fontWeight: 700, color: '#3b82f6' }}>시뮬레이션 (통합)</span>
-          <span style={{ marginLeft: 'auto', fontSize: 9, color: '#3b82f6', background: 'rgba(59,130,246,0.15)', padding: '2px 6px', borderRadius: 4 }}>SIM</span>
-        </div>
-        <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--color-text)', marginBottom: 4 }}>
-          ${simTotal.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#64748b' }}>수령 펀딩</span>
-            <span className="mono" style={{ fontWeight: 700, color: simTotalFundingEarned >= 0 ? '#10b981' : '#ef4444' }}>
-              {simTotalFundingEarned >= 0 ? '+' : ''}${fmtNum(simTotalFundingEarned, 4)}
-            </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#64748b' }}>수수료</span>
-            <span className="mono" style={{ fontWeight: 700, color: '#ef4444' }}>-${fmtNum(simTotalFees, 4)}</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(59,130,246,0.2)', paddingTop: 3 }}>
-            <span style={{ color: '#3b82f6', fontWeight: 600 }}>순수익</span>
-            <span className="mono" style={{ fontWeight: 800, color: netProfit >= 0 ? '#10b981' : '#ef4444' }}>
-              {netProfit >= 0 ? '+' : ''}${fmtNum(netProfit, 2)}
-            </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#64748b' }}>거래</span>
-            <span className="mono" style={{ color: 'var(--color-text)' }}>{pnl.count}건</span>
-          </div>
-        </div>
-      </div>
-
-      {/* 거래소별 미니 카드 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
-        {enabledExchanges.map(ex => <ExchangeMiniCard key={ex} exchange={ex} />)}
+      {/* 두 컬럼: 헷징 | 숏온리 */}
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        <SimModeColumn
+          title="헷징 (Hedge)"
+          accentColor="#3b82f6"
+          fundingEarned={simTotalFundingEarned}
+          fees={simTotalFees}
+          positions={simPositions}
+          simBalances={simBalances}
+          enabledExchanges={enabledExchanges}
+          mode="hedge"
+        />
+        <SimModeColumn
+          title="숏온리 (Short-Only)"
+          accentColor="#8b5cf6"
+          fundingEarned={simFundingShort}
+          fees={simFeesShort}
+          positions={simPositions}
+          simBalances={simBalances}
+          enabledExchanges={enabledExchanges}
+          mode="shortOnly"
+        />
       </div>
     </div>
   );

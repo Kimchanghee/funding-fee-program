@@ -173,6 +173,8 @@ interface SimState {
   simTotalFundingEarned: number;
   simTotalTopUps?: number;
   simTotalFees?: number;
+  simFundingShort?: number;
+  simFeesShort?: number;
 }
 
 export function saveSimState(state: SimState): void {

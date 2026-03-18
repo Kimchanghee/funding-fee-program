@@ -69,9 +69,11 @@ interface FundingState {
   simulationMode: boolean;
   simBalances: Record<ExchangeId, number>;       // 통합 잔고 (헷징+숏온리 공유)
   simPositions: SimPosition[];
-  simTotalFundingEarned: number;  // 누적 펀딩 수령 (헷징+숏온리 합산)
+  simTotalFundingEarned: number;  // 누적 펀딩 수령 (헷징 전용)
   simTotalTopUps: number;
-  simTotalFees: number;           // 누적 수수료 (헷징+숏온리 합산)
+  simTotalFees: number;           // 누적 수수료 (헷징 전용)
+  simFundingShort: number;        // 누적 펀딩 수령 (숏온리 전용)
+  simFeesShort: number;           // 누적 수수료 (숏온리 전용)
 
   // Snipe mode (코인별 독립 타이머)
   snipeActive: boolean;           // 사용자가 켠 상태 (반복 사이클 유지)
@@ -248,6 +250,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   simTotalFundingEarned: 0,
   simTotalTopUps: 0,
   simTotalFees: 0,
+  simFundingShort: 0,
+  simFeesShort: 0,
   snipeActive: false,
   snipeTargets: {},
   _snipeTimers: {},
@@ -355,6 +359,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           simTotalFundingEarned: savedSim.simTotalFundingEarned,
           simTotalTopUps: savedSim.simTotalTopUps ?? 0,
           simTotalFees: savedSim.simTotalFees ?? 0,
+          simFundingShort: savedSim.simFundingShort ?? 0,
+          simFeesShort: savedSim.simFeesShort ?? 0,
         });
       } else {
         // 최초 실행: 활성 거래소 기준으로 초기 잔고 설정 (통합 풀: investmentUSDT * 2)
@@ -799,10 +805,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       set(s => ({
         simPositions: [...s.simPositions, shortPos],
         simBalances: { ...s.simBalances, [shortExchange]: s.simBalances[shortExchange] - totalCost },
-        simTotalFees: s.simTotalFees + entryFee,
+        simFeesShort: s.simFeesShort + entryFee,
       }));
       const st1 = get();
-      saveSimState({ simBalances: st1.simBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees });
+      saveSimState({ simBalances: st1.simBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simFundingShort: st1.simFundingShort, simFeesShort: st1.simFeesShort });
       get().addLog('success',
         `[SIM-숏온리] ${opportunity.baseAsset} 숏 진입 완료`,
         shortExchange,
@@ -999,7 +1005,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }));
       // Persist sim state after entry
       const st1 = get();
-      saveSimState({ simBalances: st1.simBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees });
+      saveSimState({ simBalances: st1.simBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simFundingShort: st1.simFundingShort, simFeesShort: st1.simFeesShort });
       const totalRoundTripFees = notional * ROUND_TRIP_FEE;
       const netProfit = perFunding - totalRoundTripFees;
       get().addLog('success',
@@ -1296,6 +1302,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       simTotalFundingEarned: 0,
       simTotalTopUps: 0,
       simTotalFees: 0,
+      simFundingShort: 0,
+      simFeesShort: 0,
       fundingHistory: [],
     });
     clearSimState();
@@ -1352,7 +1360,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (isShortOnlyPos) {
         set(s => ({
           simBalances: { ...s.simBalances, [pos.exchange]: (s.simBalances[pos.exchange] ?? 0) + actualFunding },
-          simTotalFundingEarned: s.simTotalFundingEarned + actualFunding,
+          simFundingShort: s.simFundingShort + actualFunding,
         }));
       } else {
         set(s => ({
@@ -1385,7 +1393,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           simPositions: s.simPositions.filter(p => p.simId !== simId),
           simBalances: { ...s.simBalances, [pos.exchange]: s.simBalances[pos.exchange] + returnAmount },
           fundingHistory: newHistory,
-          simTotalFees: s.simTotalFees + exitFee,
+          simFeesShort: s.simFeesShort + exitFee,
         };
       }
       return {
@@ -1397,7 +1405,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     });
     // Persist sim state after close
     const st2 = get();
-    saveSimState({ simBalances: st2.simBalances, simPositions: st2.simPositions, simTotalFundingEarned: st2.simTotalFundingEarned, simTotalTopUps: st2.simTotalTopUps, simTotalFees: st2.simTotalFees });
+    saveSimState({ simBalances: st2.simBalances, simPositions: st2.simPositions, simTotalFundingEarned: st2.simTotalFundingEarned, simTotalTopUps: st2.simTotalTopUps, simTotalFees: st2.simTotalFees, simFundingShort: st2.simFundingShort, simFeesShort: st2.simFeesShort });
     get().addLog(netPnl >= 0 ? 'success' : 'warning',
       `[SIM] 포지션 청산: ${pos.displaySymbol} ${pos.side.toUpperCase()}`,
       pos.exchange,
@@ -1418,6 +1426,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const now = Date.now();
 
     let totalNewFunding = 0;
+    let totalNewFundingShort = 0;
     const balanceDelta: Partial<Record<ExchangeId, number>> = {};
     const pendingLogs: { level: LogLevel; message: string; exchange: ExchangeId; detail: string }[] = [];
     const simFundingPayments: FundingPayment[] = [];
@@ -1431,7 +1440,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const funding = pos.side === 'short'
         ? pos.sizeUSD * currentRate
         : pos.sizeUSD * (-currentRate);
-      totalNewFunding += funding;
+      if (pos.positionType === 'short_only') {
+        totalNewFundingShort += funding;
+      } else {
+        totalNewFunding += funding;
+      }
       balanceDelta[pos.exchange] = (balanceDelta[pos.exchange] ?? 0) + funding;
       pendingLogs.push({
         level: funding >= 0 ? 'success' : 'warning',
@@ -1493,13 +1506,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         simPositions: updated,
         simBalances: newBal,
         simTotalFundingEarned: s.simTotalFundingEarned + totalNewFunding,
+        simFundingShort: s.simFundingShort + totalNewFundingShort,
         fundingHistory: newHistory,
       };
     });
 
     // Persist sim state after update
     const st3 = get();
-    saveSimState({ simBalances: st3.simBalances, simPositions: st3.simPositions, simTotalFundingEarned: st3.simTotalFundingEarned, simTotalTopUps: st3.simTotalTopUps, simTotalFees: st3.simTotalFees });
+    saveSimState({ simBalances: st3.simBalances, simPositions: st3.simPositions, simTotalFundingEarned: st3.simTotalFundingEarned, simTotalTopUps: st3.simTotalTopUps, simTotalFees: st3.simTotalFees, simFundingShort: st3.simFundingShort, simFeesShort: st3.simFeesShort });
 
     // #3: Add logs after state update to avoid mutation during iteration
     for (const log of pendingLogs) {
