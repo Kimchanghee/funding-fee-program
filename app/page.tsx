@@ -11,14 +11,32 @@ import ApiPanel from '@/components/dashboard/ApiPanel';
 import StrategyPanel from '@/components/dashboard/StrategyPanel';
 import DataStatusBar from '@/components/dashboard/DataStatusBar';
 import FundingHistory from '@/components/dashboard/FundingHistory';
+import TradeHistory from '@/components/dashboard/TradeHistory';
+
 import { useFundingStore } from '@/store/fundingStore';
 
 export default function DashboardPage() {
   const { init, showApiPanel, showStrategyPanel } = useFundingStore();
 
   useEffect(() => {
+    console.log('[Page] init() 호출');
     init();
+
+    // 10초 후에도 데이터 없으면 강제 재시도
+    const recovery = setTimeout(() => {
+      const s = useFundingStore.getState();
+      if (!s.lastRatesUpdate) {
+        console.warn('[Page] 10초 경과 — 데이터 없음, 강제 재시도');
+        s.stopPolling();
+        // isLoadingRates 강제 리셋 후 재시도
+        useFundingStore.setState({ isLoadingRates: false, ratesStatus: 'loading' });
+        s.refreshRates();
+        s.startPolling();
+      }
+    }, 10000);
+
     return () => {
+      clearTimeout(recovery);
       useFundingStore.getState().stopPolling();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -29,10 +47,11 @@ export default function DashboardPage() {
       <Header />
 
       <main
+        className="main-content"
         style={{
           maxWidth: 1800,
           margin: '0 auto',
-          padding: '20px 24px',
+          padding: '16px 20px',
           display: 'flex',
           flexDirection: 'column',
           gap: 16,
@@ -47,21 +66,24 @@ export default function DashboardPage() {
         {/* Balance Cards */}
         <BalanceCards />
 
+        {/* Funding History — 펀딩피 수령 내역 */}
+        <FundingHistory />
+
         {/* Funding Rate Table */}
         <FundingRateTable />
 
         {/* Positions */}
         <PositionsTable />
 
-        {/* Funding History */}
-        <FundingHistory />
+        {/* Trade History — 페어별 숏/롱 손익 추적 */}
+        <TradeHistory />
 
         {/* Logs */}
         <LogPanel />
 
         {/* Footer */}
         <div style={{ textAlign: 'center', padding: '16px 0', fontSize: 11, color: 'var(--color-text-muted)' }}>
-          펀딩피 헷징 프로그램 • 5개 거래소 REST API 모니터링 • 8시간마다 펀딩 수령
+          펀딩피 헷징 프로그램 • 멀티 거래소 REST API 모니터링 • 8시간마다 펀딩 수령
         </div>
       </main>
 

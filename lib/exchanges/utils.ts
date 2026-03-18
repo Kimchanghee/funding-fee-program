@@ -6,6 +6,7 @@ export function normalizeFundingRate(
   symbol: string,
   markPrice: number,
   nextFundingTime: number,
+  intervalHours = 8,
 ): FundingRate {
   const parts = symbol.replace(':USDT', '').replace(':USD', '').split('/');
   const baseAsset = parts[0] ?? symbol.split('/')[0] ?? 'UNKNOWN';
@@ -19,7 +20,7 @@ export function normalizeFundingRate(
     ratePercent: rawRate * 100,
     nextFundingTime,
     markPrice,
-    intervalHours: 8,
+    intervalHours,
     updatedAt: Date.now(),
   };
 }
@@ -30,6 +31,9 @@ export function getMinutesToFunding(nextFundingTime: number): number {
 }
 
 export function calcAnnualReturn(spreadDecimal: number): number {
-  // 3 fundings per day × 365 days × spread
-  return spreadDecimal * 3 * 365 * 100;
+  // 순수익 기준: 스프레드 - 왕복수수료(0.2%) 후 연환산
+  const ROUND_TRIP_FEE = 0.0005 * 4; // 0.002
+  const netSpread = spreadDecimal - ROUND_TRIP_FEE;
+  // 3 fundings per day × 365 days × net spread
+  return netSpread * 3 * 365 * 100;
 }

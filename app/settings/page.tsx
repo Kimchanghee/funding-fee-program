@@ -105,30 +105,12 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
-                  최대 포지션 유지 (시간)
-                </label>
-                <input
-                  className="input-field"
-                  type="number"
-                  min={8}
-                  max={720}
-                  step={8}
-                  value={strategyConfig.maxPositionAgeHours}
-                  onChange={e => setStrategyConfig({ maxPositionAgeHours: Number(e.target.value) })}
-                />
-                <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                  {strategyConfig.maxPositionAgeHours}시간 후 청산 알림
-                </div>
-              </div>
             </div>
 
             {/* Toggles */}
             <div style={{ display: 'flex', gap: 16, marginTop: 16, flexWrap: 'wrap' }}>
               {[
                 { key: 'autoExecute', label: '자동 진입', desc: '최적 기회 발견 시 자동으로 포지션 진입', dangerous: true },
-                { key: 'closeOnSpreadReverse', label: '스프레드 반전 시 청산', desc: '스프레드가 0 이하로 내려가면 자동 청산' },
               ].map(({ key, label, desc, dangerous }) => {
                 const value = strategyConfig[key as keyof typeof strategyConfig] as boolean;
                 return (

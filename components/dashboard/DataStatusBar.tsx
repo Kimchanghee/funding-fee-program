@@ -1,7 +1,8 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_COLORS, EXCHANGE_NAMES, SUPPORTED_EXCHANGES } from '@/lib/types';
+import { EXCHANGE_COLORS, EXCHANGE_NAMES } from '@/lib/types';
 
 export default function DataStatusBar() {
   const {
@@ -10,9 +11,17 @@ export default function DataStatusBar() {
     lastRatesUpdate,
     ratesStatus,
     isLoadingRates,
+    enabledExchanges,
   } = useFundingStore();
 
-  const okCount = SUPPORTED_EXCHANGES.filter(ex => exchangeFetchStatus[ex] === 'ok').length;
+  // #10: Live-updating elapsed time
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const okCount = enabledExchanges.filter(ex => exchangeFetchStatus[ex] === 'ok').length;
   const totalRates = fundingRates.length;
 
   const getStatusColor = (status: string | undefined) => {
@@ -39,7 +48,7 @@ export default function DataStatusBar() {
     : '#4b5563';
 
   const timeSinceUpdate = lastRatesUpdate
-    ? Math.floor((Date.now() - lastRatesUpdate) / 1000)
+    ? Math.floor((now - lastRatesUpdate) / 1000)
     : null;
 
   return (
@@ -67,14 +76,14 @@ export default function DataStatusBar() {
           REST API
         </span>
         <span style={{ fontSize: 11, color: okCount > 0 ? '#10b981' : 'var(--color-text-muted)' }}>
-          {okCount}/5 정상
+          {okCount}/{enabledExchanges.length} 정상
         </span>
       </div>
 
       <div style={{ width: 1, height: 16, background: 'var(--color-border)' }} />
 
       {/* Per-exchange status */}
-      {SUPPORTED_EXCHANGES.map(ex => {
+      {enabledExchanges.map(ex => {
         const status = exchangeFetchStatus[ex];
         const color = getStatusColor(status);
         const exColor = EXCHANGE_COLORS[ex];

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
-import { openPosition, closePosition } from '@/lib/exchanges';
+import { openPositionExact, fetchMarketFillPrice, closePosition } from '@/lib/exchanges';
 
 function isValidApiConfig(config: unknown): config is ApiConfig {
   if (!config || typeof config !== 'object') return false;
@@ -45,28 +45,68 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Execute both positions concurrently
+    // ── 100% Hedge: 양쪽 오더북 동시 조회 → 동일 notional 수량 계산 → 동시 실행 ──
+    const targetNotional = investmentUSDT * leverage;
+
+    // 1. Pre-fetch orderbooks from both exchanges simultaneously
+    const [shortFill, longFill] = await Promise.all([
+      fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
+      fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
+    ]);
+
+    // 2. Calculate precise quantities for equal USD exposure
+    const shortQty = targetNotional / shortFill.fillPrice;
+    const longQty = targetNotional / longFill.fillPrice;
+
+    // 3. Limit prices with buffer beyond worst level
+    const PRICE_BUFFER = 0.0005; // 0.05%
+    const shortLimitPrice = shortFill.fillPrice * (1 - PRICE_BUFFER); // selling: below fill price
+    const longLimitPrice = longFill.fillPrice * (1 + PRICE_BUFFER);   // buying: above fill price
+
+    console.log(
+      `[EXECUTE] ${opportunity.baseAsset} 100% hedge plan: ` +
+      `targetNotional=$${targetNotional.toFixed(2)} | ` +
+      `short: qty=${shortQty.toFixed(6)} @${shortFill.fillPrice.toFixed(4)} (slip ${shortFill.slippagePercent.toFixed(4)}%) | ` +
+      `long: qty=${longQty.toFixed(6)} @${longFill.fillPrice.toFixed(4)} (slip ${longFill.slippagePercent.toFixed(4)}%)`,
+    );
+
+    // 4. Execute both with pre-computed quantities (equal notional)
     const [shortResult, longResult] = await Promise.allSettled([
-      openPosition(
+      openPositionExact(
         opportunity.shortExchange,
         shortConfig,
         opportunity.shortSymbol,
         'short',
-        investmentUSDT,
+        shortQty,
+        shortLimitPrice,
         leverage,
       ),
-      openPosition(
+      openPositionExact(
         opportunity.longExchange,
         longConfig,
         opportunity.longSymbol,
         'long',
-        investmentUSDT,
+        longQty,
+        longLimitPrice,
         leverage,
       ),
     ]);
 
     const shortOk = shortResult.status === 'fulfilled';
     const longOk = longResult.status === 'fulfilled';
+
+    // Log notional balance between sides
+    if (shortOk && longOk) {
+      const shortNotional = shortResult.value.filledNotional;
+      const longNotional = longResult.value.filledNotional;
+      const diff = Math.abs(shortNotional - longNotional);
+      const diffPercent = (diff / Math.max(shortNotional, longNotional)) * 100;
+      console.log(
+        `[EXECUTE] ${opportunity.baseAsset} notional balance: ` +
+        `short=$${shortNotional.toFixed(2)} long=$${longNotional.toFixed(2)} ` +
+        `diff=$${diff.toFixed(2)} (${diffPercent.toFixed(3)}%)`,
+      );
+    }
 
     // Rollback: if one side succeeded but the other failed, close the successful side
     let rollbackError: string | undefined;

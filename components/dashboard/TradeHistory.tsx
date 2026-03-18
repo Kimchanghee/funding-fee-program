@@ -1,0 +1,414 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { History, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
+import { fmtNum } from '@/lib/format';
+
+interface TradeEvent {
+  timestamp: number;
+  type: string;
+  simulation: boolean;
+  baseAsset: string;
+  // entry fields
+  shortExchange?: string;
+  longExchange?: string;
+  spread?: number;
+  spreadPercent?: number;
+  margin?: number;
+  leverage?: number;
+  notional?: number;
+  entryFee?: number;
+  netProfit?: number;
+  perFunding?: number;
+  totalRoundTripFees?: number;
+  pairId?: string;
+  // exit fields
+  exchange?: string;
+  side?: string;
+  symbol?: string;
+  pnl?: number;
+  fundingAmount?: number;
+  exitFee?: number;
+  pricePnl?: number;
+  detail?: string;
+  success?: boolean;
+}
+
+interface HedgePair {
+  pairId: string;
+  baseAsset: string;
+  entryTime: number;
+  exitTime: number | null;
+  shortExchange: string;
+  longExchange: string;
+  margin: number;
+  leverage: number;
+  notional: number;
+  spreadPercent: number;
+  expectedProfit: number;
+  // exit breakdown
+  shortExit: TradeEvent | null;
+  longExit: TradeEvent | null;
+  shortPnl: number;
+  longPnl: number;
+  totalPnl: number;
+  shortFunding: number;
+  longFunding: number;
+  totalFunding: number;
+  shortPricePnl: number;
+  longPricePnl: number;
+  status: 'open' | 'partial' | 'closed';
+  isShortOnly?: boolean;
+}
+
+function buildPairs(events: TradeEvent[]): HedgePair[] {
+  const pairs = new Map<string, HedgePair>();
+
+  // First pass: entries
+  for (const ev of events) {
+    if ((ev.type === 'snipe_entry' || ev.type === 'entry' || ev.type === 'shortonly_entry') && ev.pairId) {
+      const isShortOnly = ev.type === 'shortonly_entry';
+      pairs.set(ev.pairId, {
+        pairId: ev.pairId,
+        baseAsset: ev.baseAsset,
+        entryTime: ev.timestamp,
+        exitTime: null,
+        shortExchange: ev.shortExchange || '?',
+        longExchange: isShortOnly ? '' : (ev.longExchange || '?'),
+        margin: ev.margin || 0,
+        leverage: ev.leverage || 1,
+        notional: ev.notional || 0,
+        spreadPercent: ev.spreadPercent || 0,
+        expectedProfit: ev.netProfit || 0,
+        shortExit: null,
+        longExit: isShortOnly ? { timestamp: 0, type: 'n/a', simulation: true, baseAsset: ev.baseAsset } : null,
+        shortPnl: 0,
+        longPnl: 0,
+        totalPnl: 0,
+        shortFunding: 0,
+        longFunding: 0,
+        totalFunding: 0,
+        shortPricePnl: 0,
+        longPricePnl: 0,
+        status: 'open',
+        isShortOnly,
+      });
+    }
+  }
+
+  // Second pass: exits — match by baseAsset + exchange + side + timestamp proximity
+  const exits = events.filter(ev => ev.type === 'snipe_exit' || ev.type === 'exit');
+
+  for (const ex of exits) {
+    // Find the matching pair
+    let matchedPair: HedgePair | null = null;
+    for (const pair of pairs.values()) {
+      if (pair.baseAsset !== ex.baseAsset) continue;
+
+      if (ex.side === 'short' && ex.exchange === pair.shortExchange && !pair.shortExit) {
+        matchedPair = pair;
+        break;
+      }
+      if (ex.side === 'long' && ex.exchange === pair.longExchange && !pair.longExit) {
+        matchedPair = pair;
+        break;
+      }
+    }
+
+    if (!matchedPair) continue;
+
+    if (ex.side === 'short') {
+      matchedPair.shortExit = ex;
+      matchedPair.shortPnl = ex.pnl ?? 0;
+      matchedPair.shortFunding = ex.fundingAmount ?? 0;
+      matchedPair.shortPricePnl = ex.pricePnl ?? 0;
+    } else {
+      matchedPair.longExit = ex;
+      matchedPair.longPnl = ex.pnl ?? 0;
+      matchedPair.longFunding = ex.fundingAmount ?? 0;
+      matchedPair.longPricePnl = ex.pricePnl ?? 0;
+    }
+
+    matchedPair.exitTime = ex.timestamp;
+    matchedPair.totalPnl = matchedPair.shortPnl + matchedPair.longPnl;
+    matchedPair.totalFunding = matchedPair.shortFunding + matchedPair.longFunding;
+
+    if (matchedPair.isShortOnly) {
+      // 숏온리: 숏 청산만 되면 완료
+      matchedPair.status = matchedPair.shortExit ? 'closed' : 'open';
+    } else if (matchedPair.shortExit && matchedPair.longExit) {
+      matchedPair.status = 'closed';
+    } else {
+      matchedPair.status = 'partial';
+    }
+  }
+
+  return Array.from(pairs.values()).sort((a, b) => b.entryTime - a.entryTime);
+}
+
+function PairRow({ pair }: { pair: HedgePair }) {
+  const [expanded, setExpanded] = useState(false);
+  const time = new Date(pair.entryTime).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  const pnlColor = pair.totalPnl >= 0 ? '#10b981' : '#ef4444';
+  const statusColor = pair.status === 'closed' ? '#6b7280' : pair.status === 'partial' ? '#f59e0b' : '#3b82f6';
+  const statusLabel = pair.status === 'closed' ? '완료' : pair.status === 'partial' ? '일부' : '진행중';
+
+  return (
+    <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+      {/* Summary row */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '50px 70px 1fr 100px 100px 80px 30px',
+          alignItems: 'center',
+          padding: '10px 12px',
+          cursor: 'pointer',
+          fontSize: 12,
+          transition: 'background 0.15s',
+          background: expanded ? 'rgba(255,255,255,0.03)' : 'transparent',
+        }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
+        onMouseLeave={e => (e.currentTarget.style.background = expanded ? 'rgba(255,255,255,0.03)' : 'transparent')}
+      >
+        <span style={{ color: statusColor, fontSize: 10, fontWeight: 700 }}>{statusLabel}</span>
+        <span style={{ fontWeight: 700, color: '#e2e8f0' }}>
+          {pair.baseAsset}
+          {pair.isShortOnly && <span style={{ marginLeft: 4, fontSize: 9, color: '#ef4444', background: 'rgba(239,68,68,0.15)', padding: '1px 4px', borderRadius: 3 }}>숏</span>}
+        </span>
+        <span style={{ color: '#94a3b8', fontSize: 11 }}>
+          {pair.isShortOnly
+            ? `숏:${pair.shortExchange.toUpperCase()}`
+            : `숏:${pair.shortExchange.toUpperCase()} / 롱:${pair.longExchange.toUpperCase()}`
+          }
+        </span>
+        <span className="mono" style={{ color: pair.totalFunding >= 0 ? '#10b981' : '#ef4444', fontWeight: 600, textAlign: 'right' }}>
+          {pair.totalFunding >= 0 ? '+' : ''}{fmtNum(pair.totalFunding, 2)}
+        </span>
+        <span className="mono" style={{ color: pnlColor, fontWeight: 700, textAlign: 'right' }}>
+          {pair.totalPnl >= 0 ? '+' : ''}{fmtNum(pair.totalPnl, 2)}
+        </span>
+        <span style={{ color: '#64748b', fontSize: 10, textAlign: 'right' }}>{time}</span>
+        {expanded ? <ChevronUp size={14} color="#64748b" /> : <ChevronDown size={14} color="#64748b" />}
+      </div>
+
+      {/* Detail rows */}
+      {expanded && (
+        <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {/* Entry info */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr',
+            gap: 8, padding: '8px 12px', borderRadius: 8,
+            background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)',
+            fontSize: 11,
+          }}>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>마진</div>
+              <div className="mono" style={{ color: '#e2e8f0', fontWeight: 600 }}>${fmtNum(pair.margin, 0)}</div>
+            </div>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>레버리지</div>
+              <div className="mono" style={{ color: '#e2e8f0', fontWeight: 600 }}>{pair.leverage}x</div>
+            </div>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>노셔널</div>
+              <div className="mono" style={{ color: '#e2e8f0', fontWeight: 600 }}>${fmtNum(pair.notional, 0)}</div>
+            </div>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>스프레드</div>
+              <div className="mono" style={{ color: '#e2e8f0', fontWeight: 600 }}>{fmtNum(pair.spreadPercent, 4)}%</div>
+            </div>
+          </div>
+
+          {/* Short side */}
+          <div style={{
+            padding: '8px 12px', borderRadius: 8,
+            background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)',
+            fontSize: 11,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <span style={{ color: '#ef4444', fontWeight: 700, fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(239,68,68,0.15)' }}>SHORT</span>
+              <span style={{ color: '#94a3b8' }}>{pair.shortExchange.toUpperCase()}</span>
+              {pair.shortExit && (
+                <span className="mono" style={{ marginLeft: 'auto', color: pair.shortPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
+                  {pair.shortPnl >= 0 ? '+' : ''}${fmtNum(pair.shortPnl, 2)}
+                </span>
+              )}
+            </div>
+            {pair.shortExit ? (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, color: '#94a3b8' }}>
+                <div>가격손익: <span className="mono" style={{ color: pair.shortPricePnl >= 0 ? '#10b981' : '#ef4444' }}>${fmtNum(pair.shortPricePnl, 2)}</span></div>
+                <div>펀딩: <span className="mono" style={{ color: pair.shortFunding >= 0 ? '#10b981' : '#ef4444' }}>${fmtNum(pair.shortFunding, 4)}</span></div>
+                <div>수수료: <span className="mono" style={{ color: '#ef4444' }}>-${fmtNum((pair.shortExit.entryFee ?? 0) + (pair.shortExit.exitFee ?? 0), 2)}</span></div>
+              </div>
+            ) : (
+              <div style={{ color: '#64748b' }}>아직 청산되지 않음</div>
+            )}
+          </div>
+
+          {/* Long side (헷징만) */}
+          {!pair.isShortOnly && (
+            <div style={{
+              padding: '8px 12px', borderRadius: 8,
+              background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.15)',
+              fontSize: 11,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                <span style={{ color: '#10b981', fontWeight: 700, fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(16,185,129,0.15)' }}>LONG</span>
+                <span style={{ color: '#94a3b8' }}>{pair.longExchange.toUpperCase()}</span>
+                {pair.longExit && (
+                  <span className="mono" style={{ marginLeft: 'auto', color: pair.longPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
+                    {pair.longPnl >= 0 ? '+' : ''}${fmtNum(pair.longPnl, 2)}
+                  </span>
+                )}
+              </div>
+              {pair.longExit ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, color: '#94a3b8' }}>
+                  <div>가격손익: <span className="mono" style={{ color: pair.longPricePnl >= 0 ? '#10b981' : '#ef4444' }}>${fmtNum(pair.longPricePnl, 2)}</span></div>
+                  <div>펀딩: <span className="mono" style={{ color: pair.longFunding >= 0 ? '#10b981' : '#ef4444' }}>${fmtNum(pair.longFunding, 4)}</span></div>
+                  <div>수수료: <span className="mono" style={{ color: '#ef4444' }}>-${fmtNum((pair.longExit.entryFee ?? 0) + (pair.longExit.exitFee ?? 0), 2)}</span></div>
+                </div>
+              ) : (
+                <div style={{ color: '#64748b' }}>아직 청산되지 않음</div>
+              )}
+            </div>
+          )}
+
+          {/* Combined summary */}
+          {pair.status === 'closed' && (
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr',
+              gap: 8, padding: '8px 12px', borderRadius: 8,
+              background: pair.totalPnl >= 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+              border: `1px solid ${pair.totalPnl >= 0 ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+              fontSize: 11,
+            }}>
+              <div>
+                <div style={{ color: '#64748b', marginBottom: 2 }}>총 가격손익</div>
+                <div className="mono" style={{ color: (pair.shortPricePnl + pair.longPricePnl) >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
+                  ${fmtNum(pair.shortPricePnl + pair.longPricePnl, 2)}
+                </div>
+              </div>
+              <div>
+                <div style={{ color: '#64748b', marginBottom: 2 }}>총 펀딩</div>
+                <div className="mono" style={{ color: pair.totalFunding >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
+                  ${fmtNum(pair.totalFunding, 2)}
+                </div>
+              </div>
+              <div>
+                <div style={{ color: '#64748b', marginBottom: 2 }}>예상수익</div>
+                <div className="mono" style={{ color: '#94a3b8', fontWeight: 600 }}>
+                  ${fmtNum(pair.expectedProfit, 2)}
+                </div>
+              </div>
+              <div>
+                <div style={{ color: '#64748b', marginBottom: 2 }}>실제 합산</div>
+                <div className="mono" style={{ color: pair.totalPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 800, fontSize: 13 }}>
+                  {pair.totalPnl >= 0 ? '+' : ''}${fmtNum(pair.totalPnl, 2)}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function TradeHistory() {
+  const [events, setEvents] = useState<TradeEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  const fetchTrades = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/trades/list');
+      const json = await res.json();
+      if (json.success) setEvents(json.events || []);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchTrades(); }, [fetchTrades]);
+
+  const pairs = buildPairs(events);
+  const totalPnl = pairs.filter(p => p.status === 'closed').reduce((s, p) => s + p.totalPnl, 0);
+  const closedCount = pairs.filter(p => p.status === 'closed').length;
+
+  if (pairs.length === 0 && !loading) return null;
+
+  return (
+    <div className="glass-card" style={{ padding: 0, overflow: 'hidden' }}>
+      {/* Header */}
+      <div
+        onClick={() => setCollapsed(!collapsed)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '14px 16px', cursor: 'pointer',
+          borderBottom: collapsed ? 'none' : '1px solid rgba(255,255,255,0.06)',
+        }}
+      >
+        <History size={16} color="#f59e0b" />
+        <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>
+          거래 내역
+        </span>
+        <span style={{ fontSize: 11, color: '#64748b' }}>
+          {closedCount}건 완료
+        </span>
+        {closedCount > 0 && (
+          <span className="mono" style={{
+            fontSize: 12, fontWeight: 700,
+            color: totalPnl >= 0 ? '#10b981' : '#ef4444',
+            marginLeft: 4,
+          }}>
+            합산: {totalPnl >= 0 ? '+' : ''}${fmtNum(totalPnl, 2)}
+          </span>
+        )}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            onClick={e => { e.stopPropagation(); fetchTrades(); }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+            title="새로고침"
+          >
+            <RefreshCw size={13} color="#64748b" className={loading ? 'spin' : ''} />
+          </button>
+          {collapsed ? <ChevronDown size={16} color="#64748b" /> : <ChevronUp size={16} color="#64748b" />}
+        </div>
+      </div>
+
+      {/* Table header + rows */}
+      {!collapsed && (
+        <>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '50px 70px 1fr 100px 100px 80px 30px',
+            padding: '6px 12px',
+            fontSize: 10,
+            color: '#64748b',
+            fontWeight: 600,
+            borderBottom: '1px solid rgba(255,255,255,0.04)',
+            background: 'rgba(255,255,255,0.02)',
+          }}>
+            <span>상태</span>
+            <span>코인</span>
+            <span>거래소</span>
+            <span style={{ textAlign: 'right' }}>펀딩</span>
+            <span style={{ textAlign: 'right' }}>합산 PnL</span>
+            <span style={{ textAlign: 'right' }}>시각</span>
+            <span></span>
+          </div>
+          {pairs.map(pair => (
+            <PairRow key={pair.pairId} pair={pair} />
+          ))}
+          {pairs.length === 0 && (
+            <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 12 }}>
+              거래 내역이 없습니다
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

@@ -58,6 +58,7 @@ export interface ArbitrageOpportunity {
   annualReturnPercent: number; // spread * 3 * 365 * 100
   nextFundingTime: number;
   minutesToFunding: number;
+  fundingIntervalMs: number;  // 펀딩 주기 (ms) — 거래소/코인별 다름 (기본 8h=28800000)
 }
 
 export interface Position {
@@ -77,7 +78,7 @@ export interface Position {
   liquidationPrice: number;
   fundingRate: number;
   openedAt: number;
-  positionType: 'hedge_long' | 'hedge_short' | 'manual';
+  positionType: 'hedge_long' | 'hedge_short' | 'short_only' | 'manual';
 }
 
 export interface Balance {
@@ -96,14 +97,16 @@ export interface ApiConfig {
   passphrase?: string; // for OKX, Bitget
 }
 
+export type StrategyMode = 'hedge' | 'shortOnly';
+
 export interface StrategyConfig {
-  investmentUSDT: number;   // per side (total = 2x)
+  investmentUSDT: number;   // per side (total = 2x for hedge, 1x for shortOnly)
   leverage: number;         // 1-20
   minSpreadPercent: number; // minimum spread to enter (e.g., 0.05%)
   autoExecute: boolean;     // auto enter at funding time
-  closeOnSpreadReverse: boolean;
-  maxPositionAgeHours: number;
   compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (단리)
+  strategyMode: StrategyMode; // 'hedge' = 숏+롱 헷징, 'shortOnly' = 숏만 스나이프
+  minFundingRate: number;   // shortOnly: minimum funding rate to enter (e.g., 0.003 = 0.3%)
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
@@ -124,6 +127,7 @@ export interface FundingPayment {
   rate: number;
   timestamp: number;
   side: 'long' | 'short';
+  mode?: 'hedge' | 'shortOnly';
 }
 
 export interface SimPosition extends Position {
@@ -135,6 +139,7 @@ export interface SimPosition extends Position {
   isSnipe?: boolean;        // true = 펀딩 스나이핑 (수령 후 자동 청산)
   fundingReceived?: number; // snipe: 펀딩 수령 횟수
   entryFee: number;         // 진입 수수료 (WS 가격 갱신 시 PnL에 반영)
+  fundingIntervalMs?: number; // 펀딩 주기 (ms) — 코인별 다름 (기본 8h)
 }
 
 export const SIM_INITIAL_BALANCE = 2000;

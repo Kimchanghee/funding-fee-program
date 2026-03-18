@@ -126,6 +126,24 @@ export function readTrades(dateStr?: string): TradeEvent[] {
 }
 
 /**
+ * Clear all files in a directory (logs or trades).
+ */
+export function clearData(type: 'logs' | 'trades'): number {
+  try {
+    const dir = type === 'logs' ? LOGS_DIR : TRADES_DIR;
+    ensureDir(dir);
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+    for (const f of files) {
+      fs.unlinkSync(path.join(dir, f));
+    }
+    return files.length;
+  } catch (err) {
+    console.error(`[fileLogger] clearData(${type}) failed:`, err);
+    return 0;
+  }
+}
+
+/**
  * List available log/trade dates.
  */
 export function listDates(type: 'logs' | 'trades'): string[] {

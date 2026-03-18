@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { X, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
+import { fmtNum } from '@/lib/format';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
 import type { Position } from '@/lib/types';
 
@@ -12,10 +13,10 @@ function PnlCell({ value, percent }: { value: number; percent: number }) {
   return (
     <div>
       <div className="mono" style={{ fontSize: 13, fontWeight: 700, color }}>
-        {positive ? '+' : ''}${Math.abs(value).toFixed(2)}
+        {positive ? '+' : ''}${fmtNum(Math.abs(value))}
       </div>
       <div className="mono" style={{ fontSize: 10, color: `${color}aa` }}>
-        {positive ? '+' : ''}{percent.toFixed(2)}%
+        {positive ? '+' : ''}{fmtNum(percent)}%
       </div>
     </div>
   );
@@ -24,12 +25,19 @@ function PnlCell({ value, percent }: { value: number; percent: number }) {
 function CloseModal({ position, onClose }: { position: Position; onClose: () => void }) {
   const { closePosition } = useFundingStore();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleClose = async () => {
     setLoading(true);
-    await closePosition(position);
-    setLoading(false);
-    onClose();
+    setError(null);
+    try {
+      await closePosition(position);
+      onClose();
+    } catch (err) {
+      setError((err as Error).message || '청산 실패');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -59,8 +67,8 @@ function CloseModal({ position, onClose }: { position: Position; onClose: () => 
             ['거래소', EXCHANGE_NAMES[position.exchange as ExchangeId]],
             ['코인', position.displaySymbol],
             ['방향', position.side === 'long' ? '롱 (LONG)' : '숏 (SHORT)'],
-            ['수량', `${position.size.toFixed(4)} ${position.baseAsset}`],
-            ['미실현 손익', `${position.unrealizedPnl >= 0 ? '+' : ''}$${position.unrealizedPnl.toFixed(2)}`],
+            ['수량', `${fmtNum(position.size, 4)} ${position.baseAsset}`],
+            ['미실현 손익', `${position.unrealizedPnl >= 0 ? '+' : ''}$${fmtNum(position.unrealizedPnl)}`],
           ].map(([label, val]) => (
             <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
               <span style={{ color: 'var(--color-text-muted)' }}>{label}</span>
@@ -68,6 +76,11 @@ function CloseModal({ position, onClose }: { position: Position; onClose: () => 
             </div>
           ))}
         </div>
+        {error && (
+          <div style={{ padding: '8px 12px', borderRadius: 8, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', fontSize: 12, color: '#ef4444', marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-ghost" style={{ flex: 1 }} onClick={onClose}>취소</button>
           <button
@@ -88,11 +101,11 @@ function CloseModal({ position, onClose }: { position: Position; onClose: () => 
 }
 
 export default function PositionsTable() {
-  const { positions, isLoadingPositions, refreshPositions, simulationMode, simPositions, closeSimPosition, automationActive, fundingRates } = useFundingStore();
+  const { positions, isLoadingPositions, refreshPositions, simulationMode, simPositions, closeSimPosition, snipeActive, fundingRates } = useFundingStore();
   const [closeTarget, setCloseTarget] = useState<Position | null>(null);
   const [sideFilter, setSideFilter] = useState<'all' | 'long' | 'short'>('all');
 
-  const activePositions = simulationMode ? (simPositions as unknown as Position[]) : positions;
+  const activePositions: Position[] = simulationMode ? simPositions : positions;
   const filtered = activePositions.filter(p => sideFilter === 'all' || p.side === sideFilter);
 
   const totalPnl = activePositions.reduce((s, p) => s + p.unrealizedPnl, 0);
@@ -121,7 +134,7 @@ export default function PositionsTable() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
               {simulationMode ? '[SIM] 시뮬 포지션' : '활성 포지션'}
-              {automationActive && (
+              {snipeActive && (
                 <span style={{
                   display: 'inline-flex', alignItems: 'center', gap: 4,
                   padding: '2px 8px', borderRadius: 10,
@@ -142,18 +155,18 @@ export default function PositionsTable() {
               {activePositions.length > 0 ? '미실현 손익: ' : '포지션 없음'}
               {activePositions.length > 0 && (
                 <span className="mono" style={{ fontWeight: 700, color: totalPnl >= 0 ? '#10b981' : '#ef4444' }}>
-                  {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+                  {totalPnl >= 0 ? '+' : ''}${fmtNum(totalPnl)}
                 </span>
               )}
               {activePositions.length > 0 && (
                 <span style={{ color: 'var(--color-text-muted)' }}>
-                  {' '}• 총 마진: <span className="mono">${totalMargin.toFixed(2)}</span>
+                  {' '}• 총 마진: <span className="mono">${fmtNum(totalMargin)}</span>
                 </span>
               )}
               {simulationMode && activePositions.length > 0 && (
                 <span style={{ color: '#a78bfa' }}>
                   {' '}• 수령 펀딩: <span className="mono" style={{ fontWeight: 700 }}>
-                    {totalFundingCollected >= 0 ? '+' : ''}${totalFundingCollected.toFixed(4)}
+                    {totalFundingCollected >= 0 ? '+' : ''}${fmtNum(totalFundingCollected, 4)}
                   </span>
                 </span>
               )}
@@ -268,12 +281,12 @@ export default function PositionsTable() {
                       </td>
                       <td style={{ padding: '10px 14px' }}>
                         <span className="mono" style={{ fontSize: 12, color: 'var(--color-text)' }}>
-                          {pos.size.toFixed(4)}
+                          {fmtNum(pos.size, 4)}
                         </span>
                       </td>
                       <td style={{ padding: '10px 14px' }}>
                         <span className="mono" style={{ fontSize: 12, color: 'var(--color-text)' }}>
-                          ${pos.margin.toFixed(2)}
+                          ${fmtNum(pos.margin)}
                         </span>
                       </td>
                       <td style={{ padding: '10px 14px' }}>
@@ -290,7 +303,7 @@ export default function PositionsTable() {
                       {simulationMode && (
                         <td style={{ padding: '10px 14px' }}>
                           <span className="mono" style={{ fontSize: 12, color: simPos && simPos.fundingCollected >= 0 ? '#a78bfa' : '#ef4444', fontWeight: 700 }}>
-                            {simPos ? `${simPos.fundingCollected >= 0 ? '+' : ''}$${simPos.fundingCollected.toFixed(4)}` : '—'}
+                            {simPos ? `${simPos.fundingCollected >= 0 ? '+' : ''}$${fmtNum(simPos.fundingCollected, 4)}` : '—'}
                           </span>
                         </td>
                       )}
@@ -310,10 +323,10 @@ export default function PositionsTable() {
                             return (
                               <div>
                                 <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: reversed ? '#ef4444' : '#10b981' }}>
-                                  {reversed ? '!' : ''}{(currentSpread * 100).toFixed(4)}%
+                                  {reversed ? '!' : ''}{fmtNum(currentSpread * 100, 4)}%
                                 </div>
                                 <div className="mono" style={{ fontSize: 9, color: 'var(--color-text-muted)' }}>
-                                  진입: {(entrySpread * 100).toFixed(4)}%
+                                  진입: {fmtNum(entrySpread * 100, 4)}%
                                 </div>
                               </div>
                             );

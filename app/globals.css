@@ -315,3 +315,113 @@ body {
 .spread-warning {
   animation: spread-warning 1s ease-in-out infinite;
 }
+
+/* ── Mobile Responsive ── */
+@media (max-width: 768px) {
+  .toast {
+    left: 12px;
+    right: 12px;
+    transform: none;
+    padding: 12px 16px;
+    font-size: 13px;
+    border-radius: 10px;
+  }
+
+  /* Balance cards: vertical stack on mobile */
+  .balance-cards-container {
+    flex-direction: column !important;
+    overflow-x: visible !important;
+  }
+  .balance-cards-container > div {
+    min-width: unset !important;
+  }
+
+  /* Opportunity grid: 2-col compact on mobile */
+  .opp-table-header,
+  .opp-table-row {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 4px !important;
+    padding: 8px !important;
+  }
+  .opp-hide-mobile {
+    display: none !important;
+  }
+
+  /* Profit grid: 3-col on mobile */
+  .profit-grid-6 {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+
+  /* Funding history header: stack vertically */
+  .funding-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 8px !important;
+  }
+  .funding-header-actions {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* Opportunity sections */
+  .opp-hero-section {
+    flex-direction: column !important;
+    gap: 10px !important;
+  }
+  .opp-hero-section > div {
+    min-width: unset !important;
+    width: 100% !important;
+  }
+  .opp-action-btn {
+    width: 100% !important;
+  }
+
+  /* Stats row wrap */
+  .opp-stats-row {
+    flex-direction: column !important;
+    gap: 6px !important;
+  }
+
+  /* Coin detail: 2 col */
+  .coin-detail-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  /* Portfolio summary header */
+  .portfolio-summary-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 6px !important;
+  }
+  .portfolio-summary-header > .interval-badges {
+    margin-left: 0 !important;
+  }
+
+  /* Header: compact on mobile */
+  .app-header {
+    padding: 0 10px !important;
+    gap: 8px !important;
+    height: auto !important;
+    min-height: 48px;
+    flex-wrap: wrap !important;
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+  }
+  .header-hide-mobile {
+    display: none !important;
+  }
+  .header-exchanges {
+    order: 10;
+    width: 100%;
+    justify-content: center !important;
+    flex-wrap: wrap !important;
+    padding-bottom: 2px;
+  }
+
+  /* Main content padding */
+  .main-content {
+    padding: 8px !important;
+    gap: 10px !important;
+  }
+}

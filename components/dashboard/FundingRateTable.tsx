@@ -5,6 +5,7 @@ import { Search, ChevronUp, ChevronDown, ArrowUpDown } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
 import { estimateProfit } from '@/lib/opportunities';
+import { fmtNum } from '@/lib/format';
 
 type SortField = 'spread' | 'annualReturn' | 'baseAsset' | 'minutesToFunding';
 type SortDir = 'asc' | 'desc';
@@ -208,24 +209,40 @@ export default function FundingRateTable() {
                       </span>
                     </td>
                     <td style={{ padding: '10px 14px' }}>
-                      <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: opp.annualReturnPercent > 100 ? '#10b981' : opp.annualReturnPercent > 30 ? '#f59e0b' : 'var(--color-text-muted)' }}>
-                        {opp.annualReturnPercent.toFixed(1)}%
+                      <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: profit.roiPerYear > 100 ? '#10b981' : profit.roiPerYear > 30 ? '#f59e0b' : 'var(--color-text-muted)' }}>
+                        {profit.roiPerYear.toFixed(1)}%
                       </span>
                     </td>
                     <td style={{ padding: '10px 14px' }}>
                       <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444' }}>
-                        ${profit.netPerFunding.toFixed(2)}
+                        ${fmtNum(profit.netPerFunding)}
                       </span>
                       <span style={{ fontSize: 9, color: 'var(--color-text-muted)', display: 'block' }}>
-                        수수료 -${profit.totalFees.toFixed(2)}
+                        수수료 -${fmtNum(profit.totalFees)}
                       </span>
                     </td>
                     <td style={{ padding: '10px 14px' }}>
-                      <span style={{ fontSize: 12, color: opp.minutesToFunding < 60 ? '#f59e0b' : 'var(--color-text-muted)' }}>
-                        {opp.minutesToFunding < 60
-                          ? `${opp.minutesToFunding}분`
-                          : `${Math.floor(opp.minutesToFunding / 60)}h ${opp.minutesToFunding % 60}m`}
-                      </span>
+                      {(() => {
+                        const intervalH = opp.fundingIntervalMs ? Math.round(opp.fundingIntervalMs / 3600000) : 8;
+                        const isShortInterval = intervalH < 8;
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontSize: 12, color: opp.minutesToFunding < 60 ? '#f59e0b' : 'var(--color-text-muted)' }}>
+                              {opp.minutesToFunding < 60
+                                ? `${opp.minutesToFunding}분`
+                                : `${Math.floor(opp.minutesToFunding / 60)}h ${opp.minutesToFunding % 60}m`}
+                            </span>
+                            <span style={{
+                              fontSize: 9,
+                              fontWeight: 600,
+                              color: isShortInterval ? '#10b981' : 'var(--color-text-muted)',
+                              opacity: isShortInterval ? 1 : 0.6,
+                            }}>
+                              {intervalH}h 주기{isShortInterval ? ' ⚡' : ''}
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 );

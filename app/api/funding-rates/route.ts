@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, FundingRate } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, TRACKED_SYMBOLS } from '@/lib/types';
+import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { fetchFundingRates } from '@/lib/exchanges';
 import { findOpportunities } from '@/lib/opportunities';
 import { saveSnapshotIfRankChanged } from '@/lib/snapshot';
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 // ── Per-exchange cache (independent per exchange) ──
 interface ExchangeCache {
@@ -16,7 +16,7 @@ interface ExchangeCache {
 }
 
 const exchangeCacheMap = new Map<ExchangeId, ExchangeCache>();
-const PER_EXCHANGE_TIMEOUT = 15_000;
+const PER_EXCHANGE_TIMEOUT = 25_000; // 전체 종목 스캔 시 loadMarkets + fetchFundingRates 시간 확보
 const CACHE_TTL = 6_000; // 6s — fresh enough for REST-only polling
 
 /**
@@ -25,17 +25,19 @@ const CACHE_TTL = 6_000; // 6s — fresh enough for REST-only polling
  */
 async function fetchSingleExchange(
   id: ExchangeId,
-  symbols: string[],
+  symbols?: string[],
 ): Promise<ExchangeCache> {
   const existing = exchangeCacheMap.get(id);
 
   try {
+    console.log(`[API] ${id}: fetch 시작`);
     const rates = await Promise.race([
       fetchFundingRates(id, undefined, symbols),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`타임아웃 (${PER_EXCHANGE_TIMEOUT / 1000}s)`)), PER_EXCHANGE_TIMEOUT),
       ),
     ]);
+    console.log(`[API] ${id}: ${rates.length}개 데이터 수신`);
 
     const cache: ExchangeCache = {
       rates,
@@ -46,6 +48,7 @@ async function fetchSingleExchange(
     return cache;
   } catch (err) {
     const errorMsg = (err as Error).message || 'unknown error';
+    console.error(`[API] ${id}: 실패 — ${errorMsg}`);
 
     // If we have cached data less than 30s old, return it as stale-but-usable
     if (existing && (Date.now() - existing.timestamp) < 30_000) {
@@ -79,7 +82,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const symbols = TRACKED_SYMBOLS.map((b) => `${b}/USDT:USDT`);
+  // 전체 선물 종목 스캔 — symbols를 넘기지 않으면 거래소 전체 USDT 페어 반환
+  const symbols: string[] | undefined = undefined;
   const now = Date.now();
 
   // Determine which exchanges need refresh vs can use cache

@@ -2,16 +2,16 @@
 
 import { RefreshCw, Key, Settings, Zap, Activity, FlaskConical } from 'lucide-react';
 import KSTClock from '@/components/ui/KSTClock';
-import StatusDot from '@/components/ui/StatusDot';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_NAMES } from '@/lib/types';
+import { EXCHANGE_NAMES, EXCHANGE_COLORS } from '@/lib/types';
 import Link from 'next/link';
+import { fmtNum } from '@/lib/format';
 
 export default function Header() {
   const {
-    connectedExchanges,
+    enabledExchanges,
+    toggleExchange,
     isLoadingRates,
-    strategyRunning,
     strategyConfig,
     lastRatesUpdate,
     refreshRates,
@@ -21,9 +21,9 @@ export default function Header() {
     simulationMode,
     toggleSimulationMode,
     resetSimulation,
-    automationActive,
-    stopAutomation,
+    snipeActive,
     simPositions,
+    simBalances,
   } = useFundingStore();
 
   const handleRefresh = async () => {
@@ -32,6 +32,7 @@ export default function Header() {
 
   return (
     <header
+      className="app-header"
       style={{
         position: 'sticky',
         top: 0,
@@ -72,14 +73,14 @@ export default function Header() {
       </div>
 
       {/* Divider */}
-      <div style={{ width: 1, height: 24, background: 'var(--color-border)', flexShrink: 0 }} />
+      <div className="header-hide-mobile" style={{ width: 1, height: 24, background: 'var(--color-border)', flexShrink: 0 }} />
 
       {/* Clock */}
-      <KSTClock />
+      <div className="header-hide-mobile"><KSTClock /></div>
 
       {/* Last update */}
       {lastRatesUpdate && (
-        <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+        <span className="header-hide-mobile" style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
           마지막 업데이트: {new Date(lastRatesUpdate).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })}
         </span>
       )}
@@ -87,80 +88,72 @@ export default function Header() {
       {/* Spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* Exchange connection status */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* Exchange ON/OFF toggles */}
+      <div className="header-exchanges" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         {(['binance', 'bybit', 'okx', 'bitget', 'gate'] as const).map((ex) => {
-          const connected = connectedExchanges.includes(ex);
+          const enabled = enabledExchanges.includes(ex);
+          const color = EXCHANGE_COLORS[ex];
           return (
-            <div
+            <button
               key={ex}
+              onClick={() => toggleExchange(ex)}
+              title={`${EXCHANGE_NAMES[ex]} ${enabled ? 'OFF' : 'ON'} (클릭하여 전환)${enabled && simulationMode ? `\n잔고: $${fmtNum(simBalances[ex] ?? 0, 0)}` : ''}`}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 4,
                 padding: '3px 8px',
                 borderRadius: 6,
-                background: connected ? 'rgba(16,185,129,0.1)' : 'var(--bg-accent)',
-                border: `1px solid ${connected ? 'rgba(16,185,129,0.3)' : 'var(--color-border)'}`,
+                background: enabled ? `${color}18` : 'var(--bg-accent)',
+                border: `1px solid ${enabled ? `${color}55` : 'var(--color-border)'}`,
+                cursor: 'pointer',
+                opacity: enabled ? 1 : 0.4,
+                transition: 'all 0.2s ease',
               }}
             >
-              <StatusDot status={connected ? 'connected' : 'disconnected'} size={6} />
-              <span style={{ fontSize: 10, fontWeight: 600, color: connected ? '#10b981' : 'var(--color-text-muted)' }}>
+              <div style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: enabled ? color : 'var(--color-text-muted)',
+                boxShadow: enabled ? `0 0 4px ${color}` : 'none',
+              }} />
+              <span style={{ fontSize: 10, fontWeight: 600, color: enabled ? color : 'var(--color-text-muted)' }}>
                 {EXCHANGE_NAMES[ex]}
               </span>
-            </div>
+            </button>
           );
         })}
+        <span style={{ fontSize: 10, color: 'var(--color-text-muted)', marginLeft: 2 }}>
+          {enabledExchanges.length}/5
+        </span>
       </div>
 
-      <div style={{ width: 1, height: 24, background: 'var(--color-border)' }} />
+      <div className="header-hide-mobile" style={{ width: 1, height: 24, background: 'var(--color-border)' }} />
 
-      {/* Automation status */}
-      {automationActive ? (
-        <button
-          onClick={stopAutomation}
-          className="automation-border"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '4px 12px',
-            borderRadius: 20,
-            background: 'rgba(16,185,129,0.15)',
-            border: '1px solid rgba(16,185,129,0.4)',
-            cursor: 'pointer',
-            position: 'relative',
-            overflow: 'hidden',
-          }}
-          title="클릭하여 자동화 중지"
-        >
-          <div className="automation-sweep" style={{ position: 'absolute', inset: 0 }} />
-          <div className="automation-dot" style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', flexShrink: 0 }} />
-          <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981', position: 'relative' }}>
-            자동화 작동중
-          </span>
-          <span className="mono" style={{ fontSize: 10, color: '#6ee7b7', position: 'relative' }}>
+      {/* Snipe status */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 12px',
+          borderRadius: 20,
+          background: snipeActive ? 'rgba(16,185,129,0.15)' : 'var(--bg-accent)',
+          border: `1px solid ${snipeActive ? 'rgba(16,185,129,0.4)' : 'var(--color-border)'}`,
+        }}
+      >
+        {snipeActive && (
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 4px #10b981', animation: 'blink 1.5s ease-in-out infinite' }} />
+        )}
+        <Activity size={12} color={snipeActive ? '#10b981' : 'var(--color-text-muted)'} />
+        <span style={{ fontSize: 12, fontWeight: 600, color: snipeActive ? '#10b981' : 'var(--color-text-muted)' }}>
+          {snipeActive ? '자동 투자 중' : '대기중'}
+        </span>
+        {snipeActive && simPositions.length > 0 && (
+          <span className="mono" style={{ fontSize: 10, color: '#6ee7b7' }}>
             {simPositions.length}P
           </span>
-        </button>
-      ) : (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '4px 12px',
-            borderRadius: 20,
-            background: strategyRunning ? 'rgba(16,185,129,0.15)' : 'var(--bg-accent)',
-            border: `1px solid ${strategyRunning ? 'rgba(16,185,129,0.4)' : 'var(--color-border)'}`,
-          }}
-        >
-          <Activity size={12} color={strategyRunning ? '#10b981' : 'var(--color-text-muted)'} />
-          <span style={{ fontSize: 12, fontWeight: 600, color: strategyRunning ? '#10b981' : 'var(--color-text-muted)' }}>
-            {strategyRunning ? '실행중' : '대기중'}
-          </span>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Simulation toggle */}
       <button
