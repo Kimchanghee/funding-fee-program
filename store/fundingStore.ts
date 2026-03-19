@@ -65,9 +65,10 @@ interface FundingState {
   exchangeFetchStatus: Partial<Record<ExchangeId, 'ok' | 'error' | 'loading'>>;
   exchangeFetchErrors: Partial<Record<ExchangeId, string>>;
 
-  // Simulation (통합 잔고 풀 — 헷징/숏온리 공유)
+  // Simulation (분리 잔고 풀 — 헷징/숏온리 독립)
   simulationMode: boolean;
-  simBalances: Record<ExchangeId, number>;       // 통합 잔고 (헷징+숏온리 공유)
+  simBalances: Record<ExchangeId, number>;       // 헷징 전용 잔고
+  simBalancesShort: Record<ExchangeId, number>;  // 숏온리 전용 잔고
   simPositions: SimPosition[];
   simTotalFundingEarned: number;  // 누적 펀딩 수령 (헷징 전용)
   simTotalTopUps: number;
@@ -245,7 +246,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
   fundingHistory: [],
   simulationMode: true,
-  simBalances: { binance: 1400, bybit: 1400, okx: 1400, bitget: 1400, gate: 1400 },
+  simBalances: { binance: 700, bybit: 700, okx: 700, bitget: 700, gate: 700 },
+  simBalancesShort: { binance: 700, bybit: 700, okx: 700, bitget: 700, gate: 700 },
   simPositions: [],
   simTotalFundingEarned: 0,
   simTotalTopUps: 0,
@@ -355,6 +357,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (savedSim) {
         set({
           simBalances: savedSim.simBalances as Record<ExchangeId, number>,
+          simBalancesShort: (savedSim.simBalancesShort ?? savedSim.simBalances) as Record<ExchangeId, number>,
           simPositions: savedSim.simPositions,
           simTotalFundingEarned: savedSim.simTotalFundingEarned,
           simTotalTopUps: savedSim.simTotalTopUps ?? 0,
@@ -363,14 +366,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           simFeesShort: savedSim.simFeesShort ?? 0,
         });
       } else {
-        // 최초 실행: 활성 거래소 기준으로 초기 잔고 설정 (통합 풀: investmentUSDT * 2)
+        // 최초 실행: 활성 거래소 기준으로 초기 잔고 설정 (헷징/숏온리 각 investmentUSDT)
         const enabled = get().enabledExchanges;
-        const perExchange = get().strategyConfig.investmentUSDT * 2;
+        const perExchange = get().strategyConfig.investmentUSDT;
         const newBal = {} as Record<ExchangeId, number>;
+        const newBalShort = {} as Record<ExchangeId, number>;
         for (const ex of SUPPORTED_EXCHANGES) {
           newBal[ex] = enabled.includes(ex) ? perExchange : 0;
+          newBalShort[ex] = enabled.includes(ex) ? perExchange : 0;
         }
-        set({ simBalances: newBal });
+        set({ simBalances: newBal, simBalancesShort: newBalShort });
       }
 
       const enabled = get().enabledExchanges;
@@ -629,7 +634,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── Execute strategy ──────────────────────────
   async executeStrategy(opportunity, mode?) {
-    const { apiConfigs, strategyConfig, simulationMode, simBalances, balances } = get();
+    const { apiConfigs, strategyConfig, simulationMode, simBalances, simBalancesShort, balances } = get();
 
     // Guard: minimum spread check
     const effectiveMinSpread = getEffectiveMinSpread(strategyConfig);
@@ -664,7 +669,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // Guard: 순수익 검증
     const notionalEst = (strategyConfig.compoundInvesting
       ? isShortOnly
-        ? (simBalances[opportunity.shortExchange] ?? 0) * 0.9
+        ? (simBalancesShort[opportunity.shortExchange] ?? 0) * 0.9
         : Math.min(
             (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
             (simBalances[opportunity.longExchange] ?? 0) * 0.9,
@@ -707,9 +712,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // ── Simulation branch ──────────────────────
     if (simulationMode && isShortOnly) {
-      // ── 숏온리 시뮬레이션 (통합 잔고: simBalances) ──
+      // ── 숏온리 시뮬레이션 (숏온리 전용 잔고: simBalancesShort) ──
       const { shortExchange } = opportunity;
-      const sBal = get().simBalances;
+      const sBal = get().simBalancesShort;
       const margin = strategyConfig.compoundInvesting
         ? (sBal[shortExchange] ?? 0) * 0.9
         : strategyConfig.investmentUSDT;
@@ -722,12 +727,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const entryFee = notional * TAKER_FEE;
       const totalCost = margin + entryFee;
 
-      // 잔고 확인 (통합 잔고)
+      // 잔고 확인 (숏온리 전용 잔고)
       if ((sBal[shortExchange] ?? 0) < totalCost) {
         const MIN_BALANCE = strategyConfig.investmentUSDT;
         const needed = Math.max(totalCost - (sBal[shortExchange] ?? 0), MIN_BALANCE - (sBal[shortExchange] ?? 0));
-        const currentBalances = get().simBalances;
-        const currentPositions = get().simPositions;
+        const currentBalances = get().simBalancesShort;
+        const currentPositions = get().simPositions.filter(p => p.positionType === 'short_only');
         const donors = Object.entries(currentBalances)
           .filter(([exId]) => exId !== shortExchange)
           .map(([exId, bal]) => {
@@ -742,10 +747,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           if (remaining <= 0) break;
           const transfer = Math.min(donor.surplus, remaining);
           set(s => ({
-            simBalances: {
-              ...s.simBalances,
-              [donor.exId]: (s.simBalances[donor.exId] ?? 0) - transfer,
-              [shortExchange]: (s.simBalances[shortExchange] ?? 0) + transfer,
+            simBalancesShort: {
+              ...s.simBalancesShort,
+              [donor.exId]: (s.simBalancesShort[donor.exId] ?? 0) - transfer,
+              [shortExchange]: (s.simBalancesShort[shortExchange] ?? 0) + transfer,
             },
           }));
           get().addLog('info', `[SIM-숏온리] 내부 이체: ${donor.exId.toUpperCase()} → ${shortExchange.toUpperCase()} $${fmtNum(transfer, 0)}`, shortExchange);
@@ -804,11 +809,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       set(s => ({
         simPositions: [...s.simPositions, shortPos],
-        simBalances: { ...s.simBalances, [shortExchange]: s.simBalances[shortExchange] - totalCost },
+        simBalancesShort: { ...s.simBalancesShort, [shortExchange]: s.simBalancesShort[shortExchange] - totalCost },
         simFeesShort: s.simFeesShort + entryFee,
       }));
       const st1 = get();
-      saveSimState({ simBalances: st1.simBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simFundingShort: st1.simFundingShort, simFeesShort: st1.simFeesShort });
+      saveSimState({ simBalances: st1.simBalances, simBalancesShort: st1.simBalancesShort, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simFundingShort: st1.simFundingShort, simFeesShort: st1.simFeesShort });
       get().addLog('success',
         `[SIM-숏온리] ${opportunity.baseAsset} 숏 진입 완료`,
         shortExchange,
@@ -1005,7 +1010,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }));
       // Persist sim state after entry
       const st1 = get();
-      saveSimState({ simBalances: st1.simBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simFundingShort: st1.simFundingShort, simFeesShort: st1.simFeesShort });
+      saveSimState({ simBalances: st1.simBalances, simBalancesShort: st1.simBalancesShort, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simFundingShort: st1.simFundingShort, simFeesShort: st1.simFeesShort });
       const totalRoundTripFees = notional * ROUND_TRIP_FEE;
       const netProfit = perFunding - totalRoundTripFees;
       get().addLog('success',
@@ -1290,15 +1295,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   resetSimulation() {
-    const bal = get().strategyConfig.investmentUSDT * 2;
+    const bal = get().strategyConfig.investmentUSDT;
     const enabled = get().enabledExchanges;
     const newBal = {} as Record<ExchangeId, number>;
+    const newBalShort = {} as Record<ExchangeId, number>;
     for (const ex of SUPPORTED_EXCHANGES) {
       newBal[ex] = enabled.includes(ex) ? bal : 0;
+      newBalShort[ex] = enabled.includes(ex) ? bal : 0;
     }
     set({
       simPositions: [],
       simBalances: newBal,
+      simBalancesShort: newBalShort,
       simTotalFundingEarned: 0,
       simTotalTopUps: 0,
       simTotalFees: 0,
@@ -1311,7 +1319,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // 서버 측 거래/로그 파일도 초기화
     fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
     fetch('/api/logs/clear', { method: 'DELETE' }).catch(() => {});
-    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal} 리셋 (서버 데이터 포함)`);
+    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal} (헷징) + $${bal} (숏온리) 리셋 (서버 데이터 포함)`);
   },
 
   clearSimFundingHistory() {
@@ -1359,7 +1367,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const isShortOnlyPos = pos.positionType === 'short_only';
       if (isShortOnlyPos) {
         set(s => ({
-          simBalances: { ...s.simBalances, [pos.exchange]: (s.simBalances[pos.exchange] ?? 0) + actualFunding },
+          simBalancesShort: { ...s.simBalancesShort, [pos.exchange]: (s.simBalancesShort[pos.exchange] ?? 0) + actualFunding },
           simFundingShort: s.simFundingShort + actualFunding,
         }));
       } else {
@@ -1391,7 +1399,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (isShortOnlyClose) {
         return {
           simPositions: s.simPositions.filter(p => p.simId !== simId),
-          simBalances: { ...s.simBalances, [pos.exchange]: s.simBalances[pos.exchange] + returnAmount },
+          simBalancesShort: { ...s.simBalancesShort, [pos.exchange]: s.simBalancesShort[pos.exchange] + returnAmount },
           fundingHistory: newHistory,
           simFeesShort: s.simFeesShort + exitFee,
         };
@@ -1405,7 +1413,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     });
     // Persist sim state after close
     const st2 = get();
-    saveSimState({ simBalances: st2.simBalances, simPositions: st2.simPositions, simTotalFundingEarned: st2.simTotalFundingEarned, simTotalTopUps: st2.simTotalTopUps, simTotalFees: st2.simTotalFees, simFundingShort: st2.simFundingShort, simFeesShort: st2.simFeesShort });
+    saveSimState({ simBalances: st2.simBalances, simBalancesShort: st2.simBalancesShort, simPositions: st2.simPositions, simTotalFundingEarned: st2.simTotalFundingEarned, simTotalTopUps: st2.simTotalTopUps, simTotalFees: st2.simTotalFees, simFundingShort: st2.simFundingShort, simFeesShort: st2.simFeesShort });
     get().addLog(netPnl >= 0 ? 'success' : 'warning',
       `[SIM] 포지션 청산: ${pos.displaySymbol} ${pos.side.toUpperCase()}`,
       pos.exchange,
@@ -1427,7 +1435,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     let totalNewFunding = 0;
     let totalNewFundingShort = 0;
-    const balanceDelta: Partial<Record<ExchangeId, number>> = {};
+    const balanceDeltaHedge: Partial<Record<ExchangeId, number>> = {};
+    const balanceDeltaShort: Partial<Record<ExchangeId, number>> = {};
     const pendingLogs: { level: LogLevel; message: string; exchange: ExchangeId; detail: string }[] = [];
     const simFundingPayments: FundingPayment[] = [];
 
@@ -1442,10 +1451,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         : pos.sizeUSD * (-currentRate);
       if (pos.positionType === 'short_only') {
         totalNewFundingShort += funding;
+        balanceDeltaShort[pos.exchange] = (balanceDeltaShort[pos.exchange] ?? 0) + funding;
       } else {
         totalNewFunding += funding;
+        balanceDeltaHedge[pos.exchange] = (balanceDeltaHedge[pos.exchange] ?? 0) + funding;
       }
-      balanceDelta[pos.exchange] = (balanceDelta[pos.exchange] ?? 0) + funding;
       pendingLogs.push({
         level: funding >= 0 ? 'success' : 'warning',
         message: `[SIM] 펀딩 ${funding >= 0 ? '수령' : '지불'}: ${pos.baseAsset} ${pos.side.toUpperCase()}`,
@@ -1495,8 +1505,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     set(s => {
       const newBal = { ...s.simBalances };
-      for (const [ex, delta] of Object.entries(balanceDelta)) {
+      for (const [ex, delta] of Object.entries(balanceDeltaHedge)) {
         newBal[ex as ExchangeId] = (newBal[ex as ExchangeId] ?? 0) + (delta as number);
+      }
+      const newBalShort = { ...s.simBalancesShort };
+      for (const [ex, delta] of Object.entries(balanceDeltaShort)) {
+        newBalShort[ex as ExchangeId] = (newBalShort[ex as ExchangeId] ?? 0) + (delta as number);
       }
       const newHistory = simFundingPayments.length > 0
         ? [...simFundingPayments, ...s.fundingHistory]
@@ -1505,6 +1519,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return {
         simPositions: updated,
         simBalances: newBal,
+        simBalancesShort: newBalShort,
         simTotalFundingEarned: s.simTotalFundingEarned + totalNewFunding,
         simFundingShort: s.simFundingShort + totalNewFundingShort,
         fundingHistory: newHistory,
@@ -1513,7 +1528,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // Persist sim state after update
     const st3 = get();
-    saveSimState({ simBalances: st3.simBalances, simPositions: st3.simPositions, simTotalFundingEarned: st3.simTotalFundingEarned, simTotalTopUps: st3.simTotalTopUps, simTotalFees: st3.simTotalFees, simFundingShort: st3.simFundingShort, simFeesShort: st3.simFeesShort });
+    saveSimState({ simBalances: st3.simBalances, simBalancesShort: st3.simBalancesShort, simPositions: st3.simPositions, simTotalFundingEarned: st3.simTotalFundingEarned, simTotalTopUps: st3.simTotalTopUps, simTotalFees: st3.simTotalFees, simFundingShort: st3.simFundingShort, simFeesShort: st3.simFeesShort });
 
     // #3: Add logs after state update to avoid mutation during iteration
     for (const log of pendingLogs) {
@@ -1581,43 +1596,60 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
 
     // #9: Smart sim balance redistribution — preserve position margins
-    const lockedPerExchange: Partial<Record<ExchangeId, number>> = {};
+    const lockedPerExchangeHedge: Partial<Record<ExchangeId, number>> = {};
+    const lockedPerExchangeShort: Partial<Record<ExchangeId, number>> = {};
     for (const pos of simPositions) {
-      lockedPerExchange[pos.exchange] = (lockedPerExchange[pos.exchange] ?? 0) + pos.margin;
+      if (pos.positionType === 'short_only') {
+        lockedPerExchangeShort[pos.exchange] = (lockedPerExchangeShort[pos.exchange] ?? 0) + pos.margin;
+      } else {
+        lockedPerExchangeHedge[pos.exchange] = (lockedPerExchangeHedge[pos.exchange] ?? 0) + pos.margin;
+      }
     }
 
     const newBal = { ...get().simBalances };
-    if (enabledExchanges.includes(exchange)) {
-      // OFF: redistribute disabled exchange's free balance to remaining
-      const freedBal = newBal[exchange] ?? 0;
-      newBal[exchange] = 0;
-      const perRemaining = freedBal / next.length;
-      for (const ex of next) {
-        newBal[ex] = (newBal[ex] ?? 0) + perRemaining;
-      }
-    } else {
-      // ON: redistribute only free (non-locked) balance equally
-      let totalFree = 0;
-      for (const ex of enabledExchanges) {
-        const locked = lockedPerExchange[ex] ?? 0;
-        totalFree += Math.max(0, (newBal[ex] ?? 0) - locked);
-      }
-      const freePerExchange = totalFree / next.length;
-      for (const ex of SUPPORTED_EXCHANGES) {
-        if (next.includes(ex)) {
-          const locked = lockedPerExchange[ex] ?? 0;
-          newBal[ex] = freePerExchange + locked;
-        } else {
-          newBal[ex] = 0;
+    const newBalShort = { ...get().simBalancesShort };
+
+    function redistributePool(
+      pool: Record<ExchangeId, number>,
+      lockedPerEx: Partial<Record<ExchangeId, number>>,
+    ): Record<ExchangeId, number> {
+      const p = { ...pool };
+      if (enabledExchanges.includes(exchange)) {
+        // OFF: redistribute disabled exchange's free balance to remaining
+        const freedBal = p[exchange] ?? 0;
+        p[exchange] = 0;
+        const perRemaining = freedBal / next.length;
+        for (const ex of next) {
+          p[ex] = (p[ex] ?? 0) + perRemaining;
+        }
+      } else {
+        // ON: redistribute only free (non-locked) balance equally
+        let totalFree = 0;
+        for (const ex of enabledExchanges) {
+          const locked = lockedPerEx[ex] ?? 0;
+          totalFree += Math.max(0, (p[ex] ?? 0) - locked);
+        }
+        const freePerExchange = totalFree / next.length;
+        for (const ex of SUPPORTED_EXCHANGES) {
+          if (next.includes(ex)) {
+            const locked = lockedPerEx[ex] ?? 0;
+            p[ex] = freePerExchange + locked;
+          } else {
+            p[ex] = 0;
+          }
         }
       }
+      return p;
     }
 
-    set({ enabledExchanges: next, simBalances: newBal });
+    const updatedBal = redistributePool(newBal, lockedPerExchangeHedge);
+    const updatedBalShort = redistributePool(newBalShort, lockedPerExchangeShort);
+
+    set({ enabledExchanges: next, simBalances: updatedBal, simBalancesShort: updatedBalShort });
     saveEnabledExchanges(next);
 
     const action = enabledExchanges.includes(exchange) ? 'OFF' : 'ON';
-    const totalSim = Object.values(newBal).reduce((s, v) => s + v, 0);
+    const totalSim = Object.values(updatedBal).reduce((s, v) => s + v, 0) + Object.values(updatedBalShort).reduce((s, v) => s + v, 0);
     get().addLog('info',
       `${exchange.toUpperCase()} ${action} — 활성 ${next.length}개 거래소`,
       exchange,

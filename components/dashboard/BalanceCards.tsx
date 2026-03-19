@@ -7,12 +7,15 @@ import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
 import { fmtNum } from '@/lib/format';
 
-/** 거래소 미니 카드 (통합 잔고, 모드 필터 옵션) */
+/** 거래소 미니 카드 (모드별 전용 잔고 표시) */
 function ExchangeMiniCard({ exchange, mode }: { exchange: ExchangeId; mode?: 'hedge' | 'shortOnly' }) {
-  const { simBalances, simPositions, fundingHistory } = useFundingStore();
+  const { simBalances, simBalancesShort, simPositions, fundingHistory } = useFundingStore();
   const color = EXCHANGE_COLORS[exchange];
 
-  const bal = simBalances[exchange] ?? 0;
+  // 모드별 전용 잔고 풀 사용
+  const bal = mode === 'shortOnly'
+    ? (simBalancesShort[exchange] ?? 0)
+    : (simBalances[exchange] ?? 0);
   const exPositions = simPositions.filter(p => {
     if (p.exchange !== exchange) return false;
     if (mode === 'hedge') return p.positionType === 'hedge_long' || p.positionType === 'hedge_short';
@@ -221,7 +224,7 @@ function SimModeColumn({
 
 export default function BalanceCards() {
   const {
-    balances, simulationMode, simBalances, simPositions,
+    balances, simulationMode, simBalances, simBalancesShort, simPositions,
     simTotalFundingEarned, simTotalFees,
     simFundingShort, simFeesShort,
     enabledExchanges, strategyConfig, resetSimulation,
@@ -254,9 +257,11 @@ export default function BalanceCards() {
     );
   }
 
-  // 시뮬: 통합 잔고, 분리 추적
+  // 시뮬: 헷징+숏온리 양쪽 풀 합산
   const simPoolTotal = Object.values(simBalances).reduce((s, v) => s + v, 0)
+    + Object.values(simBalancesShort).reduce((s, v) => s + v, 0)
     + simPositions.reduce((s, p) => s + p.margin, 0);
+  // 초기 자본: 거래소 수 × investmentUSDT × 2 (헷징 풀 + 숏온리 풀)
   const simInitial = enabledExchanges.length * strategyConfig.investmentUSDT * 2;
   const totalNetProfit = simPoolTotal - simInitial;
 
