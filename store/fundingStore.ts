@@ -1186,6 +1186,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           spread: opportunity.shortRate, spreadPercent: opportunity.shortRate * 100,
           margin: realInvestment, leverage: strategyConfig.leverage,
           success: json.success,
+          pairId: `pair-${Date.now()}-${opportunity.baseAsset}`,
         });
         return json.success === true;
       }
@@ -1247,6 +1248,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         margin: realInvestment, leverage: strategyConfig.leverage,
         detail: `short:${json.short?.success ? 'OK' : json.short?.error} long:${json.long?.success ? 'OK' : json.long?.error}`,
         success: json.success,
+        pairId: `pair-${Date.now()}-${opportunity.baseAsset}`,
       });
       return json.success === true;
     } catch (err) {
@@ -1371,18 +1373,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     });
     clearSimState();
     saveFundingHistory([]);
-    // 서버 측 거래/로그 파일도 초기화
-    fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
-    fetch('/api/logs/clear', { method: 'DELETE' }).catch(() => {});
-    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal} (헷징) + $${bal} (숏온리) 리셋 (서버 데이터 포함)`);
+    // 서버 측 실거래 데이터는 건드리지 않음 (시뮬 데이터는 클라이언트 전용)
+    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal} (헷징) + $${bal} (숏온리) 리셋`);
   },
 
   clearSimFundingHistory() {
     set({ fundingHistory: [] });
     saveFundingHistory([]);
-    // 서버 측 거래 기록도 초기화
-    fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
-    get().addLog('info', '[SIM] 펀딩 수령 내역 초기화 완료 (서버 데이터 포함)');
+    // 서버 측 실거래 데이터는 건드리지 않음 (시뮬 데이터는 클라이언트 전용)
+    get().addLog('info', '[SIM] 펀딩 수령 내역 초기화 완료');
   },
 
   async closeSimPosition(simId) {
@@ -1943,6 +1942,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           const { fundingHistory } = get();
           const recentFunding = fundingHistory.find(f =>
             f.symbol.includes(asset) &&
+            f.exchange === target.shortExchange &&
             f.timestamp > Date.now() - 60_000,
           );
           if (recentFunding) {

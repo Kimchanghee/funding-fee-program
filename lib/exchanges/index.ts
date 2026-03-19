@@ -364,7 +364,15 @@ export async function openPosition(
       : analysis.worstPrice * (1 - PRICE_BUFFER);
 
     // 3. Calculate contract amount from expected fill price for precise notional
-    const contractAmount = notional / analysis.fillPrice;
+    let contractAmount = notional / analysis.fillPrice;
+    // Adjust for exchanges that use contract count instead of base currency amount
+    if (ex.markets && ex.markets[symbol]) {
+      const market = ex.markets[symbol];
+      if (market.contractSize && market.contractSize !== 1) {
+        contractAmount = contractAmount / market.contractSize;
+      }
+      contractAmount = parseFloat(ex.amountToPrecision(symbol, contractAmount));
+    }
 
     console.log(
       `[${id}] ${symbol} ${side} LIMIT IOC: limit=${limitPrice.toFixed(4)}, ` +
@@ -456,6 +464,15 @@ export async function openPositionExact(
   try {
     await ex.setLeverage(leverage, symbol).catch(() => {});
 
+    // Adjust qty for exchanges that use contract count instead of base currency amount
+    if (ex.markets && ex.markets[symbol]) {
+      const market = ex.markets[symbol];
+      if (market.contractSize && market.contractSize !== 1) {
+        qty = qty / market.contractSize;
+      }
+      qty = parseFloat(ex.amountToPrecision(symbol, qty));
+    }
+
     console.log(
       `[${id}] ${symbol} ${side} EXACT LIMIT IOC: limit=${limitPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
     );
@@ -542,6 +559,15 @@ export async function closePosition(
     const levels = side === 'long' ? ob.bids : ob.asks;
     if (!levels || levels.length === 0) {
       throw new Error('empty orderbook');
+    }
+
+    // Adjust amount for exchanges that use contract count instead of base currency amount
+    if (ex.markets && ex.markets[symbol]) {
+      const market = ex.markets[symbol];
+      if (market.contractSize && market.contractSize !== 1) {
+        amount = amount / market.contractSize;
+      }
+      amount = parseFloat(ex.amountToPrecision(symbol, amount));
     }
 
     const estimatedNotional = amount * levels[0][0];

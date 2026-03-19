@@ -34,16 +34,17 @@ export function findOpportunities(
     const spread = high.rate - low.rate;
     if (spread <= 0) continue;
 
-    const nearestFunding = Math.min(
+    // Both sides must have funded before we collect — use the later time (conservative)
+    const nearestFunding = Math.max(
       high.nextFundingTime || Date.now() + 480 * 60000,
       low.nextFundingTime || Date.now() + 480 * 60000,
     );
 
-    // 펀딩 주기: 양쪽 중 더 짧은 간격 사용 (안전)
+    // 펀딩 주기: 양쪽 중 더 긴 간격 사용 (보수적 ROI 계산)
     const DEFAULT_INTERVAL_MS = 8 * 3600 * 1000;
     const shortIntervalMs = (high.intervalHours || 8) * 3600 * 1000;
     const longIntervalMs = (low.intervalHours || 8) * 3600 * 1000;
-    const fundingIntervalMs = Math.min(shortIntervalMs, longIntervalMs) || DEFAULT_INTERVAL_MS;
+    const fundingIntervalMs = Math.max(shortIntervalMs, longIntervalMs) || DEFAULT_INTERVAL_MS;
 
     opportunities.push({
       id: `${baseAsset}-${high.exchange}-${low.exchange}`,

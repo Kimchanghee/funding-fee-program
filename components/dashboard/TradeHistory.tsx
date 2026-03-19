@@ -97,7 +97,7 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
   }
 
   // Second pass: exits — match by baseAsset + exchange + side + timestamp proximity
-  const exits = events.filter(ev => ev.type === 'snipe_exit' || ev.type === 'exit');
+  const exits = events.filter(ev => ev.type === 'snipe_exit' || ev.type === 'exit' || ev.type === 'shortonly_exit');
 
   for (const ex of exits) {
     // Find the matching pair
