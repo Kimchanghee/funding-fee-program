@@ -719,14 +719,26 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
 
     // Guard: 순수익 검증
-    const notionalEst = (strategyConfig.compoundInvesting
-      ? isShortOnly
-        ? (simBalancesShort[opportunity.shortExchange] ?? 0) * 0.9
-        : Math.min(
-            (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
-            (simBalances[opportunity.longExchange] ?? 0) * 0.9,
-          )
-      : strategyConfig.investmentUSDT) * strategyConfig.leverage;
+    const notionalEst = (() => {
+      if (!strategyConfig.compoundInvesting) return strategyConfig.investmentUSDT * strategyConfig.leverage;
+      if (simulationMode) {
+        return (isShortOnly
+          ? (simBalancesShort[opportunity.shortExchange] ?? 0) * 0.9
+          : Math.min(
+              (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
+              (simBalances[opportunity.longExchange] ?? 0) * 0.9,
+            )
+        ) * strategyConfig.leverage;
+      } else {
+        return (isShortOnly
+          ? (balances[opportunity.shortExchange]?.availableUSDT ?? 0) * 0.9
+          : Math.min(
+              (balances[opportunity.shortExchange]?.availableUSDT ?? 0) * 0.9,
+              (balances[opportunity.longExchange]?.availableUSDT ?? 0) * 0.9,
+            )
+        ) * strategyConfig.leverage;
+      }
+    })();
     const estFundingRevenue = isShortOnly
       ? notionalEst * opportunity.shortRate
       : notionalEst * opportunity.spread;
@@ -1291,6 +1303,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           `${position.displaySymbol} ${position.side.toUpperCase()} 청산 완료`,
           position.exchange,
         );
+        queueTrade({
+          timestamp: Date.now(),
+          type: position.positionType === 'short_only' ? 'shortonly_exit' : 'exit',
+          simulation: false,
+          baseAsset: position.baseAsset,
+          shortExchange: position.exchange,
+          side: position.side,
+          pairId: `exit-${Date.now()}-${position.baseAsset}`,
+        });
         setTimeout(() => get().refreshPositions(), 2000);
       } else {
         get().addLog('error', `청산 실패: ${json.error}`, position.exchange);

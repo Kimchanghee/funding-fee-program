@@ -561,12 +561,8 @@ export async function closePosition(
       throw new Error('empty orderbook');
     }
 
-    // Adjust amount for exchanges that use contract count instead of base currency amount
+    // amount already comes from order.filled which is in correct contract units for the exchange
     if (ex.markets && ex.markets[symbol]) {
-      const market = ex.markets[symbol];
-      if (market.contractSize && market.contractSize !== 1) {
-        amount = amount / market.contractSize;
-      }
       amount = parseFloat(ex.amountToPrecision(symbol, amount));
     }
 
