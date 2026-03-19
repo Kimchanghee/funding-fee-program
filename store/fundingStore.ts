@@ -1862,17 +1862,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     };
 
-    // ── 전략 모드에 따라 해당 모드만 스케줄 ──
-    const { strategyMode } = strategyConfig;
-    if (strategyMode === 'hedge') {
-      scheduleForMode('hedge');
-    } else if (strategyMode === 'shortOnly') {
-      scheduleForMode('shortOnly');
-    } else {
-      // 기본값: 둘 다
-      scheduleForMode('hedge');
-      scheduleForMode('shortOnly');
-    }
+    // ── 두 모드 모두 스케줄 (각 모드별 필터 기준이 다름) ──
+    scheduleForMode('hedge');
+    scheduleForMode('shortOnly');
   },
 
   // 특정 코인 1개에 대한 스나이핑 예약 (모드별 독립)
