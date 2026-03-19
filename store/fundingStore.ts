@@ -565,6 +565,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }),
     );
 
+    // 기존 포지션의 positionType 보존 (exchange+symbol+side 기준 매칭)
+    const prevPositions = get().positions;
+    for (const pos of allPositions) {
+      const prev = prevPositions.find(p =>
+        p.exchange === pos.exchange && p.symbol === pos.symbol && p.side === pos.side,
+      );
+      if (prev && prev.positionType !== 'manual') {
+        pos.positionType = prev.positionType;
+        pos.openedAt = prev.openedAt;
+      }
+    }
+
     set({ positions: allPositions, isLoadingPositions: false, lastPositionsUpdate: Date.now() });
   },
 
@@ -1308,6 +1320,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           type: position.positionType === 'short_only' ? 'shortonly_exit' : 'exit',
           simulation: false,
           baseAsset: position.baseAsset,
+          exchange: position.exchange,
           shortExchange: position.exchange,
           side: position.side,
           pairId: `exit-${Date.now()}-${position.baseAsset}`,
@@ -1769,7 +1782,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (activeKeys.has(key)) return false;
         if (!currentEnabled.includes(o.shortExchange)) return false;
         if (!isShort && !currentEnabled.includes(o.longExchange)) return false;
-        return o.spreadPercent > effectiveMinPercent;
+        // 숏온리: 펀딩레이트 기준, 헷징: 스프레드 기준
+        return isShort
+          ? o.shortRate > (strategyConfig.minFundingRate ?? 0.003)
+          : o.spreadPercent > effectiveMinPercent;
       });
       if (filtered.length === 0) return;
 
@@ -1808,9 +1824,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     };
 
-    // ── 두 모드 모두 스케줄 ──
-    scheduleForMode('hedge');
-    scheduleForMode('shortOnly');
+    // ── 전략 모드에 따라 해당 모드만 스케줄 ──
+    const { strategyMode } = strategyConfig;
+    if (strategyMode === 'hedge') {
+      scheduleForMode('hedge');
+    } else if (strategyMode === 'shortOnly') {
+      scheduleForMode('shortOnly');
+    } else {
+      // 기본값: 둘 다
+      scheduleForMode('hedge');
+      scheduleForMode('shortOnly');
+    }
   },
 
   // 특정 코인 1개에 대한 스나이핑 예약 (모드별 독립)
@@ -2000,9 +2024,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         );
         get().addLog('success', `[스나이핑-${isShort ? '숏온리' : '헷징'}] ${asset} 청산 완료`);
         queueTrade({
-          timestamp: Date.now(), type: isShort ? 'shortonly_exit' : 'snipe_exit', simulation: false,
+          timestamp: Date.now(), type: 'snipe_complete', simulation: false,
           baseAsset: asset, shortExchange: target.shortExchange, longExchange: isShort ? undefined : target.longExchange,
-          detail: `fundingVerified:${fundingVerified}`,
+          detail: `fundingVerified:${fundingVerified} | mode:${isShort ? 'shortOnly' : 'hedge'}`,
         });
       } else {
         get().addLog('warning', `[스나이핑-${isShort ? '숏온리' : '헷징'}] ${asset} 청산할 포지션 없음`);

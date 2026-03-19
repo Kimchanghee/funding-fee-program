@@ -246,13 +246,16 @@ export async function fetchPositions(id: ExchangeId, config: ApiConfig): Promise
     const raw: any[] = await ex.fetchPositions();
     return raw
       .filter((p: any) => p.contracts && (p.contracts as number) > 0)
-      .map((p: any) => ({
+      .map((p: any) => {
+        const contracts = (p.contracts as number) || 0;
+        const contractSize = (p.contractSize as number) || 1;
+        return {
         exchange: id,
         symbol: (p.symbol as string) || '',
         displaySymbol: ((p.symbol as string) || '').replace(':USDT', '').replace(':USD', ''),
         baseAsset: ((p.symbol as string) || '').split('/')[0] || '',
         side: (p.side === 'long' ? 'long' : 'short') as 'long' | 'short',
-        size: (p.contracts as number) || 0,
+        size: contracts * contractSize, // contracts → base asset 수량 변환
         sizeUSD: (p.notional as number) || 0,
         entryPrice: (p.entryPrice as number) || 0,
         markPrice: (p.markPrice as number) || 0,
@@ -267,7 +270,8 @@ export async function fetchPositions(id: ExchangeId, config: ApiConfig): Promise
         fundingRate: 0,
         openedAt: Date.now(),
         positionType: 'manual' as const,
-      }));
+      };
+      });
   } catch {
     return [];
   }
@@ -392,7 +396,9 @@ export async function openPosition(
 
     const filledAmount = (order.filled as number) || 0;
     const filledPrice = (order.average as number) || limitPrice;
-    const filledNotional = filledAmount * filledPrice;
+    // contractSize 반영: 계약 수 × contractSize × 가격 = 실제 notional
+    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
+    const filledNotional = filledAmount * cSize * filledPrice;
 
     // 5. If IOC fill < 90%, supplement with market order for remaining
     if (filledAmount < contractAmount * 0.90) {
@@ -415,14 +421,14 @@ export async function openPosition(
 
       console.log(
         `[${id}] ${symbol} ${side} COMBINED: avgPrice=${avgPrice.toFixed(4)}, ` +
-        `totalQty=${totalFilled.toFixed(6)}, notional=$${(totalFilled * avgPrice).toFixed(2)}`,
+        `totalQty=${totalFilled.toFixed(6)}, notional=$${(totalFilled * cSize * avgPrice).toFixed(2)}`,
       );
 
       return {
         orderId: (order.id as string) || (mktOrder.id as string) || '',
         price: avgPrice,
-        amount: totalFilled,
-        filledNotional: totalFilled * avgPrice,
+        amount: totalFilled * cSize, // base asset 수량으로 변환
+        filledNotional: totalFilled * cSize * avgPrice,
       };
     }
 
@@ -434,7 +440,7 @@ export async function openPosition(
     return {
       orderId: (order.id as string) || '',
       price: filledPrice,
-      amount: filledAmount,
+      amount: filledAmount * cSize, // base asset 수량으로 변환
       filledNotional,
     };
   } catch (err) {
@@ -488,6 +494,7 @@ export async function openPositionExact(
 
     const filledAmount = (order.filled as number) || 0;
     const filledPrice = (order.average as number) || limitPrice;
+    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
 
     // If IOC fill < 90%, supplement with market order
     if (filledAmount < qty * 0.90) {
@@ -510,18 +517,18 @@ export async function openPositionExact(
 
       console.log(
         `[${id}] ${symbol} ${side} EXACT COMBINED: avgPrice=${avgPrice.toFixed(4)}, ` +
-        `totalQty=${totalFilled.toFixed(6)}, notional=$${(totalFilled * avgPrice).toFixed(2)}`,
+        `totalQty=${totalFilled.toFixed(6)}, notional=$${(totalFilled * cSize * avgPrice).toFixed(2)}`,
       );
 
       return {
         orderId: (order.id as string) || (mktOrder.id as string) || '',
         price: avgPrice,
-        amount: totalFilled,
-        filledNotional: totalFilled * avgPrice,
+        amount: totalFilled * cSize,
+        filledNotional: totalFilled * cSize * avgPrice,
       };
     }
 
-    const filledNotional = filledAmount * filledPrice;
+    const filledNotional = filledAmount * cSize * filledPrice;
     console.log(
       `[${id}] ${symbol} ${side} EXACT FILLED: price=${filledPrice.toFixed(4)}, ` +
       `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}`,
@@ -530,7 +537,7 @@ export async function openPositionExact(
     return {
       orderId: (order.id as string) || '',
       price: filledPrice,
-      amount: filledAmount,
+      amount: filledAmount * cSize,
       filledNotional,
     };
   } catch (err) {
