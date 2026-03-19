@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { } from 'react';
 import { Wallet, TrendingUp, FlaskConical, RotateCcw } from 'lucide-react';
 import StatusDot from '@/components/ui/StatusDot';
 import { useFundingStore } from '@/store/fundingStore';
@@ -109,38 +109,6 @@ function RealCard({ exchange }: { exchange: ExchangeId }) {
   );
 }
 
-/** 거래 이벤트에서 총 PnL 집계 */
-function useTotalPnl() {
-  const [pnl, setPnl] = useState({ total: 0, count: 0, funding: 0 });
-
-  const refresh = useCallback(async () => {
-    try {
-      const res = await fetch('/api/trades/list');
-      const json = await res.json();
-      if (!json.success) return;
-      const events = json.events || [];
-
-      let total = 0, count = 0, funding = 0;
-      for (const ev of events) {
-        if (ev.type === 'snipe_exit' || ev.type === 'exit' || ev.type === 'shortonly_exit') {
-          total += ev.pnl ?? 0;
-          funding += ev.fundingAmount ?? 0;
-          count++;
-        }
-      }
-      setPnl({ total, count, funding });
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 30000);
-    return () => clearInterval(id);
-  }, [refresh]);
-
-  return pnl;
-}
-
 /** 시뮬 모드 컬럼 카드 (헷징 or 숏온리) */
 function SimModeColumn({
   title,
@@ -224,13 +192,11 @@ function SimModeColumn({
 
 export default function BalanceCards() {
   const {
-    balances, simulationMode, simBalances, simBalancesShort, simPositions,
+    balances, simulationMode, simPositions,
     simTotalFundingEarned, simTotalFees,
     simFundingShort, simFeesShort,
-    enabledExchanges, strategyConfig, resetSimulation,
+    enabledExchanges, resetSimulation,
   } = useFundingStore();
-  const pnl = useTotalPnl();
-
   const totalUSDT = Object.values(balances)
     .filter(b => b?.status === 'connected')
     .reduce((sum, b) => sum + (b?.totalUSDT || 0), 0);
@@ -257,30 +223,10 @@ export default function BalanceCards() {
     );
   }
 
-  // 시뮬: 헷징+숏온리 양쪽 풀 합산
-  const simPoolTotal = Object.values(simBalances).reduce((s, v) => s + v, 0)
-    + Object.values(simBalancesShort).reduce((s, v) => s + v, 0)
-    + simPositions.reduce((s, p) => s + p.margin, 0);
-  // 초기 자본: 거래소 수 × investmentUSDT × 2 (헷징 풀 + 숏온리 풀)
-  const simInitial = enabledExchanges.length * strategyConfig.investmentUSDT * 2;
-  const totalNetProfit = simPoolTotal - simInitial;
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* 초기화 버튼 + 통합 요약 */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="mono" style={{ fontSize: 13, fontWeight: 800, color: 'var(--color-text)' }}>
-            ${simPoolTotal.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </span>
-          <span style={{
-            fontSize: 11, fontWeight: 700,
-            color: totalNetProfit >= 0 ? '#10b981' : '#ef4444',
-          }}>
-            {totalNetProfit >= 0 ? '+' : ''}${fmtNum(totalNetProfit, 2)}
-          </span>
-          <span style={{ fontSize: 10, color: '#64748b' }}>{pnl.count}건</span>
-        </div>
+      {/* 초기화 버튼 */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <button
           onClick={() => { if (confirm('시뮬레이션을 초기화하시겠습니까?')) resetSimulation(); }}
           style={{
