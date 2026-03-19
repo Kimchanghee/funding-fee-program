@@ -2044,12 +2044,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
 
       const currentPositions = get().positions;
-      const targetPositions = currentPositions.filter(p =>
-        p.baseAsset === asset &&
-        (isShort
-          ? (p.exchange === target.shortExchange && p.side === 'short')
-          : (p.exchange === target.shortExchange || p.exchange === target.longExchange)),
-      );
+      const targetPositions = currentPositions.filter(p => {
+        if (p.baseAsset !== asset) return false;
+        if (p.positionType === 'manual') return false; // 사용자 수동 포지션 보호
+        if (isShort) {
+          return p.exchange === target.shortExchange && p.side === 'short'
+            && p.positionType === 'short_only';
+        }
+        return (p.exchange === target.shortExchange || p.exchange === target.longExchange)
+          && (p.positionType === 'hedge_short' || p.positionType === 'hedge_long');
+      });
 
       if (targetPositions.length > 0) {
         get().addLog('info', `[스나이핑-${isShort ? '숏온리' : '헷징'}] ${asset} ${targetPositions.length}개 청산 중...`);
