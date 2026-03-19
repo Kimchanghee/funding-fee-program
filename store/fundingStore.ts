@@ -581,14 +581,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ positions: allPositions, isLoadingPositions: false, lastPositionsUpdate: Date.now() });
   },
 
-  // refreshPositions 후 특정 자산의 positionType을 전략 모드에 맞게 세팅
+  // refreshPositions 후 새로 생긴 포지션에만 positionType 세팅
+  // (기존에 있던 manual 포지션은 건드리지 않음)
   async refreshAndStampPositions(baseAsset: string, mode: 'hedge' | 'shortOnly', exchanges: ExchangeId[]) {
+    // refresh 전 기존 포지션 스냅샷 (exchange+symbol+side 키)
+    const beforeKeys = new Set(
+      get().positions.map(p => `${p.exchange}:${p.symbol}:${p.side}`),
+    );
     await get().refreshPositions();
     set(s => {
       const updated = s.positions.map(p => {
         if (p.baseAsset !== baseAsset) return p;
         if (!exchanges.includes(p.exchange)) return p;
         if (p.positionType !== 'manual') return p; // 이미 타입이 있으면 유지
+        // refresh 전에 이미 있던 포지션이면 스킵 (사용자 기존 포지션)
+        const key = `${p.exchange}:${p.symbol}:${p.side}`;
+        if (beforeKeys.has(key)) return p;
         if (mode === 'shortOnly') {
           return p.side === 'short' ? { ...p, positionType: 'short_only' as const } : p;
         }
