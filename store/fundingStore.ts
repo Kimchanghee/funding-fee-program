@@ -89,6 +89,9 @@ interface FundingState {
   exchangeFilter: ExchangeId[];
   positionToClose: Position | null;
 
+  // Real orderbook spreads (keyed by baseAsset)
+  realSpreads: Record<string, { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number }>;
+
   // Polling interval handles
   _ratesInterval: ReturnType<typeof setInterval> | null;
   _positionsInterval: ReturnType<typeof setInterval> | null;
@@ -102,6 +105,7 @@ interface FundingState {
   refreshRates: () => Promise<void>;
   refreshPositions: () => Promise<void>;
   refreshBalances: () => Promise<void>;
+  refreshRealSpreads: () => Promise<void>;
 
   startPolling: () => void;
   stopPolling: () => void;
@@ -275,6 +279,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   rateFilter: '',
   exchangeFilter: [],
   positionToClose: null,
+  realSpreads: {},
   _ratesInterval: null,
   _positionsInterval: null,
 
@@ -586,6 +591,59 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ balances: next });
   },
 
+  // ── Refresh real orderbook spreads for scheduled coins ──
+  async refreshRealSpreads() {
+    const { snipeTargets, opportunities, strategyConfig, realSpreads } = get();
+    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+    const now = Date.now();
+    const STALE_MS = 10_000;
+
+    // Collect unique baseAssets from snipeTargets
+    const uniqueAssets = new Set<string>();
+    for (const key of Object.keys(snipeTargets)) {
+      uniqueAssets.add(key.split(':')[0]);
+    }
+    if (uniqueAssets.size === 0) return;
+
+    await Promise.allSettled(
+      Array.from(uniqueAssets).map(async (baseAsset) => {
+        // Skip if data is fresh
+        const existing = realSpreads[baseAsset];
+        if (existing && now - existing.updatedAt < STALE_MS) return;
+
+        const opp = opportunities.find(o => o.baseAsset === baseAsset);
+        if (!opp) return;
+
+        const symbol = `${baseAsset}/USDT:USDT`;
+
+        try {
+          const [shortRes, longRes] = await Promise.all([
+            fetch(`/api/exchanges/${opp.shortExchange}/orderbook?symbol=${encodeURIComponent(symbol)}&side=sell&notional=${notional}`),
+            fetch(`/api/exchanges/${opp.longExchange}/orderbook?symbol=${encodeURIComponent(symbol)}&side=buy&notional=${notional}`),
+          ]);
+          const [shortJson, longJson] = await Promise.all([shortRes.json(), longRes.json()]) as [
+            { success: boolean; slippagePercent: number },
+            { success: boolean; slippagePercent: number },
+          ];
+
+          if (shortJson.success && longJson.success) {
+            const shortSlippage = shortJson.slippagePercent;
+            const longSlippage = longJson.slippagePercent;
+            const effectiveSpread = opp.spreadPercent - shortSlippage - longSlippage;
+            set(state => ({
+              realSpreads: {
+                ...state.realSpreads,
+                [baseAsset]: { effectiveSpread, shortSlippage, longSlippage, updatedAt: Date.now() },
+              },
+            }));
+          }
+        } catch {
+          // Silent — real spread just won't be shown
+        }
+      }),
+    );
+  },
+
   // ── Polling ───────────────────────────────────
   startPolling() {
     const s = get();
@@ -602,6 +660,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // 8초 간격 펀딩률 폴링 (REST only, WS 없이 빠르게)
     const ratesInterval = setInterval(() => {
       get().refreshRates();
+      if (get().snipeActive) {
+        get().refreshRealSpreads();
+      }
     }, 8_000);
 
     const positionsInterval = setInterval(() => {
