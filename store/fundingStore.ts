@@ -701,16 +701,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const effectiveMinSpread = getEffectiveMinSpread(strategyConfig);
     const isShortOnly = mode === 'shortOnly';
 
-    if (isShortOnly) {
-      // shortOnly: 펀딩레이트 기준 검증
-      if (opportunity.shortRate < (strategyConfig.minFundingRate ?? 0.003)) {
-        get().addLog('warning',
-          `[숏온리] ${opportunity.baseAsset} 펀딩레이트 ${fmtNum(opportunity.shortRate * 100, 4)}% < 최소 ${fmtNum((strategyConfig.minFundingRate ?? 0.003) * 100, 2)}% — 스킵`,
-          opportunity.shortExchange,
-        );
-        return false;
-      }
-    } else {
+    if (!isShortOnly) {
       // hedge: 스프레드 기준 검증
       if (opportunity.spreadPercent < effectiveMinSpread) {
         get().addLog('warning',
@@ -758,12 +749,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return false;
     }
 
-    // Guard: duplicate position — don't enter same baseAsset twice
+    // Guard: duplicate position — 같은 모드에서 같은 코인 중복 진입 방지
     if (simulationMode) {
-      const existingPair = get().simPositions.find(p => p.baseAsset === opportunity.baseAsset);
+      const existingPair = get().simPositions.find(p =>
+        p.baseAsset === opportunity.baseAsset &&
+        (isShortOnly ? p.positionType === 'short_only' : p.positionType !== 'short_only'),
+      );
       if (existingPair) {
         get().addLog('warning',
-          `[SIM] ${opportunity.baseAsset} 이미 포지션 보유 중 — 중복 진입 스킵`,
+          `[SIM] ${opportunity.baseAsset} 이미 ${isShortOnly ? '숏온리' : '헷징'} 포지션 보유 중 — 중복 진입 스킵`,
           undefined,
           `기존 포지션: ${existingPair.side.toUpperCase()} @ ${existingPair.exchange.toUpperCase()}`,
         );
