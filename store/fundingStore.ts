@@ -448,13 +448,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       fundingRates: s.fundingRates.filter(r => enabled.includes(r.exchange)),
     }));
 
+    let firstSuccess = false; // 첫 성공 시 로딩 해제 플래그
+
     // 거래소별 개별 fetch — 먼저 응답 오는 거래소부터 즉시 반영
     await Promise.allSettled(
       enabled.map(async (exchangeId) => {
         set(s => ({ exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'loading' } }));
         try {
           const res = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, {
-            signal: AbortSignal.timeout(30000),
+            signal: AbortSignal.timeout(15000), // 15초 타임아웃 (느린 거래소가 전체를 막지 않도록)
           });
           const json = await res.json() as {
             success: boolean;
@@ -495,11 +497,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                   lastRatesUpdate: json.timestamp || Date.now(),
                   ratesStatus: 'success',
                   ratesError: null,
+                  isLoadingRates: false, // 첫 성공 거래소부터 즉시 로딩 해제
                   simPositions: updatedSimPositions,
                   exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'ok' },
                   exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: undefined },
                 };
               });
+              firstSuccess = true;
             } catch (setErr) {
               console.error(`[refreshRates] ${exchangeId} set() 실패:`, setErr);
               // set() 실패해도 최소한 상태는 업데이트
