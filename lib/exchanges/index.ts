@@ -568,8 +568,12 @@ export async function closePosition(
       throw new Error('empty orderbook');
     }
 
-    // amount already comes from order.filled which is in correct contract units for the exchange
+    // amount는 base asset 수량 → contractSize로 나눠 계약 단위로 변환
     if (ex.markets && ex.markets[symbol]) {
+      const market = ex.markets[symbol];
+      if (market.contractSize && market.contractSize !== 1) {
+        amount = amount / market.contractSize;
+      }
       amount = parseFloat(ex.amountToPrecision(symbol, amount));
     }
 

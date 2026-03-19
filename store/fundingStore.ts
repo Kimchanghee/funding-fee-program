@@ -104,6 +104,7 @@ interface FundingState {
 
   refreshRates: () => Promise<void>;
   refreshPositions: () => Promise<void>;
+  refreshAndStampPositions: (baseAsset: string, mode: 'hedge' | 'shortOnly', exchanges: ExchangeId[]) => Promise<void>;
   refreshBalances: () => Promise<void>;
   refreshRealSpreads: () => Promise<void>;
 
@@ -578,6 +579,27 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
 
     set({ positions: allPositions, isLoadingPositions: false, lastPositionsUpdate: Date.now() });
+  },
+
+  // refreshPositions 후 특정 자산의 positionType을 전략 모드에 맞게 세팅
+  async refreshAndStampPositions(baseAsset: string, mode: 'hedge' | 'shortOnly', exchanges: ExchangeId[]) {
+    await get().refreshPositions();
+    set(s => {
+      const updated = s.positions.map(p => {
+        if (p.baseAsset !== baseAsset) return p;
+        if (!exchanges.includes(p.exchange)) return p;
+        if (p.positionType !== 'manual') return p; // 이미 타입이 있으면 유지
+        if (mode === 'shortOnly') {
+          return p.side === 'short' ? { ...p, positionType: 'short_only' as const } : p;
+        }
+        // hedge: 숏/롱 구분
+        return {
+          ...p,
+          positionType: (p.side === 'short' ? 'hedge_short' : 'hedge_long') as Position['positionType'],
+        };
+      });
+      return { positions: updated };
+    });
   },
 
   // ── Refresh balances (활성 거래소만) ──────────────
@@ -1203,7 +1225,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           );
         }
 
-        setTimeout(() => get().refreshPositions(), 2000);
+        setTimeout(() => get().refreshAndStampPositions(
+          opportunity.baseAsset, 'shortOnly', [opportunity.shortExchange],
+        ), 2000);
         queueTrade({
           timestamp: Date.now(), type: 'shortonly_entry', simulation: false,
           baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange,
@@ -1264,7 +1288,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         );
       }
 
-      setTimeout(() => get().refreshPositions(), 2000);
+      setTimeout(() => get().refreshAndStampPositions(
+        opportunity.baseAsset, 'hedge', [opportunity.shortExchange, opportunity.longExchange],
+      ), 2000);
       queueTrade({
         timestamp: Date.now(), type: 'entry', simulation: false,
         baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
