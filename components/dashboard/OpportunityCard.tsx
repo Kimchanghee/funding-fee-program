@@ -219,12 +219,17 @@ export default function OpportunityCard() {
       seenAssets.add(opp.baseAsset);
     }
 
-    // Sort: active first, then scheduled by time, then opportunities by spread
-    return items.sort((a, b) => {
+    // 마이너스 순수익 필터링 (활성 포지션은 유지)
+    const profitable = items.filter(i => i.status === 'active' || i.opp.netProfit > 0);
+
+    // Sort: active first, then by 가장 빠른 시간 + 높은 순수익
+    return profitable.sort((a, b) => {
       const priority = { active: 0, scheduled: 1, opportunity: 2 };
       if (priority[a.status] !== priority[b.status]) return priority[a.status] - priority[b.status];
-      if (a.status === 'opportunity') return b.opp.spreadPercent - a.opp.spreadPercent;
-      return a.fundingTime - b.fundingTime;
+      // 같은 상태면: 빠른 시간 우선, 같은 시간이면 순수익 높은 순
+      const timeDiff = a.fundingTime - b.fundingTime;
+      if (Math.abs(timeDiff) > 120_000) return timeDiff; // 2분 이상 차이나면 시간 우선
+      return b.opp.netProfit - a.opp.netProfit; // 비슷한 시간이면 순수익 우선
     });
   }, [opportunities, snipeTargets, simPositions, positions, simulationMode]);
 

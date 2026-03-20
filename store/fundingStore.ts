@@ -104,6 +104,7 @@ interface FundingState {
   refreshAndStampPositions: (baseAsset: string, exchanges: ExchangeId[]) => Promise<void>;
   refreshBalances: () => Promise<void>;
   refreshRealSpreads: () => Promise<void>;
+  revalidateScheduledSnipes: () => void;
 
   startPolling: () => void;
   stopPolling: () => void;
@@ -746,8 +747,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const ratesInterval = setInterval(() => {
       get().refreshRates();
       if (get().snipeActive) {
-        get().refreshRealSpreads();
-        get().scheduleAllSnipes();
+        get().refreshRealSpreads().then(() => {
+          // 예약 코인 실시간 재검증: netProfit ≤ 0 즉시 해제 + 더 좋은 기회로 교체
+          get().revalidateScheduledSnipes();
+          get().scheduleAllSnipes();
+        });
       }
     }, 8_000);
 
@@ -1585,6 +1589,55 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   setExchangeFilter: (v) => set({ exchangeFilter: v }),
   setPositionToClose: (v) => set({ positionToClose: v }),
 
+  // ── 예약 코인 실시간 재검증: 8초마다 — netProfit ≤ 0 즉시 해제 + 더 좋은 기회로 교체 ──
+  revalidateScheduledSnipes() {
+    const { snipeTargets, opportunities, strategyConfig } = get();
+    const snipeKeys = Object.keys(snipeTargets);
+    if (snipeKeys.length === 0) return;
+
+    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+    const roundTripFee = notional * TAKER_FEE * 4;
+
+    for (const asset of snipeKeys) {
+      const currentOpp = opportunities.find(o => o.baseAsset === asset);
+      if (!currentOpp) {
+        // 기회 목록에서 사라짐 → 해제
+        get().addLog('warning', `[재검증] ${asset} 기회 소멸 — 예약 해제`);
+        get().cancelSnipeForAsset(asset);
+        continue;
+      }
+
+      // 실시간 순수익 재계산
+      const liveNetProfit = notional * currentOpp.spread - roundTripFee;
+      if (liveNetProfit <= 0) {
+        get().addLog('warning',
+          `[재검증] ${asset} 순수익 $${fmtNum(liveNetProfit)} ≤ 0 — 예약 해제`,
+          undefined,
+          `스프레드: ${fmtNum(currentOpp.spreadPercent, 4)}% | 수수료: $${fmtNum(roundTripFee)}`,
+        );
+        get().cancelSnipeForAsset(asset);
+        continue;
+      }
+
+      // 10%+ 더 좋은 기회 발견 시 교체
+      const betterOpp = opportunities.find(o => {
+        if (o.baseAsset === asset) return false;
+        if (snipeTargets[o.baseAsset]) return false;
+        if (o.netProfit <= 0) return false;
+        return liveNetProfit > 0 && (o.netProfit - liveNetProfit) / liveNetProfit >= 0.10;
+      });
+
+      if (betterOpp) {
+        const improvePct = ((betterOpp.netProfit - liveNetProfit) / liveNetProfit * 100).toFixed(1);
+        get().addLog('info',
+          `[교체] ${asset}($${fmtNum(liveNetProfit)}) → ${betterOpp.baseAsset}($${fmtNum(betterOpp.netProfit)}) +${improvePct}%`,
+        );
+        get().cancelSnipeForAsset(asset);
+        get().scheduleSnipeForAsset(betterOpp);
+      }
+    }
+  },
+
   // ── 트루 스나이핑: 코인별 독립 타이머 — 펀딩 7초 전 진입 → 수령 확인 → 즉시 청산 ──
 
   // 펀딩 주기별(1h/4h/8h) 최적 기회 1개씩 선택 → 겹치는 시간대는 최고 수익만
@@ -1601,12 +1654,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const now = Date.now();
     const CONFLICT_WINDOW_MS = 2 * 60 * 1000;
 
-    // 헷징 기준: 스프레드 > 최소%, 양쪽 거래소 활성화
+    // 헷징 기준: 순수익 > 0, 양쪽 거래소 활성화
     const filtered = opportunities.filter(o => {
       if (activeKeys.has(o.baseAsset)) return false;
       if (!currentEnabled.includes(o.shortExchange)) return false;
       if (!currentEnabled.includes(o.longExchange)) return false;
-      return o.spreadPercent > effectiveMinPercent;
+      return o.netProfit > 0;
     });
     if (filtered.length === 0) return;
 
@@ -1617,8 +1670,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (opp) scheduledTimes.push(opp.nextFundingTime);
     }
 
-    // 스프레드 높은 순 정렬 → 시간 겹침만 제거하고 모두 선택
-    const sorted = [...filtered].sort((a, b) => b.spreadPercent - a.spreadPercent);
+    // 순수익 높은 순 정렬 → 시간 겹침만 제거하고 모두 선택
+    const sorted = [...filtered].sort((a, b) => b.netProfit - a.netProfit);
     const result: typeof filtered = [];
     for (const opp of sorted) {
       // 이미 스케줄된 시간과 2분 이내 겹치면 스킵
@@ -1695,15 +1748,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const snipeKey = asset;
     const { enabledExchanges: currentEnabled } = get();
 
-    // 진입 시점에 해당 코인의 최신 기회 확인
+    // 진입 시점에 해당 코인의 최신 기회 확인 (순수익 기준)
     const { opportunities } = get();
-    const timerMinPercent = getEffectiveMinSpread(get().strategyConfig);
     const latestOpp = opportunities.find(o =>
       o.baseAsset === asset &&
       currentEnabled.includes(o.shortExchange) &&
       currentEnabled.includes(o.longExchange),
     );
-    const meetsThreshold = (o: ArbitrageOpportunity) => o.spreadPercent > timerMinPercent;
+    const meetsThreshold = (o: ArbitrageOpportunity) => o.netProfit > 0;
     const finalTarget = latestOpp && meetsThreshold(latestOpp)
       ? latestOpp
       : meetsThreshold(opportunity) ? opportunity : null;
@@ -1739,9 +1791,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         get().addLog('info',
           `[스나이핑-헷징] ${asset} 자동청산 예약 — ${fmtNum(closeDelay / 1000, 0)}초 후`,
         );
+        // 진입 후 남은 자금으로 다음 최고 수익 기회 자동 예약
+        if (get().snipeActive) {
+          get().scheduleAllSnipes();
+        }
       } else {
         get().addLog('error', `[스나이핑-헷징] ${asset} 진입 실패`);
         get().cancelSnipeForAsset(snipeKey);
+        // 실패해도 다른 기회 시도
+        if (get().snipeActive) {
+          get().scheduleAllSnipes();
+        }
       }
     });
   },
