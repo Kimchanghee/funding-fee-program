@@ -3,7 +3,7 @@
 import { RefreshCw, Key, Settings, Zap, Activity, FlaskConical } from 'lucide-react';
 import KSTClock from '@/components/ui/KSTClock';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_NAMES, EXCHANGE_COLORS } from '@/lib/types';
+import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES } from '@/lib/types';
 import Link from 'next/link';
 import { fmtNum } from '@/lib/format';
 
@@ -90,7 +90,7 @@ export default function Header() {
 
       {/* Exchange ON/OFF toggles */}
       <div className="header-exchanges" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-        {(['binance', 'bybit', 'okx', 'bitget', 'gate'] as const).map((ex) => {
+        {SUPPORTED_EXCHANGES.map((ex) => {
           const enabled = enabledExchanges.includes(ex);
           const color = EXCHANGE_COLORS[ex];
           return (
@@ -123,7 +123,7 @@ export default function Header() {
           );
         })}
         <span style={{ fontSize: 10, color: 'var(--color-text-muted)', marginLeft: 2 }}>
-          {enabledExchanges.length}/5
+          {enabledExchanges.length}/{SUPPORTED_EXCHANGES.length}
         </span>
       </div>
 

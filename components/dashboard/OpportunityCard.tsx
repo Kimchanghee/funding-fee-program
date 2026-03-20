@@ -433,7 +433,9 @@ export default function OpportunityCard() {
             </div>
 
             {/* Rows — 실효스프레드 기반 순수익 마이너스 자동 필터링 */}
-            {scheduledCoins.map((item, idx) => {
+            {(() => {
+              let visibleIdx = 0;
+              return scheduledCoins.map((item) => {
               const isExpanded = expandedAsset === item.asset;
               const realSpread = realSpreads[item.asset];
               const effectiveOpp: ArbitrageOpportunity = realSpread
@@ -442,6 +444,8 @@ export default function OpportunityCard() {
               const profit = estimateProfit(effectiveOpp, perExchangeInvestment, strategyConfig.leverage);
               // 마이너스 순수익은 활성 포지션 외 숨김
               if (item.status !== 'active' && profit.netPerFunding <= 0) return null;
+
+              visibleIdx++;
 
               return (
                 <div key={item.asset}>
@@ -471,7 +475,7 @@ export default function OpportunityCard() {
                   >
                     {/* Rank */}
                     <span className="mono opp-hide-mobile" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-                      {idx + 1}
+                      {visibleIdx}
                     </span>
 
                     {/* Status Badge */}
@@ -528,7 +532,8 @@ export default function OpportunityCard() {
                   )}
                 </div>
               );
-            })}
+            });
+            })()}
           </div>
         )}
 
