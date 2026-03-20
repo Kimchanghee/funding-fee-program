@@ -432,7 +432,7 @@ export default function OpportunityCard() {
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>카운트다운</span>
             </div>
 
-            {/* Rows */}
+            {/* Rows — 실효스프레드 기반 순수익 마이너스 자동 필터링 */}
             {scheduledCoins.map((item, idx) => {
               const isExpanded = expandedAsset === item.asset;
               const realSpread = realSpreads[item.asset];
@@ -440,6 +440,8 @@ export default function OpportunityCard() {
                 ? { ...item.opp, spread: realSpread.effectiveSpread / 100, spreadPercent: realSpread.effectiveSpread }
                 : item.opp;
               const profit = estimateProfit(effectiveOpp, perExchangeInvestment, strategyConfig.leverage);
+              // 마이너스 순수익은 활성 포지션 외 숨김
+              if (item.status !== 'active' && profit.netPerFunding <= 0) return null;
 
               return (
                 <div key={item.asset}>

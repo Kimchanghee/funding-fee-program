@@ -1591,7 +1591,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── 예약 코인 실시간 재검증: 8초마다 — netProfit ≤ 0 즉시 해제 + 더 좋은 기회로 교체 ──
   revalidateScheduledSnipes() {
-    const { snipeTargets, opportunities, strategyConfig } = get();
+    const { snipeTargets, opportunities, strategyConfig, realSpreads: currentRealSpreads } = get();
     const snipeKeys = Object.keys(snipeTargets);
     if (snipeKeys.length === 0) return;
 
@@ -1601,14 +1601,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     for (const asset of snipeKeys) {
       const currentOpp = opportunities.find(o => o.baseAsset === asset);
       if (!currentOpp) {
-        // 기회 목록에서 사라짐 → 해제
         get().addLog('warning', `[재검증] ${asset} 기회 소멸 — 예약 해제`);
         get().cancelSnipeForAsset(asset);
         continue;
       }
 
-      // 실시간 순수익 재계산
-      const liveNetProfit = notional * currentOpp.spread - roundTripFee;
+      // 실효스프레드(오더북 슬리피지 반영) 기준 순수익 재계산
+      const realSpreadData = currentRealSpreads[asset];
+      const effectiveSpread = (realSpreadData && Date.now() - realSpreadData.updatedAt < 30_000)
+        ? realSpreadData.effectiveSpread / 100
+        : currentOpp.spread;
+      const liveNetProfit = notional * effectiveSpread - roundTripFee;
       if (liveNetProfit <= 0) {
         get().addLog('warning',
           `[재검증] ${asset} 순수익 $${fmtNum(liveNetProfit)} ≤ 0 — 예약 해제`,
