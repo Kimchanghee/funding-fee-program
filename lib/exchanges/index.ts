@@ -56,6 +56,8 @@ function createExchange(id: ExchangeId, config?: ApiConfig): any {
       return new ccxt.bitget({ ...opts, options: { defaultType: 'swap' } });
     case 'gate':
       return new ccxt.gateio({ ...opts, options: { defaultType: 'swap' } });
+    case 'bingx':
+      return new ccxt.bingx({ ...opts, options: { defaultType: 'swap' } });
     default:
       throw new Error(`Unsupported exchange: ${id}`);
   }

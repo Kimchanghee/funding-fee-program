@@ -58,7 +58,6 @@ interface HedgePair {
   shortPricePnl: number;
   longPricePnl: number;
   status: 'open' | 'partial' | 'closed';
-  isShortOnly?: boolean;
 }
 
 function buildPairs(events: TradeEvent[]): HedgePair[] {
@@ -66,22 +65,21 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
 
   // First pass: entries
   for (const ev of events) {
-    if ((ev.type === 'snipe_entry' || ev.type === 'entry' || ev.type === 'shortonly_entry') && ev.pairId) {
-      const isShortOnly = ev.type === 'shortonly_entry';
+    if ((ev.type === 'snipe_entry' || ev.type === 'entry') && ev.pairId) {
       pairs.set(ev.pairId, {
         pairId: ev.pairId,
         baseAsset: ev.baseAsset,
         entryTime: ev.timestamp,
         exitTime: null,
         shortExchange: ev.shortExchange || '?',
-        longExchange: isShortOnly ? '' : (ev.longExchange || '?'),
+        longExchange: ev.longExchange || '?',
         margin: ev.margin || 0,
         leverage: ev.leverage || 1,
         notional: ev.notional || 0,
         spreadPercent: ev.spreadPercent || 0,
         expectedProfit: ev.netProfit || 0,
         shortExit: null,
-        longExit: isShortOnly ? { timestamp: 0, type: 'n/a', simulation: true, baseAsset: ev.baseAsset } : null,
+        longExit: null,
         shortPnl: 0,
         longPnl: 0,
         totalPnl: 0,
@@ -91,13 +89,12 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
         shortPricePnl: 0,
         longPricePnl: 0,
         status: 'open',
-        isShortOnly,
       });
     }
   }
 
   // Second pass: exits — match by baseAsset + exchange + side + timestamp proximity
-  const exits = events.filter(ev => ev.type === 'snipe_exit' || ev.type === 'exit' || ev.type === 'shortonly_exit');
+  const exits = events.filter(ev => ev.type === 'snipe_exit' || ev.type === 'exit');
 
   for (const ex of exits) {
     // Find the matching pair
@@ -133,10 +130,7 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
     matchedPair.totalPnl = matchedPair.shortPnl + matchedPair.longPnl;
     matchedPair.totalFunding = matchedPair.shortFunding + matchedPair.longFunding;
 
-    if (matchedPair.isShortOnly) {
-      // 숏온리: 숏 청산만 되면 완료
-      matchedPair.status = matchedPair.shortExit ? 'closed' : 'open';
-    } else if (matchedPair.shortExit && matchedPair.longExit) {
+    if (matchedPair.shortExit && matchedPair.longExit) {
       matchedPair.status = 'closed';
     } else {
       matchedPair.status = 'partial';
@@ -175,13 +169,9 @@ function PairRow({ pair }: { pair: HedgePair }) {
         <span style={{ color: statusColor, fontSize: 10, fontWeight: 700 }}>{statusLabel}</span>
         <span style={{ fontWeight: 700, color: '#e2e8f0' }}>
           {pair.baseAsset}
-          {pair.isShortOnly && <span style={{ marginLeft: 4, fontSize: 9, color: '#ef4444', background: 'rgba(239,68,68,0.15)', padding: '1px 4px', borderRadius: 3 }}>숏</span>}
         </span>
         <span style={{ color: '#94a3b8', fontSize: 11 }}>
-          {pair.isShortOnly
-            ? `숏:${pair.shortExchange.toUpperCase()}`
-            : `숏:${pair.shortExchange.toUpperCase()} / 롱:${pair.longExchange.toUpperCase()}`
-          }
+          {`숏:${pair.shortExchange.toUpperCase()} / 롱:${pair.longExchange.toUpperCase()}`}
         </span>
         <span className="mono" style={{ color: pair.totalFunding >= 0 ? '#10b981' : '#ef4444', fontWeight: 600, textAlign: 'right' }}>
           {pair.totalFunding >= 0 ? '+' : ''}{fmtNum(pair.totalFunding, 2)}
@@ -247,33 +237,31 @@ function PairRow({ pair }: { pair: HedgePair }) {
             )}
           </div>
 
-          {/* Long side (헷징만) */}
-          {!pair.isShortOnly && (
-            <div style={{
-              padding: '8px 12px', borderRadius: 8,
-              background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.15)',
-              fontSize: 11,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                <span style={{ color: '#10b981', fontWeight: 700, fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(16,185,129,0.15)' }}>LONG</span>
-                <span style={{ color: '#94a3b8' }}>{pair.longExchange.toUpperCase()}</span>
-                {pair.longExit && (
-                  <span className="mono" style={{ marginLeft: 'auto', color: pair.longPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
-                    {pair.longPnl >= 0 ? '+' : ''}${fmtNum(pair.longPnl, 2)}
-                  </span>
-                )}
-              </div>
-              {pair.longExit ? (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, color: '#94a3b8' }}>
-                  <div>가격손익: <span className="mono" style={{ color: pair.longPricePnl >= 0 ? '#10b981' : '#ef4444' }}>${fmtNum(pair.longPricePnl, 2)}</span></div>
-                  <div>펀딩: <span className="mono" style={{ color: pair.longFunding >= 0 ? '#10b981' : '#ef4444' }}>${fmtNum(pair.longFunding, 4)}</span></div>
-                  <div>수수료: <span className="mono" style={{ color: '#ef4444' }}>-${fmtNum((pair.longExit.entryFee ?? 0) + (pair.longExit.exitFee ?? 0), 2)}</span></div>
-                </div>
-              ) : (
-                <div style={{ color: '#64748b' }}>아직 청산되지 않음</div>
+          {/* Long side */}
+          <div style={{
+            padding: '8px 12px', borderRadius: 8,
+            background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.15)',
+            fontSize: 11,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <span style={{ color: '#10b981', fontWeight: 700, fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(16,185,129,0.15)' }}>LONG</span>
+              <span style={{ color: '#94a3b8' }}>{pair.longExchange.toUpperCase()}</span>
+              {pair.longExit && (
+                <span className="mono" style={{ marginLeft: 'auto', color: pair.longPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
+                  {pair.longPnl >= 0 ? '+' : ''}${fmtNum(pair.longPnl, 2)}
+                </span>
               )}
             </div>
-          )}
+            {pair.longExit ? (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, color: '#94a3b8' }}>
+                <div>가격손익: <span className="mono" style={{ color: pair.longPricePnl >= 0 ? '#10b981' : '#ef4444' }}>${fmtNum(pair.longPricePnl, 2)}</span></div>
+                <div>펀딩: <span className="mono" style={{ color: pair.longFunding >= 0 ? '#10b981' : '#ef4444' }}>${fmtNum(pair.longFunding, 4)}</span></div>
+                <div>수수료: <span className="mono" style={{ color: '#ef4444' }}>-${fmtNum((pair.longExit.entryFee ?? 0) + (pair.longExit.exitFee ?? 0), 2)}</span></div>
+              </div>
+            ) : (
+              <div style={{ color: '#64748b' }}>아직 청산되지 않음</div>
+            )}
+          </div>
 
           {/* Combined summary */}
           {pair.status === 'closed' && (

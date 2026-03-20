@@ -2,19 +2,15 @@
 
 import { X, DollarSign, TrendingUp, Info } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { estimateProfit, estimateProfitShortOnly } from '@/lib/opportunities';
+import { estimateProfit } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 
 export default function StrategyPanel() {
-  const { strategyConfig, setStrategyConfig, setShowStrategyPanel, opportunities, simulationMode, simPositions, positions, snipeActive } = useFundingStore();
-  const hasOpenPositions = simulationMode ? simPositions.length > 0 : positions.length > 0;
-  const canSwitchMode = !hasOpenPositions && !snipeActive;
+  const { strategyConfig, setStrategyConfig, setShowStrategyPanel, opportunities } = useFundingStore();
   const best = opportunities[0];
 
   const profit = best
-    ? (strategyConfig.strategyMode === 'shortOnly'
-      ? estimateProfitShortOnly(best, strategyConfig.investmentUSDT, strategyConfig.leverage)
-      : estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage))
+    ? estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage)
     : null;
 
   return (
@@ -48,45 +44,6 @@ export default function StrategyPanel() {
         </div>
 
         <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {/* Strategy Mode */}
-          <div style={{ padding: 16, borderRadius: 10, background: 'var(--bg-accent)', border: '1px solid var(--color-border)' }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text)', marginBottom: 12 }}>
-              전략 모드
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {([
-                { label: '헷징 (숏+롱)', value: 'hedge' as const, color: '#3b82f6', desc: '델타 뉴트럴, 스프레드 수익' },
-                { label: '숏온리', value: 'shortOnly' as const, color: '#ef4444', desc: '숏만 진입, 펀딩 전액 수령' },
-              ]).map(({ label, value, color, desc }) => (
-                <button
-                  key={value}
-                  onClick={() => canSwitchMode && setStrategyConfig({ strategyMode: value })}
-                  disabled={!canSwitchMode && strategyConfig.strategyMode !== value}
-                  style={{
-                    flex: 1,
-                    padding: '10px 12px',
-                    borderRadius: 8,
-                    border: `1px solid ${strategyConfig.strategyMode === value ? color : 'var(--color-border)'}`,
-                    background: strategyConfig.strategyMode === value ? `${color}15` : 'transparent',
-                    cursor: (!canSwitchMode && strategyConfig.strategyMode !== value) ? 'not-allowed' : 'pointer',
-                    opacity: (!canSwitchMode && strategyConfig.strategyMode !== value) ? 0.4 : 1,
-                    textAlign: 'left',
-                  }}
-                >
-                  <div style={{ fontSize: 12, fontWeight: 700, color: strategyConfig.strategyMode === value ? color : 'var(--color-text-muted)' }}>
-                    {label}
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 2 }}>{desc}</div>
-                </button>
-              ))}
-            </div>
-            {!canSwitchMode && (
-              <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 6 }}>
-                포지션이 열려있거나 자동투자 실행 중에는 모드를 변경할 수 없습니다.
-              </div>
-            )}
-          </div>
-
           {/* Investment */}
           <div>
             <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -102,10 +59,7 @@ export default function StrategyPanel() {
               onChange={e => setStrategyConfig({ investmentUSDT: Number(e.target.value) })}
             />
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-              {strategyConfig.strategyMode === 'shortOnly'
-                ? <>투자금: <strong style={{ color: 'var(--color-text)' }}>${strategyConfig.investmentUSDT.toLocaleString()}</strong> (숏 단일)</>
-                : <>총 투자금: <strong style={{ color: 'var(--color-text)' }}>${(strategyConfig.investmentUSDT * 2).toLocaleString()}</strong> (롱+숏 양방향)</>
-              }
+              총 투자금: <strong style={{ color: 'var(--color-text)' }}>${(strategyConfig.investmentUSDT * 2).toLocaleString()}</strong> (롱+숏 양방향)
             </div>
           </div>
 
@@ -133,44 +87,24 @@ export default function StrategyPanel() {
             </div>
           </div>
 
-          {/* Min spread / Min funding rate */}
-          {strategyConfig.strategyMode === 'shortOnly' ? (
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
-                최소 펀딩레이트 (%): <strong style={{ color: '#ef4444' }}>{((strategyConfig.minFundingRate ?? 0.003) * 100).toFixed(2)}%</strong>
-              </label>
-              <input
-                className="input-field"
-                type="number"
-                min={0.01}
-                max={5}
-                step={0.01}
-                value={((strategyConfig.minFundingRate ?? 0.003) * 100)}
-                onChange={e => setStrategyConfig({ minFundingRate: Number(e.target.value) / 100 })}
-              />
-              <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                이 펀딩레이트 이상인 코인만 숏 진입 (0.3% 이상 권장)
-              </div>
+          {/* Min spread */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
+              최소 스프레드 (%): <strong style={{ color: 'var(--color-text)' }}>{strategyConfig.minSpreadPercent}%</strong>
+            </label>
+            <input
+              className="input-field"
+              type="number"
+              min={0.01}
+              max={1}
+              step={0.01}
+              value={strategyConfig.minSpreadPercent}
+              onChange={e => setStrategyConfig({ minSpreadPercent: Number(e.target.value) })}
+            />
+            <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+              이 값 이상일 때만 자동 진입 알림/실행
             </div>
-          ) : (
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
-                최소 스프레드 (%): <strong style={{ color: 'var(--color-text)' }}>{strategyConfig.minSpreadPercent}%</strong>
-              </label>
-              <input
-                className="input-field"
-                type="number"
-                min={0.01}
-                max={1}
-                step={0.01}
-                value={strategyConfig.minSpreadPercent}
-                onChange={e => setStrategyConfig({ minSpreadPercent: Number(e.target.value) })}
-              />
-              <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                이 값 이상일 때만 자동 진입 알림/실행
-              </div>
-            </div>
-          )}
+          </div>
 
           {/* Compound investing toggle */}
           <div style={{ padding: 16, borderRadius: 10, background: 'var(--bg-accent)', border: '1px solid var(--color-border)' }}>

@@ -1,4 +1,4 @@
-export type ExchangeId = 'binance' | 'bybit' | 'okx' | 'bitget' | 'gate';
+export type ExchangeId = 'binance' | 'bybit' | 'okx' | 'bitget' | 'gate' | 'bingx';
 
 export const EXCHANGE_NAMES: Record<ExchangeId, string> = {
   binance: 'BINANCE',
@@ -6,6 +6,7 @@ export const EXCHANGE_NAMES: Record<ExchangeId, string> = {
   okx: 'OKX',
   bitget: 'BITGET',
   gate: 'GATE',
+  bingx: 'BINGX',
 };
 
 export const EXCHANGE_COLORS: Record<ExchangeId, string> = {
@@ -14,6 +15,7 @@ export const EXCHANGE_COLORS: Record<ExchangeId, string> = {
   okx: '#00C087',
   bitget: '#00C5C5',
   gate: '#00B2FF',
+  bingx: '#2354E6',
 };
 
 export const EXCHANGE_BG: Record<ExchangeId, string> = {
@@ -22,6 +24,7 @@ export const EXCHANGE_BG: Record<ExchangeId, string> = {
   okx: 'rgba(0,192,135,0.12)',
   bitget: 'rgba(0,197,197,0.12)',
   gate: 'rgba(0,178,255,0.12)',
+  bingx: 'rgba(35,84,230,0.12)',
 };
 
 export interface FundingRate {
@@ -59,6 +62,7 @@ export interface ArbitrageOpportunity {
   nextFundingTime: number;
   minutesToFunding: number;
   fundingIntervalMs: number;  // 펀딩 주기 (ms) — 거래소/코인별 다름 (기본 8h=28800000)
+  netProfit: number;          // 수수료 차감 후 순수익 per funding (notional*spread - notional*0.0005*4)
 }
 
 export interface Position {
@@ -78,7 +82,7 @@ export interface Position {
   liquidationPrice: number;
   fundingRate: number;
   openedAt: number;
-  positionType: 'hedge_long' | 'hedge_short' | 'short_only' | 'manual';
+  positionType: 'hedge_long' | 'hedge_short' | 'manual';
 }
 
 export interface Balance {
@@ -97,16 +101,12 @@ export interface ApiConfig {
   passphrase?: string; // for OKX, Bitget
 }
 
-export type StrategyMode = 'hedge' | 'shortOnly';
-
 export interface StrategyConfig {
-  investmentUSDT: number;   // per side (total = 2x for hedge, 1x for shortOnly)
+  investmentUSDT: number;   // per side (total = 2x for hedge)
   leverage: number;         // 1-20
   minSpreadPercent: number; // minimum spread to enter (e.g., 0.05%)
   autoExecute: boolean;     // auto enter at funding time
   compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (단리)
-  strategyMode: StrategyMode; // 'hedge' = 숏+롱 헷징, 'shortOnly' = 숏만 스나이프
-  minFundingRate: number;   // shortOnly: minimum funding rate to enter (e.g., 0.003 = 0.3%)
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
@@ -127,7 +127,6 @@ export interface FundingPayment {
   rate: number;
   timestamp: number;
   side: 'long' | 'short';
-  mode?: 'hedge' | 'shortOnly';
 }
 
 export interface SimPosition extends Position {
@@ -140,9 +139,10 @@ export interface SimPosition extends Position {
   fundingReceived?: number; // snipe: 펀딩 수령 횟수
   entryFee: number;         // 진입 수수료 (WS 가격 갱신 시 PnL에 반영)
   fundingIntervalMs?: number; // 펀딩 주기 (ms) — 코인별 다름 (기본 8h)
+  entryGapPercent?: number; // 숏/롱 체결가 갭 (%) — orderbook 기반
 }
 
-export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate'];
+export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx'];
 
 // Popular symbols to track (top coins by OI)
 export const TRACKED_SYMBOLS = [

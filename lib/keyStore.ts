@@ -169,13 +169,10 @@ const SIM_STATE_KEY = 'funding_fee_sim_state';
 
 interface SimState {
   simBalances: Record<string, number>;
-  simBalancesShort?: Record<string, number>;
   simPositions: SimPosition[];
   simTotalFundingEarned: number;
   simTotalTopUps?: number;
   simTotalFees?: number;
-  simFundingShort?: number;
-  simFeesShort?: number;
 }
 
 export function saveSimState(state: SimState): void {

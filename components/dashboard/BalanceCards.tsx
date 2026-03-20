@@ -7,29 +7,19 @@ import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
 import { fmtNum } from '@/lib/format';
 
-/** 거래소 미니 카드 (모드별 전용 잔고 표시) */
-function ExchangeMiniCard({ exchange, mode }: { exchange: ExchangeId; mode?: 'hedge' | 'shortOnly' }) {
-  const { simBalances, simBalancesShort, simPositions, fundingHistory } = useFundingStore();
+/** 거래소 미니 카드 (헷징 잔고 표시) */
+function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
+  const { simBalances, simPositions, fundingHistory } = useFundingStore();
   const color = EXCHANGE_COLORS[exchange];
 
-  // 모드별 전용 잔고 풀 사용
-  const bal = mode === 'shortOnly'
-    ? (simBalancesShort[exchange] ?? 0)
-    : (simBalances[exchange] ?? 0);
-  const exPositions = simPositions.filter(p => {
-    if (p.exchange !== exchange) return false;
-    if (mode === 'hedge') return p.positionType === 'hedge_long' || p.positionType === 'hedge_short';
-    if (mode === 'shortOnly') return p.positionType === 'short_only';
-    return true;
-  });
+  const bal = simBalances[exchange] ?? 0;
+  const exPositions = simPositions.filter(p =>
+    p.exchange === exchange && (p.positionType === 'hedge_long' || p.positionType === 'hedge_short')
+  );
   const margin = exPositions.reduce((s, p) => s + p.margin, 0);
+  const unrealizedPnl = exPositions.reduce((s, p) => s + p.unrealizedPnl, 0);
   const funding = fundingHistory
-    .filter(p => {
-      if (p.exchange !== exchange) return false;
-      if (mode === 'hedge') return p.mode === 'hedge';
-      if (mode === 'shortOnly') return p.mode === 'shortOnly';
-      return true;
-    })
+    .filter(p => p.exchange === exchange)
     .reduce((s, p) => s + p.amount, 0);
 
   return (
@@ -53,6 +43,12 @@ function ExchangeMiniCard({ exchange, mode }: { exchange: ExchangeId; mode?: 'he
         <span style={{ fontSize: 10, color: '#64748b' }}>펀딩</span>
         <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: funding >= 0 ? '#10b981' : '#ef4444' }}>
           {funding >= 0 ? '+' : ''}${fmtNum(funding, 4)}
+        </span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 2 }}>
+        <span style={{ fontSize: 10, color: '#64748b' }}>미실현 PnL</span>
+        <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: unrealizedPnl >= 0 ? '#10b981' : '#ef4444' }}>
+          {unrealizedPnl >= 0 ? '+' : ''}${fmtNum(unrealizedPnl, 4)}
         </span>
       </div>
     </div>
@@ -109,7 +105,7 @@ function RealCard({ exchange }: { exchange: ExchangeId }) {
   );
 }
 
-/** 시뮬 모드 컬럼 카드 (헷징 or 숏온리) */
+/** 시뮬 모드 컬럼 카드 (헷징) */
 function SimModeColumn({
   title,
   accentColor,
@@ -117,7 +113,6 @@ function SimModeColumn({
   fees,
   positions,
   enabledExchanges,
-  mode,
 }: {
   title: string;
   accentColor: string;
@@ -125,17 +120,14 @@ function SimModeColumn({
   fees: number;
   positions: import('@/lib/types').SimPosition[];
   enabledExchanges: ExchangeId[];
-  mode: 'hedge' | 'shortOnly';
 }) {
-  const modePositions = positions.filter(p => mode === 'hedge'
-    ? (p.positionType === 'hedge_long' || p.positionType === 'hedge_short')
-    : p.positionType === 'short_only');
+  const modePositions = positions.filter(p =>
+    p.positionType === 'hedge_long' || p.positionType === 'hedge_short'
+  );
   const modeMargin = modePositions.reduce((s, p) => s + p.margin, 0);
   const modePnl = modePositions.reduce((s, p) => s + p.unrealizedPnl, 0);
   const netProfit = fundingEarned - fees + modePnl;
-  const posCount = mode === 'hedge'
-    ? modePositions.filter(p => p.positionType === 'hedge_short').length
-    : modePositions.length;
+  const posCount = modePositions.filter(p => p.positionType === 'hedge_short').length;
 
   return (
     <div className="glass-card" style={{
@@ -184,7 +176,7 @@ function SimModeColumn({
 
       {/* 거래소 미니 카드 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 6, marginTop: 10 }}>
-        {enabledExchanges.map(ex => <ExchangeMiniCard key={ex} exchange={ex} mode={mode} />)}
+        {enabledExchanges.map(ex => <ExchangeMiniCard key={ex} exchange={ex} />)}
       </div>
     </div>
   );
@@ -194,7 +186,6 @@ export default function BalanceCards() {
   const {
     balances, simulationMode, simPositions,
     simTotalFundingEarned, simTotalFees,
-    simFundingShort, simFeesShort,
     enabledExchanges, resetSimulation,
   } = useFundingStore();
   const totalUSDT = Object.values(balances)
@@ -240,7 +231,7 @@ export default function BalanceCards() {
         </button>
       </div>
 
-      {/* 두 컬럼: 헷징 | 숏온리 */}
+      {/* 헷징 컬럼 */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
         <SimModeColumn
           title="헷징 (Hedge)"
@@ -249,16 +240,6 @@ export default function BalanceCards() {
           fees={simTotalFees}
           positions={simPositions}
           enabledExchanges={enabledExchanges}
-          mode="hedge"
-        />
-        <SimModeColumn
-          title="숏온리 (Short-Only)"
-          accentColor="#8b5cf6"
-          fundingEarned={simFundingShort}
-          fees={simFeesShort}
-          positions={simPositions}
-          enabledExchanges={enabledExchanges}
-          mode="shortOnly"
         />
       </div>
     </div>

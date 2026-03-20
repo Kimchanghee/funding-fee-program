@@ -118,10 +118,8 @@ export default function FundingHistory() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiConfigKeys, simulationMode]);
 
-  const hedgeEntries = fundingHistory.filter(p => p.mode !== 'shortOnly');
-  const shortOnlyEntries = fundingHistory.filter(p => p.mode === 'shortOnly');
-  const hedgeTotal = hedgeEntries.reduce((s, p) => s + p.amount, 0);
-  const shortOnlyTotal = shortOnlyEntries.reduce((s, p) => s + p.amount, 0);
+  const allEntries = fundingHistory;
+  const allTotal = allEntries.reduce((s, p) => s + p.amount, 0);
 
   const emptyMsg = isLoadingHistory
     ? '조회 중...'
@@ -162,21 +160,13 @@ export default function FundingHistory() {
         </button>
       </div>
 
-      {/* Side by side panels */}
+      {/* All entries */}
       <div style={{ display: 'flex', gap: 0 }}>
         <ModePanel
           title="헷징 (숏+롱)"
           color="#3b82f6"
-          entries={hedgeEntries}
-          total={hedgeTotal}
-          emptyMsg={emptyMsg}
-        />
-        <div style={{ width: 1, background: 'var(--color-border)', flexShrink: 0 }} />
-        <ModePanel
-          title="숏온리"
-          color="#ef4444"
-          entries={shortOnlyEntries}
-          total={shortOnlyTotal}
+          entries={allEntries}
+          total={allTotal}
           emptyMsg={emptyMsg}
         />
       </div>

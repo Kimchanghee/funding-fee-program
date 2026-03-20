@@ -3,8 +3,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Zap, Crosshair, Check, Clock, TrendingDown, TrendingUp, ChevronDown, ChevronUp, Settings } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportunity } from '@/lib/types';
-import { estimateProfit, estimateProfitShortOnly } from '@/lib/opportunities';
+import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportunity, type SimPosition } from '@/lib/types';
+import { estimateProfit } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 
 /* ─── Tiny countdown hook ─── */
@@ -182,43 +182,31 @@ export default function OpportunityCard() {
       opp: ArbitrageOpportunity;
       fundingTime: number;
       status: 'scheduled' | 'active' | 'opportunity';
-      modes: Array<'hedge' | 'shortOnly'>;
     }> = [];
 
     // Track by baseAsset only (for deduplication)
     const seenAssets = new Set<string>();
-    // Track snipeKey "ASSET:mode" pairs to avoid double-processing same entry
-    const seenSnipeKeys = new Set<string>();
 
-    // 1) Snipe targets (scheduled) — key is "ASSET:mode", dedupe by baseAsset
+    // 1) Snipe targets (scheduled) — key is baseAsset
     for (const [snipeKey, time] of Object.entries(snipeTargets)) {
-      if (seenSnipeKeys.has(snipeKey)) continue;
-      seenSnipeKeys.add(snipeKey);
       const baseAsset = snipeKey.split(':')[0];
-      const mode = (snipeKey.split(':')[1] || 'hedge') as 'hedge' | 'shortOnly';
+      if (seenAssets.has(baseAsset)) continue;
       const opp = opportunities.find(o => o.baseAsset === baseAsset);
       if (!opp) continue;
-      const existing = items.find(i => i.asset === baseAsset);
-      if (existing) {
-        if (!existing.modes.includes(mode)) existing.modes.push(mode);
-      } else {
-        items.push({ asset: baseAsset, opp, fundingTime: time, status: 'scheduled', modes: [mode] });
-        seenAssets.add(baseAsset);
-      }
+      items.push({ asset: baseAsset, opp, fundingTime: time, status: 'scheduled' });
+      seenAssets.add(baseAsset);
     }
 
     // 2) Active positions
     const activePositions = simulationMode ? simPositions : positions;
     for (const pos of activePositions) {
-      const mode = pos.positionType === 'short_only' ? 'shortOnly' as const : 'hedge' as const;
       const opp = opportunities.find(o => o.baseAsset === pos.baseAsset);
       if (!opp) continue;
       const existing = items.find(i => i.asset === pos.baseAsset);
       if (existing) {
-        if (!existing.modes.includes(mode)) existing.modes.push(mode);
         existing.status = 'active';
       } else {
-        items.push({ asset: pos.baseAsset, opp, fundingTime: opp.nextFundingTime, status: 'active', modes: [mode] });
+        items.push({ asset: pos.baseAsset, opp, fundingTime: opp.nextFundingTime, status: 'active' });
         seenAssets.add(pos.baseAsset);
       }
     }
@@ -227,7 +215,7 @@ export default function OpportunityCard() {
     for (const opp of opportunities) {
       if (seenAssets.has(opp.baseAsset)) continue;
       if (items.length >= 10) break;
-      items.push({ asset: opp.baseAsset, opp, fundingTime: opp.nextFundingTime, status: 'opportunity', modes: ['hedge'] });
+      items.push({ asset: opp.baseAsset, opp, fundingTime: opp.nextFundingTime, status: 'opportunity' });
       seenAssets.add(opp.baseAsset);
     }
 
@@ -309,19 +297,17 @@ export default function OpportunityCard() {
             {/* Config summary */}
             <div style={{ display: 'flex', gap: 10, fontSize: 11, color: 'var(--color-text-muted)', flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{
-                color: strategyConfig.strategyMode === 'shortOnly' ? '#ef4444' : '#3b82f6',
+                color: '#3b82f6',
                 fontWeight: 700,
                 padding: '1px 6px',
                 borderRadius: 4,
-                background: strategyConfig.strategyMode === 'shortOnly' ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.15)',
+                background: 'rgba(59,130,246,0.15)',
                 fontSize: 10,
               }}>
-                {strategyConfig.strategyMode === 'shortOnly' ? '숏온리' : '헷징'}
+                헷징
               </span>
               <span>거래소당 <strong style={{ color: 'var(--color-text)' }}>${perExchangeInvestment.toLocaleString()}</strong></span>
-              {strategyConfig.strategyMode !== 'shortOnly' && (
-                <span>총 <strong style={{ color: '#f59e0b' }}>${(perExchangeInvestment * 2).toLocaleString()}</strong></span>
-              )}
+              <span>총 <strong style={{ color: '#f59e0b' }}>${(perExchangeInvestment * 2).toLocaleString()}</strong></span>
               <span>레버리지 <strong style={{ color: 'var(--color-text)' }}>{strategyConfig.leverage}x</strong></span>
               <span style={{ color: strategyConfig.compoundInvesting ? '#a78bfa' : '#10b981', fontWeight: 700 }}>
                 {strategyConfig.compoundInvesting ? '복리' : '단리'}
@@ -390,7 +376,7 @@ export default function OpportunityCard() {
                 ) : (
                   <>
                     <Crosshair size={14} />
-                    {simulationMode ? '[SIM] ' : ''}{strategyConfig.strategyMode === 'shortOnly' ? '숏온리 투자 시작' : '자동 투자 시작'}
+                    {simulationMode ? '[SIM] ' : ''}자동 투자 시작
                   </>
                 )}
               </button>
@@ -490,12 +476,6 @@ export default function OpportunityCard() {
                         {item.asset}
                       </span>
                       <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>/USDT</span>
-                      {item.modes.includes('hedge') && (
-                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: 'rgba(16,185,129,0.15)', color: '#10b981', border: '1px solid rgba(16,185,129,0.25)' }}>헷징</span>
-                      )}
-                      {item.modes.includes('shortOnly') && (
-                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.25)' }}>숏온리</span>
-                      )}
                       {isExpanded ? <ChevronUp size={12} color="var(--color-text-muted)" /> : <ChevronDown size={12} color="var(--color-text-muted)" />}
                     </div>
 
@@ -537,6 +517,8 @@ export default function OpportunityCard() {
                       profit={profit}
                       compoundMode={compoundMode}
                       setCompoundMode={setCompoundMode}
+                      simPositions={simPositions}
+                      realSpread={realSpread}
                     />
                   )}
                 </div>
@@ -545,54 +527,38 @@ export default function OpportunityCard() {
           </div>
         )}
 
-        {/* ═══ SECTION 3: Portfolio Profit Summary (헷징 + 숏온리) ═══ */}
+        {/* ═══ SECTION 3: Portfolio Profit Summary ═══ */}
         {scheduledCoins.length > 0 && (
-          <>
-            <PortfolioSummaryRow
-              label="헷징"
-              labelColor="#10b981"
-              coins={scheduledCoins.filter(c => c.modes.includes('hedge')).map(c => ({ ...c, mode: 'hedge' as const }))}
-              investmentUSDT={perExchangeInvestment}
-              leverage={strategyConfig.leverage}
-              compoundMode={compoundMode}
-              setCompoundMode={setCompoundMode}
-              mode="hedge"
-              realSpreads={realSpreads}
-            />
-            <PortfolioSummaryRow
-              label="숏온리"
-              labelColor="#ef4444"
-              coins={scheduledCoins.filter(c => c.modes.includes('shortOnly')).map(c => ({ ...c, mode: 'shortOnly' as const }))}
-              investmentUSDT={perExchangeInvestment}
-              leverage={strategyConfig.leverage}
-              compoundMode={compoundMode}
-              setCompoundMode={setCompoundMode}
-              mode="shortOnly"
-              realSpreads={realSpreads}
-            />
-          </>
+          <PortfolioSummaryRow
+            label="헷징"
+            labelColor="#10b981"
+            coins={scheduledCoins.map(c => ({ ...c, mode: 'hedge' as const }))}
+            investmentUSDT={perExchangeInvestment}
+            leverage={strategyConfig.leverage}
+            compoundMode={compoundMode}
+            setCompoundMode={setCompoundMode}
+            realSpreads={realSpreads}
+          />
         )}
       </div>
     </>
   );
 }
 
-/* ─── Portfolio Profit Summary Row (헷징 or 숏온리) ─── */
-function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, compoundMode, setCompoundMode, mode, realSpreads }: {
+/* ─── Portfolio Profit Summary Row ─── */
+function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, compoundMode, setCompoundMode, realSpreads }: {
   label: string;
   labelColor: string;
-  coins: Array<{ asset: string; opp: ArbitrageOpportunity; status: string; mode: 'hedge' | 'shortOnly' }>;
+  coins: Array<{ asset: string; opp: ArbitrageOpportunity; status: string; mode: 'hedge' }>;
   investmentUSDT: number;
   leverage: number;
   compoundMode: boolean;
   setCompoundMode: (v: boolean) => void;
-  mode: 'hedge' | 'shortOnly';
   realSpreads?: Record<string, { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number }>;
 }) {
   const activeCoins = coins.filter(c => c.status === 'active' || c.status === 'scheduled');
 
-  // 투입 자본: 헷징 = 쌍수 × $1,400, 숏온리 = 개수 × $700
-  const capitalPerPosition = mode === 'shortOnly' ? investmentUSDT : investmentUSDT * 2;
+  const capitalPerPosition = investmentUSDT * 2;
   const deployedCapital = activeCoins.length * capitalPerPosition;
 
   const byInterval = useMemo(() => {
@@ -609,25 +575,24 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
     let per1h = 0, per4h = 0, per8h = 0, perDay = 0, perWeek = 0, perMonth = 0;
     let c1h = 0, c4h = 0, c8h = 0, cDay = 0, cWeek = 0, cMonth = 0;
 
-    const calc = mode === 'shortOnly' ? estimateProfitShortOnly : estimateProfit;
     for (const c of activeCoins) {
       const rs = realSpreads?.[c.asset];
       const opp = rs
         ? { ...c.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
         : c.opp;
-      const profit = calc(opp, investmentUSDT, leverage);
+      const profit = estimateProfit(opp, investmentUSDT, leverage);
       per1h += profit.per1h; per4h += profit.per4h; per8h += profit.netPerFunding;
       perDay += profit.perDay; perWeek += profit.perWeek; perMonth += profit.perMonth;
       c1h += profit.compound.per1h; c4h += profit.compound.per4h; c8h += profit.netPerFunding;
       cDay += profit.compound.perDay; cWeek += profit.compound.perWeek; cMonth += profit.compound.perMonth;
     }
     return { per1h, per4h, per8h, perDay, perWeek, perMonth, c1h, c4h, c8h, cDay, cWeek, cMonth };
-  }, [activeCoins, investmentUSDT, leverage, mode, realSpreads]);
+  }, [activeCoins, investmentUSDT, leverage, realSpreads]);
 
   if (activeCoins.length === 0) return null;
 
-  const bgColor = mode === 'shortOnly' ? 'rgba(239,68,68,0.04)' : 'rgba(16,185,129,0.04)';
-  const borderColor = mode === 'shortOnly' ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)';
+  const bgColor = 'rgba(16,185,129,0.04)';
+  const borderColor = 'rgba(16,185,129,0.15)';
 
   return (
     <div style={{ marginTop: 12, padding: '14px 16px', borderRadius: 10, background: bgColor, border: `1px solid ${borderColor}` }}>
@@ -748,13 +713,19 @@ function StatPill({ label, value, color, active }: { label: string; value: strin
 }
 
 /* ─── Expanded Coin Detail ─── */
-function CoinDetail({ item, profit, compoundMode, setCompoundMode }: {
+function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions, realSpread }: {
   item: { asset: string; opp: ArbitrageOpportunity; status: string };
   profit: ReturnType<typeof estimateProfit>;
   compoundMode: boolean;
   setCompoundMode: (v: boolean) => void;
+  simPositions?: SimPosition[];
+  realSpread?: { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number } | null;
 }) {
   const opp = item.opp;
+  const activeSimPos = simPositions?.filter(p => p.baseAsset === item.asset) ?? [];
+  const simShort = activeSimPos.find(p => p.side === 'short');
+  const simLong = activeSimPos.find(p => p.side === 'long');
+  const entryGap = simShort?.entryGapPercent ?? simLong?.entryGapPercent;
 
   return (
     <div style={{
@@ -880,6 +851,38 @@ function CoinDetail({ item, profit, compoundMode, setCompoundMode }: {
           {profit.netPerFunding > 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
         </span></span>
       </div>
+
+      {/* Entry gap & slippage analysis */}
+      {(entryGap !== undefined || realSpread) && (
+        <div style={{
+          marginTop: 6, padding: '4px 8px', borderRadius: 4,
+          display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4,
+          fontSize: 10, color: 'var(--color-text-muted)',
+          background: 'rgba(255,255,255,0.02)',
+          border: '1px solid rgba(255,255,255,0.04)',
+        }}>
+          {entryGap !== undefined && (
+            <span>
+              진입갭:{' '}
+              <span className="mono" style={{ fontWeight: 700, color: Math.abs(entryGap) > 0.1 ? '#f59e0b' : '#10b981' }}>
+                {entryGap >= 0 ? '+' : ''}{fmtNum(entryGap, 4)}%
+              </span>
+              {' '}
+              <span style={{ color: 'var(--color-text-muted)' }}>
+                (숏${simShort ? fmtNum(simShort.entryPrice, 2) : '—'} / 롱${simLong ? fmtNum(simLong.entryPrice, 2) : '—'})
+              </span>
+            </span>
+          )}
+          {realSpread && (
+            <span>
+              슬리피지:{' '}
+              <span className="mono" style={{ color: '#ef4444' }}>숏 {fmtNum(realSpread.shortSlippage, 4)}%</span>
+              {' / '}
+              <span className="mono" style={{ color: '#10b981' }}>롱 {fmtNum(realSpread.longSlippage, 4)}%</span>
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

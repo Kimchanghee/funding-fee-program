@@ -4,10 +4,10 @@ import { useState, useMemo } from 'react';
 import { Search, ChevronUp, ChevronDown, ArrowUpDown } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
-import { estimateProfit, estimateProfitShortOnly } from '@/lib/opportunities';
+import { estimateProfit } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 
-type SortField = 'spread' | 'annualReturn' | 'baseAsset' | 'minutesToFunding';
+type SortField = 'netProfit' | 'spread' | 'annualReturn' | 'baseAsset' | 'minutesToFunding';
 type SortDir = 'asc' | 'desc';
 
 function RateBadge({ rate, size = 'md' }: { rate: number; size?: 'sm' | 'md' }) {
@@ -46,7 +46,7 @@ function ExchangeTag({ exchange }: { exchange: ExchangeId }) {
 export default function FundingRateTable() {
   const { opportunities, strategyConfig, isLoadingRates } = useFundingStore();
   const [search, setSearch] = useState('');
-  const [sortField, setSortField] = useState<SortField>('spread');
+  const [sortField, setSortField] = useState<SortField>('netProfit');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 15;
@@ -62,12 +62,13 @@ export default function FundingRateTable() {
   };
 
   const filtered = useMemo(() => {
-    let list = [...opportunities];
+    let list = opportunities.filter(o => o.netProfit > 0);
     if (search) {
       list = list.filter(o => o.baseAsset.toLowerCase().includes(search.toLowerCase()));
     }
     list.sort((a, b) => {
       const mul = sortDir === 'asc' ? 1 : -1;
+      if (sortField === 'netProfit') return (a.netProfit - b.netProfit) * mul;
       if (sortField === 'spread') return (a.spread - b.spread) * mul;
       if (sortField === 'annualReturn') return (a.annualReturnPercent - b.annualReturnPercent) * mul;
       if (sortField === 'baseAsset') return a.baseAsset.localeCompare(b.baseAsset) * mul;
@@ -167,9 +168,7 @@ export default function FundingRateTable() {
               </tr>
             ) : (
               paged.map((opp, i) => {
-                const profit = strategyConfig.strategyMode === 'shortOnly'
-                  ? estimateProfitShortOnly(opp, strategyConfig.investmentUSDT, strategyConfig.leverage)
-                  : estimateProfit(opp, strategyConfig.investmentUSDT, strategyConfig.leverage);
+                const profit = estimateProfit(opp, strategyConfig.investmentUSDT, strategyConfig.leverage);
                 const rank = page * PAGE_SIZE + i + 1;
                 const isTop = rank <= 3;
                 return (
