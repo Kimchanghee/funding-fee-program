@@ -161,7 +161,7 @@ export default function FundingRateTable() {
                   {isLoadingRates && opportunities.length === 0 ? (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
                       <div style={{ width: 16, height: 16, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                      5개 거래소 펀딩률 데이터 조회 중...
+                      6개 거래소 펀딩률 데이터 조회 중...
                     </div>
                   ) : '조건에 맞는 기회 없음'}
                 </td>

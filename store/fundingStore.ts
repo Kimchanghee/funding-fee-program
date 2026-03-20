@@ -244,8 +244,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     minSpreadPercent: 0.25,
     autoExecute: false,
     compoundInvesting: true,
-    strategyMode: 'hedge',
-    minFundingRate: 0.003, // 0.3%
   },
   fundingHistory: [],
   simulationMode: true,

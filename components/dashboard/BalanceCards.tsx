@@ -1,6 +1,5 @@
 'use client';
 
-import { } from 'react';
 import { Wallet, TrendingUp, FlaskConical, RotateCcw } from 'lucide-react';
 import StatusDot from '@/components/ui/StatusDot';
 import { useFundingStore } from '@/store/fundingStore';
