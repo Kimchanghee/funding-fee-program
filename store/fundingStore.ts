@@ -747,6 +747,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       get().refreshRates();
       if (get().snipeActive) {
         get().refreshRealSpreads();
+        get().scheduleAllSnipes();
       }
     }, 8_000);
 
@@ -758,12 +759,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // 잔고 재분배: 잔고 부족 거래소에 여유 거래소에서 균등 분배
       if (get().simulationMode) {
         get().redistributeBalances();
-      }
-      // snipeActive → 아직 예약 안 된 코인들 자동 스케줄
-      const st = get();
-      const shouldAutoSnipe = st.snipeActive || st.strategyConfig.autoExecute;
-      if (shouldAutoSnipe) {
-        get().scheduleAllSnipes();
       }
     }, 15_000);
 

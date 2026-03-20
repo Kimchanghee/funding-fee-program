@@ -423,7 +423,7 @@ export default function OpportunityCard() {
               <span>코인</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>숏</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>롱</span>
-              <span style={{ textAlign: 'right' }}>스프레드</span>
+              <span style={{ textAlign: 'right' }}>예상 수익</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>카운트다운</span>
             </div>
 
@@ -489,19 +489,17 @@ export default function OpportunityCard() {
                       <ExBadge ex={item.opp.longExchange} />
                     </div>
 
-                    {/* Spread */}
+                    {/* Net Profit */}
                     <div style={{ textAlign: 'right' }}>
                       <span className="mono" style={{
                         fontSize: 13, fontWeight: 700,
-                        color: effectiveOpp.spreadPercent > 0.2 ? '#10b981' : effectiveOpp.spreadPercent > 0.1 ? '#3b82f6' : 'var(--color-text-muted)',
+                        color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444',
                       }}>
-                        +{fmtNum(effectiveOpp.spreadPercent, 4)}%
+                        {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
                       </span>
-                      {realSpread && (
-                        <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
-                          이론 +{fmtNum(item.opp.spreadPercent, 3)}%
-                        </div>
-                      )}
+                      <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
+                        수수료 -${fmtNum(profit.totalFees)}
+                      </div>
                     </div>
 
                     {/* Countdown */}

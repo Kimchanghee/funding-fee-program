@@ -141,7 +141,7 @@ export default function FundingRateTable() {
               <th style={thStyle}>롱 거래소</th>
               <th style={thStyle}>롱 펀딩률</th>
               <th style={thStyle} onClick={() => handleSort('spread')}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>스프레드 <SortIcon field="spread" /></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>순수익 <SortIcon field="spread" /></div>
               </th>
               <th style={thStyle} onClick={() => handleSort('annualReturn')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>연수익률 <SortIcon field="annualReturn" /></div>
@@ -205,8 +205,11 @@ export default function FundingRateTable() {
                       <RateBadge rate={opp.longRate} />
                     </td>
                     <td style={{ padding: '10px 14px' }}>
-                      <span className="mono" style={{ fontSize: 13, fontWeight: 800, color: '#10b981' }}>
-                        +{opp.spreadPercent.toFixed(4)}%
+                      <span className="mono" style={{ fontSize: 13, fontWeight: 800, color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444' }}>
+                        {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
+                      </span>
+                      <span style={{ fontSize: 9, color: 'var(--color-text-muted)', display: 'block' }}>
+                        수수료 -${fmtNum(profit.totalFees)}
                       </span>
                     </td>
                     <td style={{ padding: '10px 14px' }}>
