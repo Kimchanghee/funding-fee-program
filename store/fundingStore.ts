@@ -645,12 +645,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         const opp = opportunities.find(o => o.baseAsset === baseAsset);
         if (!opp) return;
 
-        const symbol = `${baseAsset}/USDT:USDT`;
-
         try {
           const [shortRes, longRes] = await Promise.all([
-            fetch(`/api/exchanges/${opp.shortExchange}/orderbook?symbol=${encodeURIComponent(symbol)}&side=sell&notional=${notional}`),
-            fetch(`/api/exchanges/${opp.longExchange}/orderbook?symbol=${encodeURIComponent(symbol)}&side=buy&notional=${notional}`),
+            fetch(`/api/exchanges/${opp.shortExchange}/orderbook?symbol=${encodeURIComponent(opp.shortSymbol)}&side=sell&notional=${notional}`),
+            fetch(`/api/exchanges/${opp.longExchange}/orderbook?symbol=${encodeURIComponent(opp.longSymbol)}&side=buy&notional=${notional}`),
           ]);
           const [shortJson, longJson] = await Promise.all([shortRes.json(), longRes.json()]) as [
             { success: boolean; slippagePercent: number },
@@ -1604,6 +1602,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
     const roundTripFee = notional * TAKER_FEE * 4;
+    const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
+
+    // 실슬리피지 반영 순수익 계산 헬퍼
+    const getLiveNetProfit = (opp: ArbitrageOpportunity): number => {
+      const rs = currentRealSpreads[opp.baseAsset];
+      const spread = (rs && Date.now() - rs.updatedAt < 30_000)
+        ? rs.effectiveSpread / 100
+        : opp.spread;
+      return notional * spread - roundTripFee;
+    };
 
     for (const asset of snipeKeys) {
       const currentOpp = opportunities.find(o => o.baseAsset === asset);
@@ -1615,26 +1623,31 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       // 실효스프레드(오더북 슬리피지 반영) 기준 순수익 재계산
       const realSpreadData = currentRealSpreads[asset];
-      const effectiveSpread = (realSpreadData && Date.now() - realSpreadData.updatedAt < 30_000)
-        ? realSpreadData.effectiveSpread / 100
-        : currentOpp.spread;
+      const effectiveSpreadPercent = (realSpreadData && Date.now() - realSpreadData.updatedAt < 30_000)
+        ? realSpreadData.effectiveSpread
+        : currentOpp.spreadPercent;
+      const effectiveSpread = effectiveSpreadPercent / 100;
       const liveNetProfit = notional * effectiveSpread - roundTripFee;
-      if (liveNetProfit <= 0) {
+
+      // 순수익 또는 최소 스프레드 미달 시 해제
+      if (liveNetProfit <= 0 || effectiveSpreadPercent < effectiveMinPercent) {
         get().addLog('warning',
-          `[재검증] ${asset} 순수익 $${fmtNum(liveNetProfit)} ≤ 0 — 예약 해제`,
+          `[재검증] ${asset} ${liveNetProfit <= 0 ? '순수익' : '스프레드'} 기준 미달 — 예약 해제`,
           undefined,
-          `스프레드: ${fmtNum(currentOpp.spreadPercent, 4)}% | 수수료: $${fmtNum(roundTripFee)}`,
+          `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% (최소 ${effectiveMinPercent}%) | 순수익: $${fmtNum(liveNetProfit)} | 수수료: $${fmtNum(roundTripFee)}`,
         );
         get().cancelSnipeForAsset(asset);
         continue;
       }
 
-      // 10%+ 더 좋은 기회 발견 시 교체
+      // 10%+ 더 좋은 기회 발견 시 교체 (실슬리피지 반영 순수익 기준)
       const betterOpp = opportunities.find(o => {
         if (o.baseAsset === asset) return false;
         if (snipeTargets[o.baseAsset]) return false;
-        if (o.netProfit <= 0) return false;
-        return liveNetProfit > 0 && (o.netProfit - liveNetProfit) / liveNetProfit >= 0.10;
+        if (o.spreadPercent < effectiveMinPercent) return false;
+        const candidateNetProfit = getLiveNetProfit(o);
+        if (candidateNetProfit <= 0) return false;
+        return (candidateNetProfit - liveNetProfit) / liveNetProfit >= 0.10;
       });
 
       if (betterOpp) {
@@ -1662,13 +1675,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     ]);
 
     const now = Date.now();
-    const CONFLICT_WINDOW_MS = 2 * 60 * 1000;
+    const CONFLICT_WINDOW_MS = 30 * 1000; // 30초 — 스나이프 실행은 ~10-15초
 
-    // 헷징 기준: 순수익 > 0, 양쪽 거래소 활성화
+    // 헷징 기준: 순수익 > 0, 최소 스프레드 충족, 양쪽 거래소 활성화
     const filtered = opportunities.filter(o => {
       if (activeKeys.has(o.baseAsset)) return false;
       if (!currentEnabled.includes(o.shortExchange)) return false;
       if (!currentEnabled.includes(o.longExchange)) return false;
+      if (o.spreadPercent < effectiveMinPercent) return false;
       return o.netProfit > 0;
     });
     if (filtered.length === 0) return;
@@ -1680,8 +1694,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (opp) scheduledTimes.push(opp.nextFundingTime);
     }
 
-    // 순수익 높은 순 정렬 → 시간 겹침만 제거하고 모두 선택
-    const sorted = [...filtered].sort((a, b) => b.netProfit - a.netProfit);
+    // 실슬리피지 반영 순수익 기준 정렬 → 시간 겹침만 제거하고 모두 선택
+    const { realSpreads: currentRealSpreads } = get();
+    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+    const roundTripFee = notional * TAKER_FEE * 4;
+    const getLiveNetProfit = (o: ArbitrageOpportunity): number => {
+      const rs = currentRealSpreads[o.baseAsset];
+      const spread = (rs && Date.now() - rs.updatedAt < 30_000)
+        ? rs.effectiveSpread / 100 : o.spread;
+      return notional * spread - roundTripFee;
+    };
+    const sorted = [...filtered].sort((a, b) => getLiveNetProfit(b) - getLiveNetProfit(a));
     const result: typeof filtered = [];
     for (const opp of sorted) {
       // 이미 스케줄된 시간과 2분 이내 겹치면 스킵
@@ -1758,14 +1781,26 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const snipeKey = asset;
     const { enabledExchanges: currentEnabled } = get();
 
-    // 진입 시점에 해당 코인의 최신 기회 확인 (순수익 기준)
-    const { opportunities } = get();
+    // 진입 시점에 해당 코인의 최신 기회 확인 (순수익 + 최소스프레드 기준)
+    const { opportunities, strategyConfig, realSpreads: currentRealSpreads } = get();
+    const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
+    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+    const roundTripFee = notional * TAKER_FEE * 4;
+
     const latestOpp = opportunities.find(o =>
       o.baseAsset === asset &&
       currentEnabled.includes(o.shortExchange) &&
       currentEnabled.includes(o.longExchange),
     );
-    const meetsThreshold = (o: ArbitrageOpportunity) => o.netProfit > 0;
+    const meetsThreshold = (o: ArbitrageOpportunity) => {
+      // 실슬리피지 반영 순수익 확인
+      const rs = currentRealSpreads[o.baseAsset];
+      const effSpreadPct = (rs && Date.now() - rs.updatedAt < 30_000)
+        ? rs.effectiveSpread : o.spreadPercent;
+      if (effSpreadPct < effectiveMinPercent) return false;
+      const liveNet = notional * (effSpreadPct / 100) - roundTripFee;
+      return liveNet > 0;
+    };
     const finalTarget = latestOpp && meetsThreshold(latestOpp)
       ? latestOpp
       : meetsThreshold(opportunity) ? opportunity : null;

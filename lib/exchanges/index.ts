@@ -347,7 +347,7 @@ export async function openPosition(
 
     // 1. Fetch orderbook for price analysis
     const ob = await Promise.race([
-      ex.fetchOrderBook(symbol, 20) as Promise<{ asks: number[][]; bids: number[][] }>,
+      ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 8000),
       ),
@@ -558,7 +558,7 @@ export async function closePosition(
   try {
     // 1. Fetch orderbook for price analysis
     const ob = await Promise.race([
-      ex.fetchOrderBook(symbol, 20) as Promise<{ asks: number[][]; bids: number[][] }>,
+      ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 8000),
       ),
@@ -672,12 +672,12 @@ export async function fetchMarketFillPrice(
   symbol: string,
   side: 'buy' | 'sell',
   notionalUSDT: number,
-): Promise<{ fillPrice: number; slippagePercent: number; midPrice: number }> {
+): Promise<{ fillPrice: number; slippagePercent: number; midPrice: number; worstPrice: number }> {
   const ex = getPublicExchange(id);
   await ensureMarkets(ex, id);
 
   const ob = await Promise.race([
-    ex.fetchOrderBook(symbol, 20) as Promise<{ asks: number[][]; bids: number[][] }>,
+    ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
     new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 8000),
     ),
@@ -693,10 +693,12 @@ export async function fetchMarketFillPrice(
   let remainingUSD = notionalUSDT;
   let totalCost = 0;
   let totalQty = 0;
+  let worstPrice = levels[0][0];
 
   for (const [price, qty] of levels) {
-    const levelUSD = price * qty;
     if (remainingUSD <= 0) break;
+    worstPrice = price;
+    const levelUSD = price * qty;
     if (levelUSD >= remainingUSD) {
       const fillQty = remainingUSD / price;
       totalCost += fillQty * price;
@@ -715,12 +717,13 @@ export async function fetchMarketFillPrice(
     const fillQty = remainingUSD / lastPrice;
     totalCost += fillQty * lastPrice;
     totalQty += fillQty;
+    worstPrice = lastPrice;
   }
 
   const fillPrice = totalCost / totalQty;
   const slippagePercent = Math.abs((fillPrice - midPrice) / midPrice) * 100;
 
-  return { fillPrice, slippagePercent, midPrice };
+  return { fillPrice, slippagePercent, midPrice, worstPrice };
 }
 
 export async function testConnection(id: ExchangeId, config: ApiConfig): Promise<boolean> {

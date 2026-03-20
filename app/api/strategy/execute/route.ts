@@ -58,10 +58,10 @@ export async function POST(req: NextRequest) {
     const shortQty = targetNotional / shortFill.fillPrice;
     const longQty = targetNotional / longFill.fillPrice;
 
-    // 3. Limit prices with buffer beyond worst level
+    // 3. Limit prices with buffer beyond worst level (NOT fillPrice — must cover all levels)
     const PRICE_BUFFER = 0.0005; // 0.05%
-    const shortLimitPrice = shortFill.fillPrice * (1 - PRICE_BUFFER); // selling: below fill price
-    const longLimitPrice = longFill.fillPrice * (1 + PRICE_BUFFER);   // buying: above fill price
+    const shortLimitPrice = shortFill.worstPrice * (1 - PRICE_BUFFER); // selling: below worst bid
+    const longLimitPrice = longFill.worstPrice * (1 + PRICE_BUFFER);   // buying: above worst ask
 
     console.log(
       `[EXECUTE] ${opportunity.baseAsset} 100% hedge plan: ` +
@@ -95,17 +95,47 @@ export async function POST(req: NextRequest) {
     const shortOk = shortResult.status === 'fulfilled';
     const longOk = longResult.status === 'fulfilled';
 
-    // Log notional balance between sides
+    // Hedge balance check — trim excess side if notional diff > 2%
+    let hedgeTrimNote: string | undefined;
     if (shortOk && longOk) {
       const shortNotional = shortResult.value.filledNotional;
       const longNotional = longResult.value.filledNotional;
       const diff = Math.abs(shortNotional - longNotional);
-      const diffPercent = (diff / Math.max(shortNotional, longNotional)) * 100;
+      const maxNotional = Math.max(shortNotional, longNotional);
+      const diffPercent = (diff / maxNotional) * 100;
       console.log(
         `[EXECUTE] ${opportunity.baseAsset} notional balance: ` +
         `short=$${shortNotional.toFixed(2)} long=$${longNotional.toFixed(2)} ` +
         `diff=$${diff.toFixed(2)} (${diffPercent.toFixed(3)}%)`,
       );
+
+      // 2% 초과 불균형 시 초과분 부분 청산으로 보정
+      if (diffPercent > 2) {
+        try {
+          const minNotional = Math.min(shortNotional, longNotional);
+          if (shortNotional > longNotional) {
+            // 숏이 더 큼 — 숏 초과분 청산
+            const excessQty = (shortNotional - minNotional) / shortResult.value.price;
+            await closePosition(
+              opportunity.shortExchange, shortConfig,
+              opportunity.shortSymbol, 'short', excessQty,
+            );
+            hedgeTrimNote = `숏 초과분 $${(shortNotional - minNotional).toFixed(2)} 트림 완료`;
+          } else {
+            // 롱이 더 큼 — 롱 초과분 청산
+            const excessQty = (longNotional - minNotional) / longResult.value.price;
+            await closePosition(
+              opportunity.longExchange, longConfig,
+              opportunity.longSymbol, 'long', excessQty,
+            );
+            hedgeTrimNote = `롱 초과분 $${(longNotional - minNotional).toFixed(2)} 트림 완료`;
+          }
+          console.log(`[EXECUTE] ${opportunity.baseAsset} hedge trim: ${hedgeTrimNote}`);
+        } catch (trimErr) {
+          hedgeTrimNote = `헤지 트림 실패: ${(trimErr as Error).message} — 수동 확인 필요`;
+          console.error(`[EXECUTE] ${opportunity.baseAsset} trim error:`, trimErr);
+        }
+      }
     }
 
     // Rollback: if one side succeeded but the other failed, close the successful side
@@ -149,6 +179,7 @@ export async function POST(req: NextRequest) {
         ? { success: true, data: longResult.value }
         : { success: false, error: (longResult.reason as Error).message },
       rollback: rollbackError,
+      hedgeTrim: hedgeTrimNote,
     });
   } catch (err) {
     return NextResponse.json(
