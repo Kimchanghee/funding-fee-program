@@ -92,6 +92,7 @@ interface FundingState {
   // Polling interval handles
   _ratesInterval: ReturnType<typeof setInterval> | null;
   _positionsInterval: ReturnType<typeof setInterval> | null;
+  _snipeCheckInterval: ReturnType<typeof setInterval> | null;
 
   // Actions
   init: () => void;
@@ -277,6 +278,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   realSpreads: {},
   _ratesInterval: null,
   _positionsInterval: null,
+  _snipeCheckInterval: null,
 
   // ── Init ──────────────────────────────────────
   init() {
@@ -743,17 +745,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }, 1000);
     }
 
-    // 8초 간격 펀딩률 폴링 (REST only, WS 없이 빠르게)
+    // 8초 간격 펀딩률 + 오더북 폴링 (거래소 API rate limit 고려)
     const ratesInterval = setInterval(() => {
       get().refreshRates();
       if (get().snipeActive) {
-        get().refreshRealSpreads().then(() => {
-          // 예약 코인 실시간 재검증: netProfit ≤ 0 즉시 해제 + 더 좋은 기회로 교체
-          get().revalidateScheduledSnipes();
-          get().scheduleAllSnipes();
-        });
+        get().refreshRealSpreads();
       }
     }, 8_000);
+
+    // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)
+    const snipeCheckInterval = setInterval(() => {
+      if (get().snipeActive) {
+        get().revalidateScheduledSnipes();
+        get().scheduleAllSnipes();
+      }
+    }, 1_000);
 
     const positionsInterval = setInterval(() => {
       get().refreshPositions();
@@ -766,17 +772,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }, 15_000);
 
-    set({ _ratesInterval: ratesInterval, _positionsInterval: positionsInterval });
+    set({ _ratesInterval: ratesInterval, _positionsInterval: positionsInterval, _snipeCheckInterval: snipeCheckInterval });
   },
 
   stopPolling() {
-    const { _ratesInterval, _positionsInterval, _snipeTimers, _snipeCloseTimers } = get();
+    const { _ratesInterval, _positionsInterval, _snipeCheckInterval, _snipeTimers, _snipeCloseTimers } = get();
     if (_ratesInterval) clearInterval(_ratesInterval);
     if (_positionsInterval) clearInterval(_positionsInterval);
+    if (_snipeCheckInterval) clearInterval(_snipeCheckInterval);
     // 모든 코인별 스나이핑 타이머 정리
     for (const t of Object.values(_snipeTimers)) clearTimeout(t);
     for (const t of Object.values(_snipeCloseTimers)) clearTimeout(t);
-    set({ _ratesInterval: null, _positionsInterval: null, _snipeTimers: {}, _snipeCloseTimers: {}, snipeTargets: {} });
+    set({ _ratesInterval: null, _positionsInterval: null, _snipeCheckInterval: null, _snipeTimers: {}, _snipeCloseTimers: {}, snipeTargets: {} });
     flushLogs();
     flushTrades();
   },
