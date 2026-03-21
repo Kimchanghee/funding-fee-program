@@ -23,6 +23,9 @@ import { fmtNum } from '@/lib/format';
 // Fee constants
 // ─────────────────────────────────────────────
 const TAKER_FEE = 0.0005; // 0.05% per side
+// 취소된 코인 쿨다운 (예약→해제 무한루프 방지)
+const _snipeCooldowns = new Map<string, number>();
+const COOLDOWN_MS = 60_000; // 60초
 // 왕복 수수료: 진입(숏+롱) + 청산(숏+롱) = 4 × 0.05% = 0.2%
 const ROUND_TRIP_FEE = TAKER_FEE * 4; // 0.002 (0.2%)
 const ROUND_TRIP_FEE_PERCENT = ROUND_TRIP_FEE * 100; // 0.2%
@@ -1645,6 +1648,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% (최소 ${effectiveMinPercent}%) | 순수익: $${fmtNum(liveNetProfit)} | 수수료: $${fmtNum(roundTripFee)}`,
         );
         get().cancelSnipeForAsset(asset);
+        _snipeCooldowns.set(asset, Date.now() + COOLDOWN_MS);
         continue;
       }
 
@@ -1676,13 +1680,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const { opportunities, enabledExchanges: currentEnabled, snipeTargets, simPositions, positions, simulationMode, strategyConfig } = get();
     const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
 
-    // 이미 예약되었거나 포지션 열린 코인 스킵
+    // 이미 예약/포지션/쿨다운 중인 코인 스킵
+    const now = Date.now();
     const activeKeys = new Set([
       ...Object.keys(snipeTargets),
       ...(simulationMode ? simPositions : positions).map(p => p.baseAsset),
     ]);
+    // 쿨다운 만료 정리 + 활성 키에 추가
+    for (const [asset, expiry] of _snipeCooldowns) {
+      if (now > expiry) { _snipeCooldowns.delete(asset); }
+      else { activeKeys.add(asset); }
+    }
 
-    const now = Date.now();
     const CONFLICT_WINDOW_MS = 30 * 1000; // 30초 — 스나이프 실행은 ~10-15초
 
     // 헷징 기준: 순수익 > 0, 최소 스프레드 충족, 양쪽 거래소 활성화
@@ -1710,9 +1719,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const rs = currentRealSpreads[o.baseAsset];
       // realSpread 데이터 없으면 -Infinity 반환 → 스케줄링 보류 (이론값 fallback 금지)
       if (!rs || Date.now() - rs.updatedAt >= 30_000) return -Infinity;
+      // 실효스프레드가 최소 기준 미달이면 -Infinity (재검증과 동일 기준)
+      if (rs.effectiveSpread < effectiveMinPercent) return -Infinity;
       return notional * (rs.effectiveSpread / 100) - roundTripFee;
     };
-    // 실슬리피지 확인된 것 중 순수익 양수만 선택 + 정렬
+    // 실슬리피지 확인 + 최소스프레드 충족 + 순수익 양수만 선택 + 정렬
     const profitable = filtered.filter(o => getLiveNetProfit(o) > 0);
     const sorted = [...profitable].sort((a, b) => getLiveNetProfit(b) - getLiveNetProfit(a));
 
