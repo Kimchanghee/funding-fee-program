@@ -119,6 +119,7 @@ export default function OpportunityCard() {
     snipeActive, snipeTargets, scheduleAllSnipes, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
+    simBalances, balances,
   } = useFundingStore();
 
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' | 'error' } | null>(null);
@@ -501,15 +502,31 @@ export default function OpportunityCard() {
                       <ExBadge ex={item.opp.longExchange} />
                     </div>
 
-                    {/* Expected Investment */}
-                    <div className="opp-hide-mobile" style={{ textAlign: 'right' }}>
-                      <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: '#a78bfa' }}>
-                        ${fmtNum(perExchangeInvestment * 2, 0)}
-                      </span>
-                      <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
-                        노셔널 ${fmtNum(perExchangeInvestment * strategyConfig.leverage, 0)}
-                      </div>
-                    </div>
+                    {/* Expected Investment — 복리 시 가용잔고 기반, 단리 시 설정값 */}
+                    {(() => {
+                      let perSide = perExchangeInvestment;
+                      if (strategyConfig.compoundInvesting) {
+                        const shortBal = simulationMode
+                          ? (simBalances[item.opp.shortExchange] ?? 0)
+                          : (balances[item.opp.shortExchange]?.availableUSDT ?? 0);
+                        const longBal = simulationMode
+                          ? (simBalances[item.opp.longExchange] ?? 0)
+                          : (balances[item.opp.longExchange]?.availableUSDT ?? 0);
+                        perSide = Math.min(shortBal, longBal) * 0.9; // 90% 가용
+                      }
+                      const totalInvest = perSide * 2;
+                      const posSize = perSide * strategyConfig.leverage;
+                      return (
+                        <div className="opp-hide-mobile" style={{ textAlign: 'right' }}>
+                          <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: '#a78bfa' }}>
+                            ${fmtNum(totalInvest, 0)}
+                          </span>
+                          <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
+                            {strategyConfig.leverage}x → ${fmtNum(posSize, 0)}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Net Profit */}
                     <div style={{ textAlign: 'right' }}>
