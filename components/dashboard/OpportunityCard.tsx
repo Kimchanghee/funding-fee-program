@@ -234,25 +234,12 @@ export default function OpportunityCard() {
     });
   }, [opportunities, snipeTargets, simPositions, positions, simulationMode]);
 
-  // Nearest upcoming trade — 실효스프레드 반영 순수익 양수인 것만
+  // Nearest upcoming trade — 예약/활성 중 가장 빠른 것 (수익 무관)
   const nextTrade = useMemo(() => {
-    const scheduled = scheduledCoins.filter(c => {
-      if (c.status !== 'scheduled' && c.status !== 'active') return false;
-      const rs = realSpreads[c.asset];
-      const effOpp = rs
-        ? { ...c.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
-        : c.opp;
-      const p = estimateProfit(effOpp, perExchangeInvestment, strategyConfig.leverage);
-      return p.netPerFunding > 0;
-    });
-    if (scheduled.length === 0) {
-      // 양수 없으면 예약된 것 중 가장 빠른 것이라도 표시
-      const any = scheduledCoins.filter(c => c.status === 'scheduled' || c.status === 'active');
-      if (any.length === 0) return null;
-      return any.reduce((a, b) => a.fundingTime < b.fundingTime ? a : b);
-    }
+    const scheduled = scheduledCoins.filter(c => c.status === 'scheduled' || c.status === 'active');
+    if (scheduled.length === 0) return null;
     return scheduled.reduce((a, b) => a.fundingTime < b.fundingTime ? a : b);
-  }, [scheduledCoins, realSpreads, perExchangeInvestment, strategyConfig.leverage]);
+  }, [scheduledCoins]);
 
   // Status banner
   const statusMsg = !best

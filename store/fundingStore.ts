@@ -1708,8 +1708,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         ? rs.effectiveSpread / 100 : o.spread;
       return notional * spread - roundTripFee;
     };
-    const sorted = [...filtered].sort((a, b) => getLiveNetProfit(b) - getLiveNetProfit(a));
-    const result: typeof filtered = [];
+    // 실슬리피지 반영 순수익 양수인 것만 선택 + 정렬
+    const profitable = filtered.filter(o => getLiveNetProfit(o) > 0);
+    const sorted = [...profitable].sort((a, b) => getLiveNetProfit(b) - getLiveNetProfit(a));
+    const result: typeof profitable = [];
     for (const opp of sorted) {
       // 이미 스케줄된 시간과 2분 이내 겹치면 스킵
       const conflictsWithScheduled = scheduledTimes.some(t => Math.abs(t - opp.nextFundingTime) < CONFLICT_WINDOW_MS);
