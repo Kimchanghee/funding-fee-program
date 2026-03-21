@@ -34,6 +34,25 @@ function getEffectiveMinSpread(config: { minSpreadPercent: number }): number {
   return Math.max(config.minSpreadPercent, ROUND_TRIP_FEE_PERCENT);
 }
 
+/** 복리/단리에 따른 실제 notional 계산 */
+function getEffectiveNotional(
+  opp: { shortExchange: ExchangeId; longExchange: ExchangeId },
+  config: { investmentUSDT: number; leverage: number; compoundInvesting: boolean },
+  simBalances: Record<string, number>,
+  realBalances: Partial<Record<ExchangeId, { availableUSDT?: number }>>,
+  isSimulation: boolean,
+): number {
+  if (!config.compoundInvesting) return config.investmentUSDT * config.leverage;
+  const shortBal = isSimulation
+    ? (simBalances[opp.shortExchange] ?? 0)
+    : (realBalances[opp.shortExchange]?.availableUSDT ?? 0);
+  const longBal = isSimulation
+    ? (simBalances[opp.longExchange] ?? 0)
+    : (realBalances[opp.longExchange]?.availableUSDT ?? 0);
+  const perSide = Math.min(shortBal, longBal) * 0.9;
+  return Math.max(perSide, 0) * config.leverage;
+}
+
 // ─────────────────────────────────────────────
 // State shape
 // ─────────────────────────────────────────────
@@ -627,8 +646,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── Refresh real orderbook spreads for scheduled coins ──
   async refreshRealSpreads() {
-    const { snipeTargets, opportunities, strategyConfig, realSpreads } = get();
-    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+    const { snipeTargets, opportunities, strategyConfig, realSpreads, simBalances, balances: realBalances, simulationMode } = get();
     const now = Date.now();
     const STALE_MS = 10_000;
 
@@ -656,6 +674,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (!opp) return;
 
         try {
+          const notional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, simulationMode);
+          if (notional <= 0) return;
           const [shortRes, longRes] = await Promise.all([
             fetch(`/api/exchanges/${opp.shortExchange}/orderbook?symbol=${encodeURIComponent(opp.shortSymbol)}&side=sell&notional=${notional}`),
             fetch(`/api/exchanges/${opp.longExchange}/orderbook?symbol=${encodeURIComponent(opp.longSymbol)}&side=buy&notional=${notional}`),
@@ -1607,16 +1627,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── 예약 코인 실시간 재검증: 8초마다 — netProfit ≤ 0 즉시 해제 + 더 좋은 기회로 교체 ──
   revalidateScheduledSnipes() {
-    const { snipeTargets, opportunities, strategyConfig, realSpreads: currentRealSpreads } = get();
+    const { snipeTargets, opportunities, strategyConfig, realSpreads: currentRealSpreads, simBalances, balances: realBalances, simulationMode } = get();
     const snipeKeys = Object.keys(snipeTargets);
     if (snipeKeys.length === 0) return;
 
-    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
-    const roundTripFee = notional * TAKER_FEE * 4;
     const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
 
-    // 실슬리피지 반영 순수익 계산 헬퍼
+    // 실슬리피지 반영 순수익 계산 헬퍼 (복리 시 실잔고 기반 notional)
     const getLiveNetProfit = (opp: ArbitrageOpportunity): number => {
+      const notional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, simulationMode);
+      const roundTripFee = notional * TAKER_FEE * 4;
       const rs = currentRealSpreads[opp.baseAsset];
       const spread = (rs && Date.now() - rs.updatedAt < 30_000)
         ? rs.effectiveSpread / 100
@@ -1642,7 +1662,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         ? realSpreadData.effectiveSpread
         : currentOpp.spreadPercent;
       const effectiveSpread = effectiveSpreadPercent / 100;
-      const liveNetProfit = notional * effectiveSpread - roundTripFee;
+      const oppNotional = getEffectiveNotional(currentOpp, strategyConfig, simBalances, realBalances, simulationMode);
+      const roundTripFee = oppNotional * TAKER_FEE * 4;
+      const liveNetProfit = oppNotional * effectiveSpread - roundTripFee;
 
       // 순수익 ≤ 0 시 해제 (minSpreadPercent는 이론 스프레드에만 적용, 실효 스프레드는 순수익 기준)
       if (liveNetProfit <= 0) {
@@ -1719,23 +1741,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (opp) scheduledTimes.push(opp.nextFundingTime);
     }
 
-    // 실슬리피지 반영 순수익 기준 정렬 → 시간 겹침만 제거하고 모두 선택
-    const { realSpreads: currentRealSpreads } = get();
-    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
-    const roundTripFee = notional * TAKER_FEE * 4;
+    // 실슬리피지 반영 순수익 기준 정렬 (복리 시 실잔고 기반 notional)
+    const { realSpreads: currentRealSpreads, simBalances, balances: realBalances } = get();
     const getLiveNetProfit = (o: ArbitrageOpportunity): number => {
       const rs = currentRealSpreads[o.baseAsset];
-      // realSpread 데이터 없으면 -Infinity 반환 → 스케줄링 보류 (이론값 fallback 금지)
       if (!rs || Date.now() - rs.updatedAt >= 30_000) return -Infinity;
-      // 실효스프레드 기준 순수익만 체크 (minSpreadPercent는 이론 스프레드에만 적용)
-      return notional * (rs.effectiveSpread / 100) - roundTripFee;
+      const n = getEffectiveNotional(o, strategyConfig, simBalances, realBalances, simulationMode);
+      return n * (rs.effectiveSpread / 100) - n * TAKER_FEE * 4;
     };
     // 실슬리피지 확인 + 최소스프레드 충족 + 순수익 양수만 선택 + 정렬
     const profitable = filtered.filter(o => getLiveNetProfit(o) > 0);
     const sorted = [...profitable].sort((a, b) => getLiveNetProfit(b) - getLiveNetProfit(a));
 
     // 거래소별 가용 잔고 추적 (자금 초과 예약 방지)
-    const { simBalances, balances: realBalances } = get();
     const availableBalance: Record<string, number> = {};
     for (const ex of currentEnabled) {
       const bal = simulationMode
@@ -1839,10 +1857,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const { enabledExchanges: currentEnabled } = get();
 
     // 진입 시점에 해당 코인의 최신 기회 확인 (순수익 + 최소스프레드 기준)
-    const { opportunities, strategyConfig, realSpreads: currentRealSpreads } = get();
+    const { opportunities, strategyConfig, realSpreads: currentRealSpreads, simBalances, balances: realBalances, simulationMode } = get();
     const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
-    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
-    const roundTripFee = notional * TAKER_FEE * 4;
 
     const latestOpp = opportunities.find(o =>
       o.baseAsset === asset &&
@@ -1850,13 +1866,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       currentEnabled.includes(o.longExchange),
     );
     const meetsThreshold = (o: ArbitrageOpportunity) => {
-      // 이론 스프레드는 최소 기준 충족 필요
       if (o.spreadPercent < effectiveMinPercent) return false;
-      // 실슬리피지 반영 순수익 > 0 확인 (실효 스프레드에는 minSpread 미적용)
+      const n = getEffectiveNotional(o, strategyConfig, simBalances, realBalances, simulationMode);
       const rs = currentRealSpreads[o.baseAsset];
       const effSpreadPct = (rs && Date.now() - rs.updatedAt < 30_000)
         ? rs.effectiveSpread : o.spreadPercent;
-      const liveNet = notional * (effSpreadPct / 100) - roundTripFee;
+      const liveNet = n * (effSpreadPct / 100) - n * TAKER_FEE * 4;
       return liveNet > 0;
     };
     const finalTarget = latestOpp && meetsThreshold(latestOpp)

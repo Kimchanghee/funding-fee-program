@@ -312,13 +312,18 @@ export function analyzeOrderbook(
     }
   }
 
-  // Insufficient liquidity — extrapolate from last level
+  // Insufficient liquidity — apply 0.5% penalty per remaining percentage
   if (remainingUSD > 0) {
+    const filledPct = 1 - (remainingUSD / notionalUSDT);
+    const LIQUIDITY_PENALTY = 0.005; // 0.5% per unfilled fraction
+    const penaltyMultiplier = 1 + LIQUIDITY_PENALTY * (1 - filledPct);
     const lastPrice = levels[levels.length - 1][0];
-    const fillQty = remainingUSD / lastPrice;
-    totalCost += fillQty * lastPrice;
+    // Apply penalty: buys get worse (higher) price, sells get worse (lower) price
+    const penalizedPrice = lastPrice * penaltyMultiplier;
+    const fillQty = remainingUSD / penalizedPrice;
+    totalCost += fillQty * penalizedPrice;
     totalQty += fillQty;
-    worstPrice = lastPrice;
+    worstPrice = penalizedPrice;
   }
 
   return {
@@ -468,8 +473,9 @@ export async function openPositionExact(
   limitPrice: number,
   leverage: number,
 ): Promise<{ orderId: string; price: number; amount: number; filledNotional: number }> {
-  const ex = makeExchange(id, config);
+  let ex = makeExchange(id, config);
   try {
+    ex = await ensureMarkets(ex, id, config);
     await ex.setLeverage(leverage, symbol).catch(() => {});
 
     // Adjust qty for exchanges that use contract count instead of base currency amount
@@ -554,8 +560,9 @@ export async function closePosition(
   side: 'long' | 'short',
   amount: number,
 ): Promise<void> {
-  const ex = makeExchange(id, config);
+  let ex = makeExchange(id, config);
   try {
+    ex = await ensureMarkets(ex, id, config);
     // 1. Fetch orderbook for price analysis
     const ob = await Promise.race([
       ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
@@ -712,12 +719,16 @@ export async function fetchMarketFillPrice(
   }
 
   if (remainingUSD > 0) {
-    // Not enough liquidity — use last level price for remainder
+    // Insufficient liquidity — apply penalty instead of naive extrapolation
+    const filledPct = 1 - (remainingUSD / notionalUSDT);
+    const LIQUIDITY_PENALTY = 0.005;
+    const penaltyMultiplier = 1 + LIQUIDITY_PENALTY * (1 - filledPct);
     const lastPrice = levels[levels.length - 1][0];
-    const fillQty = remainingUSD / lastPrice;
-    totalCost += fillQty * lastPrice;
+    const penalizedPrice = lastPrice * penaltyMultiplier;
+    const fillQty = remainingUSD / penalizedPrice;
+    totalCost += fillQty * penalizedPrice;
     totalQty += fillQty;
-    worstPrice = lastPrice;
+    worstPrice = penalizedPrice;
   }
 
   const fillPrice = totalCost / totalQty;
