@@ -25,7 +25,7 @@ import { fmtNum } from '@/lib/format';
 const TAKER_FEE = 0.0005; // 0.05% per side
 // 취소된 코인 쿨다운 (예약→해제 무한루프 방지)
 const _snipeCooldowns = new Map<string, number>();
-const COOLDOWN_MS = 60_000; // 60초
+const COOLDOWN_MS = 15_000; // 15초
 // 왕복 수수료: 진입(숏+롱) + 청산(숏+롱) = 4 × 0.05% = 0.2%
 const ROUND_TRIP_FEE = TAKER_FEE * 4; // 0.002 (0.2%)
 const ROUND_TRIP_FEE_PERCENT = ROUND_TRIP_FEE * 100; // 0.2%
@@ -688,8 +688,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           if (shortJson.success && longJson.success) {
             const shortSlippage = shortJson.slippagePercent;
             const longSlippage = longJson.slippagePercent;
-            // 진입+청산 양방향 슬리피지 반영 (× 2)
-            const effectiveSpread = opp.spreadPercent - (shortSlippage + longSlippage) * 2;
+            // 진입 실측 + 청산 추정(50%) 슬리피지 반영 (× 1.5)
+            const effectiveSpread = opp.spreadPercent - (shortSlippage + longSlippage) * 1.5;
             set(state => ({
               realSpreads: {
                 ...state.realSpreads,
@@ -1744,12 +1744,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // 실슬리피지 반영 순수익 기준 정렬 (복리 시 실잔고 기반 notional)
     const { realSpreads: currentRealSpreads, simBalances, balances: realBalances } = get();
     const getLiveNetProfit = (o: ArbitrageOpportunity): number => {
-      const rs = currentRealSpreads[o.baseAsset];
-      if (!rs || Date.now() - rs.updatedAt >= 30_000) return -Infinity;
       const n = getEffectiveNotional(o, strategyConfig, simBalances, realBalances, simulationMode);
-      return n * (rs.effectiveSpread / 100) - n * TAKER_FEE * 4;
+      const rs = currentRealSpreads[o.baseAsset];
+      // realSpread 있으면 사용, 없으면 이론값으로 스케줄링 (재검증에서 필터)
+      const spread = (rs && Date.now() - rs.updatedAt < 30_000)
+        ? rs.effectiveSpread / 100 : o.spread;
+      return n * spread - n * TAKER_FEE * 4;
     };
-    // 실슬리피지 확인 + 최소스프레드 충족 + 순수익 양수만 선택 + 정렬
+    // 순수익 양수만 선택 + 정렬
     const profitable = filtered.filter(o => getLiveNetProfit(o) > 0);
     const sorted = [...profitable].sort((a, b) => getLiveNetProfit(b) - getLiveNetProfit(a));
 
