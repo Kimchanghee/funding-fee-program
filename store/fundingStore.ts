@@ -462,7 +462,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
                 const merged = [...otherRates, ...json.data.rates];
                 const { investmentUSDT, leverage } = s.strategyConfig;
-                const opportunities = findOpportunities(merged, 20, investmentUSDT, leverage);
+                const opportunities = findOpportunities(merged, s.snipeActive ? 50 : 20, investmentUSDT, leverage);
 
                 // 시뮬 포지션 마크가격 업데이트
                 let updatedSimPositions = s.simPositions;
@@ -1614,6 +1614,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     };
 
     for (const asset of snipeKeys) {
+      // 펀딩 15초 전이면 lock-in — 재검증 스킵 (레이스 컨디션 방지)
+      const targetTime = snipeTargets[asset];
+      if (targetTime && targetTime - Date.now() < 15_000) continue;
+
       const currentOpp = opportunities.find(o => o.baseAsset === asset);
       if (!currentOpp) {
         get().addLog('warning', `[재검증] ${asset} 기회 소멸 — 예약 해제`);
@@ -1750,8 +1754,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const ENTRY_BEFORE_MS = 5_000;
 
-    // 펀딩까지 10초 미만 → 다음 사이클
-    if (targetTime - now < 10_000) {
+    // 펀딩까지 6초 미만 → 다음 사이클 (ENTRY_BEFORE_MS=5초보다 약간 여유)
+    if (targetTime - now < 6_000) {
       targetTime += intervalMs;
     }
 
