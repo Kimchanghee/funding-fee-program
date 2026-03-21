@@ -17,9 +17,10 @@ const thStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-function FundingRow({ p }: { p: FundingPayment }) {
+function FundingRow({ p, notional }: { p: FundingPayment; notional?: number }) {
   const color = EXCHANGE_COLORS[p.exchange as ExchangeId] || '#94a3b8';
   const isPositive = p.amount >= 0;
+  const yieldPercent = notional && notional > 0 ? (p.amount / notional) * 100 : null;
   return (
     <tr className="table-row-hover" style={{ borderBottom: '1px solid rgba(30,45,66,0.5)' }}>
       <td style={{ padding: '8px 10px' }}>
@@ -51,13 +52,19 @@ function FundingRow({ p }: { p: FundingPayment }) {
         <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: isPositive ? '#10b981' : '#ef4444' }}>
           {isPositive ? '+' : ''}${Math.abs(p.amount).toFixed(4)}
         </span>
+        {yieldPercent !== null && (
+          <div className="mono" style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
+            노셔널 대비 {yieldPercent >= 0 ? '+' : ''}{yieldPercent.toFixed(4)}%
+          </div>
+        )}
       </td>
     </tr>
   );
 }
 
-function ModePanel({ title, color, entries, total, emptyMsg }: {
+function ModePanel({ title, color, entries, total, emptyMsg, investmentUSDT, leverage, notional, compoundInvesting }: {
   title: string; color: string; entries: FundingPayment[]; total: number; emptyMsg: string;
+  investmentUSDT?: number; leverage?: number; notional?: number; compoundInvesting?: boolean;
 }) {
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
@@ -67,8 +74,23 @@ function ModePanel({ title, color, entries, total, emptyMsg }: {
         display: 'flex', alignItems: 'center', gap: 8,
         borderBottom: `2px solid ${color}44`,
         background: `${color}08`,
+        flexWrap: 'wrap',
       }}>
         <span style={{ fontSize: 12, fontWeight: 700, color }}>{title}</span>
+        {investmentUSDT !== undefined && (
+          <span style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'flex', gap: 6 }}>
+            <span>투자: <span className="mono" style={{ color: '#a78bfa', fontWeight: 600 }}>${(investmentUSDT * 2).toLocaleString()}</span></span>
+            <span>노셔널: <span className="mono" style={{ fontWeight: 600 }}>${notional?.toLocaleString()}</span></span>
+            <span>({leverage}x)</span>
+            <span style={{
+              padding: '0 4px', borderRadius: 3, fontSize: 9, fontWeight: 700,
+              background: compoundInvesting ? 'rgba(167,139,250,0.2)' : 'rgba(16,185,129,0.2)',
+              color: compoundInvesting ? '#a78bfa' : '#10b981',
+            }}>
+              {compoundInvesting ? '복리' : '단리'}
+            </span>
+          </span>
+        )}
         <span className="mono" style={{
           marginLeft: 'auto', fontSize: 13, fontWeight: 800,
           color: total >= 0 ? '#10b981' : '#ef4444',
@@ -98,7 +120,7 @@ function ModePanel({ title, color, entries, total, emptyMsg }: {
                 </td>
               </tr>
             ) : (
-              entries.map((p, i) => <FundingRow key={i} p={p} />)
+              entries.map((p, i) => <FundingRow key={i} p={p} notional={notional} />)
             )}
           </tbody>
         </table>
@@ -108,7 +130,8 @@ function ModePanel({ title, color, entries, total, emptyMsg }: {
 }
 
 export default function FundingHistory() {
-  const { fundingHistory, fetchFundingHistory, apiConfigs, isLoadingHistory, simulationMode, clearSimFundingHistory } = useFundingStore();
+  const { fundingHistory, fetchFundingHistory, apiConfigs, isLoadingHistory, simulationMode, clearSimFundingHistory, strategyConfig } = useFundingStore();
+  const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
 
   const apiConfigKeys = Object.keys(apiConfigs).join(',');
   useEffect(() => {
@@ -168,6 +191,10 @@ export default function FundingHistory() {
           entries={allEntries}
           total={allTotal}
           emptyMsg={emptyMsg}
+          investmentUSDT={strategyConfig.investmentUSDT}
+          leverage={strategyConfig.leverage}
+          notional={notional}
+          compoundInvesting={strategyConfig.compoundInvesting}
         />
       </div>
     </div>

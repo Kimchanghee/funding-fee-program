@@ -6,49 +6,99 @@ import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
 import { fmtNum } from '@/lib/format';
 
-/** 거래소 미니 카드 (헷징 잔고 표시) */
+/** 거래소 미니 카드 (상세 잔고 분석) */
 function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
-  const { simBalances, simPositions, fundingHistory } = useFundingStore();
+  const { simBalances, simPositions, fundingHistory, strategyConfig } = useFundingStore();
   const color = EXCHANGE_COLORS[exchange];
 
   const bal = simBalances[exchange] ?? 0;
+  const initialBal = strategyConfig.investmentUSDT;
   const exPositions = simPositions.filter(p =>
     p.exchange === exchange && (p.positionType === 'hedge_long' || p.positionType === 'hedge_short')
   );
   const margin = exPositions.reduce((s, p) => s + p.margin, 0);
   const unrealizedPnl = exPositions.reduce((s, p) => s + p.unrealizedPnl, 0);
-  const funding = fundingHistory
-    .filter(p => p.exchange === exchange)
-    .reduce((s, p) => s + p.amount, 0);
+  const entryFees = exPositions.reduce((s, p) => s + p.entryFee, 0);
+
+  // 펀딩 수령 (수령 vs 지급 분리)
+  const fundingEntries = fundingHistory.filter(p => p.exchange === exchange);
+  const fundingReceived = fundingEntries.filter(p => p.amount >= 0).reduce((s, p) => s + p.amount, 0);
+  const fundingPaid = fundingEntries.filter(p => p.amount < 0).reduce((s, p) => s + p.amount, 0);
+  const fundingNet = fundingReceived + fundingPaid;
+
+  // 총 자산 = 가용 + 마진
+  const totalAsset = bal + margin;
+  // 잔고 변동 = 현재 총자산 - 초기자산 - 미실현PnL
+  const balanceChange = totalAsset - initialBal;
+  // 순입출금 (이체) = 잔고변동 - 펀딩 + 수수료 - 미실현PnL
+  const netTransfer = balanceChange - fundingNet + entryFees - unrealizedPnl;
 
   return (
     <div style={{
-      padding: '8px 12px', borderRadius: 8,
+      padding: '10px 12px', borderRadius: 8,
       background: `${color}08`, border: `1px solid ${color}22`,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+      {/* 거래소명 + 총 자산 */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
         <span style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '0.05em' }}>
           {EXCHANGE_NAMES[exchange]}
         </span>
-        <span className="mono" style={{ fontSize: 11, fontWeight: 800, color: 'var(--color-text)' }}>
-          ${fmtNum(bal + margin)}
+        <span className="mono" style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-text)' }}>
+          ${fmtNum(totalAsset)}
         </span>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#64748b' }}>
-        <span>가용 ${fmtNum(bal)}</span>
-        <span>마진 ${fmtNum(margin)}</span>
+
+      {/* 잔고 구성 */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#64748b', marginBottom: 4 }}>
+        <span>가용 <span className="mono">${fmtNum(bal)}</span></span>
+        <span>마진 <span className="mono">${fmtNum(margin)}</span></span>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 2 }}>
-        <span style={{ fontSize: 10, color: '#64748b' }}>펀딩</span>
-        <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: funding >= 0 ? '#10b981' : '#ef4444' }}>
-          {funding >= 0 ? '+' : ''}${fmtNum(funding, 4)}
-        </span>
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 2 }}>
-        <span style={{ fontSize: 10, color: '#64748b' }}>미실현 PnL</span>
-        <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: unrealizedPnl >= 0 ? '#10b981' : '#ef4444' }}>
-          {unrealizedPnl >= 0 ? '+' : ''}${fmtNum(unrealizedPnl, 4)}
-        </span>
+
+      <div style={{ height: 1, background: `${color}22`, margin: '4px 0' }} />
+
+      {/* 상세 항목 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: '#64748b' }}>초기 잔고</span>
+          <span className="mono" style={{ color: '#94a3b8' }}>${fmtNum(initialBal)}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: '#64748b' }}>펀딩 수령</span>
+          <span className="mono" style={{ color: '#10b981', fontWeight: 600 }}>+${fmtNum(fundingReceived, 4)}</span>
+        </div>
+        {fundingPaid < 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: '#64748b' }}>펀딩 지급</span>
+            <span className="mono" style={{ color: '#ef4444', fontWeight: 600 }}>${fmtNum(fundingPaid, 4)}</span>
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: '#64748b' }}>거래 수수료</span>
+          <span className="mono" style={{ color: '#ef4444', fontWeight: 600 }}>-${fmtNum(entryFees, 4)}</span>
+        </div>
+        {Math.abs(netTransfer) > 0.01 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: '#64748b' }}>{netTransfer >= 0 ? '타 거래소→입금' : '타 거래소→출금'}</span>
+            <span className="mono" style={{ color: netTransfer >= 0 ? '#3b82f6' : '#f59e0b', fontWeight: 600 }}>
+              {netTransfer >= 0 ? '+' : ''}${fmtNum(netTransfer, 2)}
+            </span>
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: '#64748b' }}>미실현 PnL</span>
+          <span className="mono" style={{ color: unrealizedPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+            {unrealizedPnl >= 0 ? '+' : ''}${fmtNum(unrealizedPnl, 4)}
+          </span>
+        </div>
+
+        <div style={{ height: 1, background: `${color}22`, margin: '2px 0' }} />
+
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color, fontWeight: 700 }}>잔고 변동</span>
+          <span className="mono" style={{ color: balanceChange >= 0 ? '#10b981' : '#ef4444', fontWeight: 800 }}>
+            {balanceChange >= 0 ? '+' : ''}${fmtNum(balanceChange, 2)}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -112,6 +162,9 @@ function SimModeColumn({
   fees,
   positions,
   enabledExchanges,
+  investmentUSDT,
+  leverage,
+  compoundInvesting,
 }: {
   title: string;
   accentColor: string;
@@ -119,6 +172,9 @@ function SimModeColumn({
   fees: number;
   positions: import('@/lib/types').SimPosition[];
   enabledExchanges: ExchangeId[];
+  investmentUSDT: number;
+  leverage: number;
+  compoundInvesting: boolean;
 }) {
   const modePositions = positions.filter(p =>
     p.positionType === 'hedge_long' || p.positionType === 'hedge_short'
@@ -137,7 +193,21 @@ function SimModeColumn({
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <FlaskConical size={13} color={accentColor} />
         <span style={{ fontSize: 12, fontWeight: 700, color: accentColor }}>{title}</span>
+        <span style={{
+          fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+          background: compoundInvesting ? 'rgba(167,139,250,0.2)' : 'rgba(16,185,129,0.2)',
+          color: compoundInvesting ? '#a78bfa' : '#10b981',
+        }}>
+          {compoundInvesting ? '복리' : '단리'}
+        </span>
         <span style={{ marginLeft: 'auto', fontSize: 9, color: accentColor, background: `${accentColor}20`, padding: '2px 6px', borderRadius: 4 }}>SIM</span>
+      </div>
+
+      {/* 투자금 정보 */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 6, fontSize: 10, color: '#94a3b8' }}>
+        <span>거래소당 <span className="mono" style={{ color: '#a78bfa', fontWeight: 700 }}>${investmentUSDT.toLocaleString()}</span></span>
+        <span>총 투입 <span className="mono" style={{ fontWeight: 700 }}>${(investmentUSDT * enabledExchanges.length).toLocaleString()}</span></span>
+        <span>노셔널 <span className="mono" style={{ fontWeight: 700 }}>${(investmentUSDT * leverage).toLocaleString()}</span> ({leverage}x)</span>
       </div>
 
       {/* 순수익 (메인 숫자) */}
@@ -185,7 +255,7 @@ export default function BalanceCards() {
   const {
     balances, simulationMode, simPositions,
     simTotalFundingEarned, simTotalFees,
-    enabledExchanges, resetSimulation,
+    enabledExchanges, resetSimulation, strategyConfig,
   } = useFundingStore();
   const totalUSDT = Object.values(balances)
     .filter(b => b?.status === 'connected')
@@ -239,6 +309,9 @@ export default function BalanceCards() {
           fees={simTotalFees}
           positions={simPositions}
           enabledExchanges={enabledExchanges}
+          investmentUSDT={strategyConfig.investmentUSDT}
+          leverage={strategyConfig.leverage}
+          compoundInvesting={strategyConfig.compoundInvesting}
         />
       </div>
     </div>

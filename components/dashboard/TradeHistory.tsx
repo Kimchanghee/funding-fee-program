@@ -148,6 +148,8 @@ function PairRow({ pair }: { pair: HedgePair }) {
   const statusColor = pair.status === 'closed' ? '#6b7280' : pair.status === 'partial' ? '#f59e0b' : '#3b82f6';
   const statusLabel = pair.status === 'closed' ? '완료' : pair.status === 'partial' ? '일부' : '진행중';
 
+  const investmentUSDT = pair.margin * 2; // 숏+롱 양쪽 마진
+
   return (
     <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
       {/* Summary row */}
@@ -155,7 +157,7 @@ function PairRow({ pair }: { pair: HedgePair }) {
         onClick={() => setExpanded(!expanded)}
         style={{
           display: 'grid',
-          gridTemplateColumns: '50px 70px 1fr 100px 100px 80px 30px',
+          gridTemplateColumns: '50px 70px 1fr 80px 80px 80px 80px 30px',
           alignItems: 'center',
           padding: '10px 12px',
           cursor: 'pointer',
@@ -173,6 +175,9 @@ function PairRow({ pair }: { pair: HedgePair }) {
         <span style={{ color: '#94a3b8', fontSize: 11 }}>
           {`숏:${pair.shortExchange.toUpperCase()} / 롱:${pair.longExchange.toUpperCase()}`}
         </span>
+        <span className="mono" style={{ color: '#a78bfa', fontSize: 10, fontWeight: 600, textAlign: 'right' }}>
+          ${fmtNum(investmentUSDT, 0)}
+        </span>
         <span className="mono" style={{ color: pair.totalFunding >= 0 ? '#10b981' : '#ef4444', fontWeight: 600, textAlign: 'right' }}>
           {pair.totalFunding >= 0 ? '+' : ''}{fmtNum(pair.totalFunding, 2)}
         </span>
@@ -188,26 +193,47 @@ function PairRow({ pair }: { pair: HedgePair }) {
         <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           {/* Entry info */}
           <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr',
+            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr',
             gap: 8, padding: '8px 12px', borderRadius: 8,
             background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)',
             fontSize: 11,
           }}>
             <div>
-              <div style={{ color: '#64748b', marginBottom: 2 }}>마진</div>
-              <div className="mono" style={{ color: '#e2e8f0', fontWeight: 600 }}>${fmtNum(pair.margin, 0)}</div>
-            </div>
-            <div>
-              <div style={{ color: '#64748b', marginBottom: 2 }}>레버리지</div>
-              <div className="mono" style={{ color: '#e2e8f0', fontWeight: 600 }}>{pair.leverage}x</div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>투자금</div>
+              <div className="mono" style={{ color: '#a78bfa', fontWeight: 700 }}>${fmtNum(investmentUSDT, 0)}</div>
+              <div style={{ color: '#64748b', fontSize: 9, marginTop: 1 }}>숏+롱 각 ${fmtNum(pair.margin, 0)}</div>
             </div>
             <div>
               <div style={{ color: '#64748b', marginBottom: 2 }}>노셔널</div>
               <div className="mono" style={{ color: '#e2e8f0', fontWeight: 600 }}>${fmtNum(pair.notional, 0)}</div>
+              <div style={{ color: '#64748b', fontSize: 9, marginTop: 1 }}>{pair.leverage}x 레버리지</div>
             </div>
             <div>
               <div style={{ color: '#64748b', marginBottom: 2 }}>스프레드</div>
               <div className="mono" style={{ color: '#e2e8f0', fontWeight: 600 }}>{fmtNum(pair.spreadPercent, 4)}%</div>
+            </div>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>수수료 (왕복)</div>
+              <div className="mono" style={{ color: '#ef4444', fontWeight: 600 }}>-${fmtNum(pair.notional * 0.002, 2)}</div>
+              <div style={{ color: '#64748b', fontSize: 9, marginTop: 1 }}>4×0.05%</div>
+            </div>
+            <div>
+              <div style={{ color: '#64748b', marginBottom: 2 }}>체결 효율</div>
+              {(() => {
+                const totalFees = pair.notional * 0.002;
+                const grossProfit = pair.totalPnl + totalFees;
+                const expected = pair.expectedProfit + totalFees;
+                const efficiency = expected > 0 ? (grossProfit / expected) * 100 : 0;
+                const effColor = efficiency >= 90 ? '#10b981' : efficiency >= 70 ? '#f59e0b' : '#ef4444';
+                return pair.status === 'closed' ? (
+                  <>
+                    <div className="mono" style={{ color: effColor, fontWeight: 700 }}>{fmtNum(efficiency, 1)}%</div>
+                    <div style={{ color: '#64748b', fontSize: 9, marginTop: 1 }}>실제/예상 비율</div>
+                  </>
+                ) : (
+                  <div className="mono" style={{ color: '#64748b' }}>—</div>
+                );
+              })()}
             </div>
           </div>
 
@@ -371,7 +397,7 @@ export default function TradeHistory() {
         <>
           <div style={{
             display: 'grid',
-            gridTemplateColumns: '50px 70px 1fr 100px 100px 80px 30px',
+            gridTemplateColumns: '50px 70px 1fr 80px 80px 80px 80px 30px',
             padding: '6px 12px',
             fontSize: 10,
             color: '#64748b',
@@ -382,6 +408,7 @@ export default function TradeHistory() {
             <span>상태</span>
             <span>코인</span>
             <span>거래소</span>
+            <span style={{ textAlign: 'right' }}>투자금</span>
             <span style={{ textAlign: 'right' }}>펀딩</span>
             <span style={{ textAlign: 'right' }}>합산 PnL</span>
             <span style={{ textAlign: 'right' }}>시각</span>
