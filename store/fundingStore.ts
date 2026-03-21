@@ -1640,12 +1640,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const effectiveSpread = effectiveSpreadPercent / 100;
       const liveNetProfit = notional * effectiveSpread - roundTripFee;
 
-      // 순수익 또는 최소 스프레드 미달 시 해제
-      if (liveNetProfit <= 0 || effectiveSpreadPercent < effectiveMinPercent) {
+      // 순수익 ≤ 0 시 해제 (minSpreadPercent는 이론 스프레드에만 적용, 실효 스프레드는 순수익 기준)
+      if (liveNetProfit <= 0) {
         get().addLog('warning',
-          `[재검증] ${asset} ${liveNetProfit <= 0 ? '순수익' : '스프레드'} 기준 미달 — 예약 해제`,
+          `[재검증] ${asset} 순수익 기준 미달 — 예약 해제`,
           undefined,
-          `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% (최소 ${effectiveMinPercent}%) | 순수익: $${fmtNum(liveNetProfit)} | 수수료: $${fmtNum(roundTripFee)}`,
+          `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% | 순수익: $${fmtNum(liveNetProfit)} | 수수료: $${fmtNum(roundTripFee)}`,
         );
         get().cancelSnipeForAsset(asset);
         _snipeCooldowns.set(asset, Date.now() + COOLDOWN_MS);
@@ -1719,8 +1719,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const rs = currentRealSpreads[o.baseAsset];
       // realSpread 데이터 없으면 -Infinity 반환 → 스케줄링 보류 (이론값 fallback 금지)
       if (!rs || Date.now() - rs.updatedAt >= 30_000) return -Infinity;
-      // 실효스프레드가 최소 기준 미달이면 -Infinity (재검증과 동일 기준)
-      if (rs.effectiveSpread < effectiveMinPercent) return -Infinity;
+      // 실효스프레드 기준 순수익만 체크 (minSpreadPercent는 이론 스프레드에만 적용)
       return notional * (rs.effectiveSpread / 100) - roundTripFee;
     };
     // 실슬리피지 확인 + 최소스프레드 충족 + 순수익 양수만 선택 + 정렬
@@ -1843,11 +1842,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       currentEnabled.includes(o.longExchange),
     );
     const meetsThreshold = (o: ArbitrageOpportunity) => {
-      // 실슬리피지 반영 순수익 확인
+      // 이론 스프레드는 최소 기준 충족 필요
+      if (o.spreadPercent < effectiveMinPercent) return false;
+      // 실슬리피지 반영 순수익 > 0 확인 (실효 스프레드에는 minSpread 미적용)
       const rs = currentRealSpreads[o.baseAsset];
       const effSpreadPct = (rs && Date.now() - rs.updatedAt < 30_000)
         ? rs.effectiveSpread : o.spreadPercent;
-      if (effSpreadPct < effectiveMinPercent) return false;
       const liveNet = notional * (effSpreadPct / 100) - roundTripFee;
       return liveNet > 0;
     };
