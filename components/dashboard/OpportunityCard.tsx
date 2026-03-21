@@ -417,7 +417,7 @@ export default function OpportunityCard() {
             {/* Table Header */}
             <div className="opp-table-header" style={{
               display: 'grid',
-              gridTemplateColumns: '32px 70px 1fr 90px 90px 80px 80px',
+              gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 80px',
               gap: 8, padding: '6px 10px', marginBottom: 4,
               fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)',
               borderBottom: '1px solid var(--color-border)',
@@ -428,6 +428,7 @@ export default function OpportunityCard() {
               <span>코인</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>숏</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>롱</span>
+              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>예상 투자금</span>
               <span style={{ textAlign: 'right' }}>예상 수익</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>카운트다운</span>
             </div>
@@ -455,7 +456,7 @@ export default function OpportunityCard() {
                     onClick={() => setExpandedAsset(isExpanded ? null : item.asset)}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '32px 70px 1fr 90px 90px 80px 80px',
+                      gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 80px',
                       gap: 8, padding: '8px 10px',
                       alignItems: 'center',
                       cursor: 'pointer',
@@ -498,6 +499,16 @@ export default function OpportunityCard() {
                     {/* Long Exchange */}
                     <div className="opp-hide-mobile" style={{ textAlign: 'center' }}>
                       <ExBadge ex={item.opp.longExchange} />
+                    </div>
+
+                    {/* Expected Investment */}
+                    <div className="opp-hide-mobile" style={{ textAlign: 'right' }}>
+                      <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: '#a78bfa' }}>
+                        ${fmtNum(perExchangeInvestment * 2, 0)}
+                      </span>
+                      <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
+                        노셔널 ${fmtNum(perExchangeInvestment * strategyConfig.leverage, 0)}
+                      </div>
                     </div>
 
                     {/* Net Profit */}
