@@ -234,12 +234,25 @@ export default function OpportunityCard() {
     });
   }, [opportunities, snipeTargets, simPositions, positions, simulationMode]);
 
-  // Nearest upcoming trade
+  // Nearest upcoming trade — 실효스프레드 반영 순수익 양수인 것만
   const nextTrade = useMemo(() => {
-    const scheduled = scheduledCoins.filter(c => c.status === 'scheduled' || c.status === 'active');
-    if (scheduled.length === 0) return null;
+    const scheduled = scheduledCoins.filter(c => {
+      if (c.status !== 'scheduled' && c.status !== 'active') return false;
+      const rs = realSpreads[c.asset];
+      const effOpp = rs
+        ? { ...c.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
+        : c.opp;
+      const p = estimateProfit(effOpp, perExchangeInvestment, strategyConfig.leverage);
+      return p.netPerFunding > 0;
+    });
+    if (scheduled.length === 0) {
+      // 양수 없으면 예약된 것 중 가장 빠른 것이라도 표시
+      const any = scheduledCoins.filter(c => c.status === 'scheduled' || c.status === 'active');
+      if (any.length === 0) return null;
+      return any.reduce((a, b) => a.fundingTime < b.fundingTime ? a : b);
+    }
     return scheduled.reduce((a, b) => a.fundingTime < b.fundingTime ? a : b);
-  }, [scheduledCoins]);
+  }, [scheduledCoins, realSpreads, perExchangeInvestment, strategyConfig.leverage]);
 
   // Status banner
   const statusMsg = !best
@@ -444,8 +457,8 @@ export default function OpportunityCard() {
                 ? { ...item.opp, spread: realSpread.effectiveSpread / 100, spreadPercent: realSpread.effectiveSpread }
                 : item.opp;
               const profit = estimateProfit(effectiveOpp, perExchangeInvestment, strategyConfig.leverage);
-              // 마이너스 순수익은 활성 포지션 외 숨김
-              if (item.status !== 'active' && profit.netPerFunding <= 0) return null;
+              // 마이너스 순수익은 대기(opportunity) 상태만 숨김 — 예약/활성은 항상 표시
+              if (item.status === 'opportunity' && profit.netPerFunding <= 0) return null;
 
               visibleIdx++;
 
