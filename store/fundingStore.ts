@@ -655,8 +655,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     for (const key of Object.keys(snipeTargets)) {
       uniqueAssets.add(key);
     }
-    // 2시간 이내 펀딩 기회 사전 조회 (스케줄링 시 이론값 fallback 방지)
-    const LOOKAHEAD_MS = 120 * 60 * 1000;
+    // 5시간 이내 펀딩 기회 사전 조회 (스케줄링 시 이론값 fallback 방지)
+    const LOOKAHEAD_MS = 5 * 60 * 60 * 1000;
     for (const opp of opportunities) {
       if (opp.nextFundingTime - Date.now() <= LOOKAHEAD_MS) {
         uniqueAssets.add(opp.baseAsset);
@@ -1721,7 +1721,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const CONFLICT_WINDOW_MS = 30 * 1000; // 30초 — 스나이프 실행은 ~10-15초
 
-    const MAX_SCHEDULE_AHEAD_MS = 120 * 60 * 1000; // 2시간 이내 펀딩만 예약
+    const MAX_SCHEDULE_AHEAD_MS = 5 * 60 * 60 * 1000; // 5시간 이내 펀딩만 예약 (8h 주기의 ~60%)
 
     // 헷징 기준: 순수익 > 0, 최소 스프레드 충족, 양쪽 거래소 활성화, 2시간 이내
     const filtered = opportunities.filter(o => {
