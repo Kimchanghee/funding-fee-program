@@ -668,7 +668,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           if (shortJson.success && longJson.success) {
             const shortSlippage = shortJson.slippagePercent;
             const longSlippage = longJson.slippagePercent;
-            const effectiveSpread = opp.spreadPercent - shortSlippage - longSlippage;
+            // 진입+청산 양방향 슬리피지 반영 (× 2)
+            const effectiveSpread = opp.spreadPercent - (shortSlippage + longSlippage) * 2;
             set(state => ({
               realSpreads: {
                 ...state.realSpreads,
@@ -1666,9 +1667,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
 
       if (betterOpp) {
-        const improvePct = ((betterOpp.netProfit - liveNetProfit) / liveNetProfit * 100).toFixed(1);
+        const betterLiveNet = getLiveNetProfit(betterOpp);
+        const improvePct = ((betterLiveNet - liveNetProfit) / liveNetProfit * 100).toFixed(1);
         get().addLog('info',
-          `[교체] ${asset}($${fmtNum(liveNetProfit)}) → ${betterOpp.baseAsset}($${fmtNum(betterOpp.netProfit)}) +${improvePct}%`,
+          `[교체] ${asset}($${fmtNum(liveNetProfit)}) → ${betterOpp.baseAsset}($${fmtNum(betterLiveNet)}) +${improvePct}%`,
         );
         get().cancelSnipeForAsset(asset);
         get().scheduleSnipeForAsset(betterOpp);
