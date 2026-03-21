@@ -637,9 +637,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     for (const key of Object.keys(snipeTargets)) {
       uniqueAssets.add(key);
     }
-    // 상위 10개 기회도 사전 조회 (스케줄링 시 이론값 fallback 방지)
-    for (const opp of opportunities.slice(0, 10)) {
-      uniqueAssets.add(opp.baseAsset);
+    // 2시간 이내 펀딩 기회 사전 조회 (스케줄링 시 이론값 fallback 방지)
+    const LOOKAHEAD_MS = 120 * 60 * 1000;
+    for (const opp of opportunities) {
+      if (opp.nextFundingTime - Date.now() <= LOOKAHEAD_MS) {
+        uniqueAssets.add(opp.baseAsset);
+      }
     }
     if (uniqueAssets.size === 0) return;
 
@@ -1694,12 +1697,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const CONFLICT_WINDOW_MS = 30 * 1000; // 30초 — 스나이프 실행은 ~10-15초
 
-    // 헷징 기준: 순수익 > 0, 최소 스프레드 충족, 양쪽 거래소 활성화
+    const MAX_SCHEDULE_AHEAD_MS = 120 * 60 * 1000; // 2시간 이내 펀딩만 예약
+
+    // 헷징 기준: 순수익 > 0, 최소 스프레드 충족, 양쪽 거래소 활성화, 2시간 이내
     const filtered = opportunities.filter(o => {
       if (activeKeys.has(o.baseAsset)) return false;
       if (!currentEnabled.includes(o.shortExchange)) return false;
       if (!currentEnabled.includes(o.longExchange)) return false;
       if (o.spreadPercent < effectiveMinPercent) return false;
+      if (o.nextFundingTime - now > MAX_SCHEDULE_AHEAD_MS) return false;
       return o.netProfit > 0;
     });
     if (filtered.length === 0) return;
