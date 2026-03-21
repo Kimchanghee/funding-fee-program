@@ -629,10 +629,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const now = Date.now();
     const STALE_MS = 10_000;
 
-    // Collect unique baseAssets from snipeTargets
+    // Collect from snipeTargets + top opportunities (스케줄링 전 슬리피지 사전 조회)
     const uniqueAssets = new Set<string>();
     for (const key of Object.keys(snipeTargets)) {
       uniqueAssets.add(key);
+    }
+    // 상위 10개 기회도 사전 조회 (스케줄링 시 이론값 fallback 방지)
+    for (const opp of opportunities.slice(0, 10)) {
+      uniqueAssets.add(opp.baseAsset);
     }
     if (uniqueAssets.size === 0) return;
 
@@ -1704,22 +1708,51 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const roundTripFee = notional * TAKER_FEE * 4;
     const getLiveNetProfit = (o: ArbitrageOpportunity): number => {
       const rs = currentRealSpreads[o.baseAsset];
-      const spread = (rs && Date.now() - rs.updatedAt < 30_000)
-        ? rs.effectiveSpread / 100 : o.spread;
-      return notional * spread - roundTripFee;
+      // realSpread 데이터 없으면 -Infinity 반환 → 스케줄링 보류 (이론값 fallback 금지)
+      if (!rs || Date.now() - rs.updatedAt >= 30_000) return -Infinity;
+      return notional * (rs.effectiveSpread / 100) - roundTripFee;
     };
-    // 실슬리피지 반영 순수익 양수인 것만 선택 + 정렬
+    // 실슬리피지 확인된 것 중 순수익 양수만 선택 + 정렬
     const profitable = filtered.filter(o => getLiveNetProfit(o) > 0);
     const sorted = [...profitable].sort((a, b) => getLiveNetProfit(b) - getLiveNetProfit(a));
+
+    // 거래소별 가용 잔고 추적 (자금 초과 예약 방지)
+    const { simBalances, balances: realBalances } = get();
+    const availableBalance: Record<string, number> = {};
+    for (const ex of currentEnabled) {
+      const bal = simulationMode
+        ? (simBalances[ex] ?? 0)
+        : (realBalances[ex]?.availableUSDT ?? 0);
+      // 이미 예약된 코인이 사용할 마진 차감
+      const reservedMargin = Object.keys(snipeTargets).reduce((sum, key) => {
+        const opp = opportunities.find(o => o.baseAsset === key);
+        if (!opp) return sum;
+        if (opp.shortExchange === ex || opp.longExchange === ex) {
+          return sum + strategyConfig.investmentUSDT;
+        }
+        return sum;
+      }, 0);
+      availableBalance[ex] = Math.max(0, bal - reservedMargin);
+    }
+    const perSideInvestment = strategyConfig.investmentUSDT;
+
     const result: typeof profitable = [];
     for (const opp of sorted) {
-      // 이미 스케줄된 시간과 2분 이내 겹치면 스킵
+      // 거래소 잔고 체크: 양쪽 모두 투자금 이상 가용해야 함
+      const shortAvail = availableBalance[opp.shortExchange] ?? 0;
+      const longAvail = availableBalance[opp.longExchange] ?? 0;
+      if (shortAvail < perSideInvestment || longAvail < perSideInvestment) continue;
+
+      // 이미 스케줄된 시간과 30초 이내 겹치면 스킵
       const conflictsWithScheduled = scheduledTimes.some(t => Math.abs(t - opp.nextFundingTime) < CONFLICT_WINDOW_MS);
       if (conflictsWithScheduled) continue;
-      // 이번 라운드에서 선택된 것과 2분 이내 겹치면 스킵 (높은 스프레드가 먼저 선택됨)
+      // 이번 라운드에서 선택된 것과 30초 이내 겹치면 스킵
       const conflictsWithResult = result.some(r => Math.abs(r.nextFundingTime - opp.nextFundingTime) < CONFLICT_WINDOW_MS);
       if (conflictsWithResult) continue;
       result.push(opp);
+      // 선택된 코인의 거래소 잔고 차감 (다음 코인 체크 시 반영)
+      availableBalance[opp.shortExchange] = (availableBalance[opp.shortExchange] ?? 0) - perSideInvestment;
+      availableBalance[opp.longExchange] = (availableBalance[opp.longExchange] ?? 0) - perSideInvestment;
     }
 
     // 스케줄 등록
