@@ -521,6 +521,22 @@ export default function OpportunityCard() {
 
               visibleIdx++;
 
+              // 펀딩 주기별 색상 (1h=cyan, 4h=purple, 8h=default)
+              const intervalH = item.opp.fundingIntervalMs ? Math.round(item.opp.fundingIntervalMs / 3600000) : 8;
+              const intervalColor = intervalH <= 1 ? 'rgba(6,182,212,' : intervalH <= 4 ? 'rgba(139,92,246,' : 'rgba(100,116,139,';
+              const intervalBg = item.status === 'opportunity'
+                ? `${intervalColor}0.03)` : undefined;
+              const intervalBorder = item.status === 'opportunity'
+                ? `${intervalColor}0.15)` : undefined;
+
+              const rowBg = isExpanded
+                ? 'rgba(59,130,246,0.08)'
+                : item.status === 'active'
+                  ? 'rgba(245,158,11,0.06)'
+                  : item.status === 'scheduled'
+                    ? 'rgba(16,185,129,0.04)'
+                    : intervalBg || 'transparent';
+
               return (
                 <div key={item.asset}>
                   {/* Main Row */}
@@ -534,18 +550,13 @@ export default function OpportunityCard() {
                       alignItems: 'center',
                       cursor: 'pointer',
                       borderRadius: 8,
-                      background: isExpanded
-                        ? 'rgba(59,130,246,0.08)'
-                        : item.status === 'active'
-                          ? 'rgba(245,158,11,0.06)'
-                          : item.status === 'scheduled'
-                            ? 'rgba(16,185,129,0.04)'
-                            : 'transparent',
+                      background: rowBg,
+                      borderLeft: intervalBorder ? `2px solid ${intervalBorder}` : undefined,
                       border: isExpanded ? '1px solid rgba(59,130,246,0.2)' : '1px solid transparent',
                       transition: 'all 0.15s',
                     }}
                     onMouseEnter={e => { if (!isExpanded) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
-                    onMouseLeave={e => { if (!isExpanded) e.currentTarget.style.background = item.status === 'active' ? 'rgba(245,158,11,0.06)' : item.status === 'scheduled' ? 'rgba(16,185,129,0.04)' : 'transparent'; }}
+                    onMouseLeave={e => { if (!isExpanded) e.currentTarget.style.background = rowBg; }}
                   >
                     {/* Rank */}
                     <span className="mono opp-hide-mobile" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
@@ -621,9 +632,19 @@ export default function OpportunityCard() {
                       </span>
                     </div>
 
-                    {/* Countdown — 후보는 dimmed 표시 */}
+                    {/* Countdown + 주기 뱃지 — 후보는 dimmed 표시 */}
                     <div className="opp-hide-mobile" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.4 : 1 }}>
                       <InlineCountdown targetMs={item.fundingTime} />
+                      {intervalH < 8 && (
+                        <span style={{
+                          fontSize: 8, fontWeight: 700, marginLeft: 2,
+                          padding: '1px 3px', borderRadius: 3,
+                          background: intervalH <= 1 ? 'rgba(6,182,212,0.15)' : 'rgba(139,92,246,0.15)',
+                          color: intervalH <= 1 ? '#06b6d4' : '#8b5cf6',
+                        }}>
+                          {intervalH}h
+                        </span>
+                      )}
                     </div>
                   </div>
 
