@@ -431,7 +431,7 @@ export default function OpportunityCard() {
             {/* Table Header */}
             <div className="opp-table-header" style={{
               display: 'grid',
-              gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 80px',
+              gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 60px 80px',
               gap: 8, padding: '6px 10px', marginBottom: 4,
               fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)',
               borderBottom: '1px solid var(--color-border)',
@@ -444,6 +444,7 @@ export default function OpportunityCard() {
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>롱</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>예상 투자금</span>
               <span style={{ textAlign: 'right' }}>예상 수익</span>
+              <span style={{ textAlign: 'right' }}>수익률</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩까지</span>
             </div>
 
@@ -499,7 +500,7 @@ export default function OpportunityCard() {
                     onClick={() => setExpandedAsset(isExpanded ? null : item.asset)}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 80px',
+                      gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 60px 80px',
                       gap: 8, padding: '8px 10px',
                       alignItems: 'center',
                       cursor: 'pointer',
@@ -568,7 +569,7 @@ export default function OpportunityCard() {
                       );
                     })()}
 
-                    {/* Net Profit + ROI — 후보는 dimmed */}
+                    {/* Net Profit — 후보는 dimmed */}
                     <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
                       <span className="mono" style={{
                         fontSize: 13, fontWeight: 700,
@@ -576,14 +577,19 @@ export default function OpportunityCard() {
                       }}>
                         {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
                       </span>
-                      <div style={{ fontSize: 9, marginTop: 1 }}>
-                        <span className="mono" style={{ color: profit.roiPerFunding >= 0 ? '#6ee7b7' : '#fca5a5', fontWeight: 600 }}>
-                          {profit.roiPerFunding >= 0 ? '+' : ''}{fmtNum(profit.roiPerFunding, 3)}%
-                        </span>
-                        <span style={{ color: 'var(--color-text-muted)', marginLeft: 4 }}>
-                          수수료 -${fmtNum(profit.totalFees)}
-                        </span>
+                      <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
+                        수수료 -${fmtNum(profit.totalFees)}
                       </div>
+                    </div>
+
+                    {/* ROI % */}
+                    <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
+                      <span className="mono" style={{
+                        fontSize: 13, fontWeight: 700,
+                        color: profit.roiPerFunding >= 0 ? '#10b981' : '#ef4444',
+                      }}>
+                        {profit.roiPerFunding >= 0 ? '+' : ''}{fmtNum(profit.roiPerFunding, 3)}%
+                      </span>
                     </div>
 
                     {/* Countdown — 후보는 dimmed 표시 */}
