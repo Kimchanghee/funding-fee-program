@@ -1667,12 +1667,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // 실슬리피지 반영 순수익 계산 헬퍼 (복리 시 실잔고 기반 notional)
     const getLiveNetProfit = (opp: ArbitrageOpportunity): number => {
       const notional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, simulationMode);
-      const roundTripFee = notional * TAKER_FEE * 4;
       const rs = currentRealSpreads[opp.baseAsset];
-      const spread = (rs && Date.now() - rs.updatedAt < 30_000)
-        ? rs.effectiveSpread / 100
-        : opp.spread;
-      return notional * spread - roundTripFee;
+      const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
+      const spread = hasRS ? rs.effectiveSpread / 100 : opp.spread;
+      // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
+      const fees = hasRS ? 0 : notional * TAKER_FEE * 4;
+      return notional * spread - fees;
     };
 
     for (const asset of snipeKeys) {
@@ -1690,20 +1690,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       // 실효스프레드(오더북 슬리피지 반영) 기준 순수익 재계산
       const realSpreadData = currentRealSpreads[asset];
-      const effectiveSpreadPercent = (realSpreadData && Date.now() - realSpreadData.updatedAt < 30_000)
+      const hasRealSpreadData = realSpreadData && Date.now() - realSpreadData.updatedAt < 30_000;
+      const effectiveSpreadPercent = hasRealSpreadData
         ? realSpreadData.effectiveSpread
         : currentOpp.spreadPercent;
       const effectiveSpread = effectiveSpreadPercent / 100;
       const oppNotional = getEffectiveNotional(currentOpp, strategyConfig, simBalances, realBalances, simulationMode);
-      const roundTripFee = oppNotional * TAKER_FEE * 4;
-      const liveNetProfit = oppNotional * effectiveSpread - roundTripFee;
+      // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
+      const revalFees = hasRealSpreadData ? 0 : oppNotional * TAKER_FEE * 4;
+      const liveNetProfit = oppNotional * effectiveSpread - revalFees;
 
       // 순수익 ≤ 0 시 해제 (minSpreadPercent는 이론 스프레드에만 적용, 실효 스프레드는 순수익 기준)
       if (liveNetProfit <= 0) {
         get().addLog('warning',
           `[재검증] ${asset} 순수익 기준 미달 — 예약 해제`,
           undefined,
-          `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% | 순수익: $${fmtNum(liveNetProfit)} | 수수료: $${fmtNum(roundTripFee)}`,
+          `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% | 순수익: $${fmtNum(liveNetProfit)} | 수수료: $${fmtNum(revalFees)}`,
         );
         get().cancelSnipeForAsset(asset);
         continue;
