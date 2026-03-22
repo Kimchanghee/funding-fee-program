@@ -1797,11 +1797,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return;
     }
 
-    // 이미 스케줄된 펀딩 시간 수집 (충돌 체크용)
-    const scheduledTimes: number[] = [];
+    // 이미 스케줄된 펀딩 시간+거래소 수집 (같은 거래소 동시 주문 충돌 체크용)
+    const scheduledEntries: { time: number; shortEx: string; longEx: string }[] = [];
     for (const snipeKey of Object.keys(snipeTargets)) {
       const opp = opportunities.find(o => o.baseAsset === snipeKey);
-      if (opp) scheduledTimes.push(opp.nextFundingTime);
+      if (opp) scheduledEntries.push({ time: opp.nextFundingTime, shortEx: opp.shortExchange, longEx: opp.longExchange });
     }
 
     // 실슬리피지 반영 순수익 기준 정렬 (복리 시 실잔고 기반 notional)
@@ -1902,11 +1902,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const longAvail = availableBalance[opp.longExchange] ?? 0;
       if (shortAvail < perSideInvestment || longAvail < perSideInvestment) { balanceSkips++; continue; }
 
-      // 이미 스케줄된 시간과 30초 이내 겹치면 스킵
-      const conflictsWithScheduled = scheduledTimes.some(t => Math.abs(t - opp.nextFundingTime) < CONFLICT_WINDOW_MS);
+      // 같은 거래소가 30초 이내 겹치면 스킵 (다른 거래소 조합은 동시 진입 가능)
+      const sharesExchange = (a: { shortEx: string; longEx: string }, b: { shortEx: string; longEx: string }) =>
+        a.shortEx === b.shortEx || a.shortEx === b.longEx || a.longEx === b.shortEx || a.longEx === b.longEx;
+      const oppExs = { shortEx: opp.shortExchange, longEx: opp.longExchange };
+      const conflictsWithScheduled = scheduledEntries.some(s =>
+        Math.abs(s.time - opp.nextFundingTime) < CONFLICT_WINDOW_MS && sharesExchange(s, oppExs),
+      );
       if (conflictsWithScheduled) { conflictSkips++; continue; }
-      // 이번 라운드에서 선택된 것과 30초 이내 겹치면 스킵
-      const conflictsWithResult = result.some(r => Math.abs(r.nextFundingTime - opp.nextFundingTime) < CONFLICT_WINDOW_MS);
+      // 이번 라운드에서 선택된 것과 같은 거래소 + 30초 이내 겹치면 스킵
+      const conflictsWithResult = result.some(r =>
+        Math.abs(r.nextFundingTime - opp.nextFundingTime) < CONFLICT_WINDOW_MS &&
+        sharesExchange({ shortEx: r.shortExchange, longEx: r.longExchange }, oppExs),
+      );
       if (conflictsWithResult) { conflictSkips++; continue; }
       result.push(opp);
       // 선택된 코인의 거래소 잔고 차감 (다음 코인 체크 시 반영)
