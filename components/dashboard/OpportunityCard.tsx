@@ -472,7 +472,20 @@ export default function OpportunityCard() {
               const effectiveOpp: ArbitrageOpportunity = realSpread
                 ? { ...item.opp, spread: realSpread.effectiveSpread / 100, spreadPercent: realSpread.effectiveSpread }
                 : item.opp;
-              const profit = estimateProfit(effectiveOpp, perExchangeInvestment, strategyConfig.leverage);
+
+              // 순차 잔고 기반 투자금 계산 (복리: 이전 기회 마진 소진 반영)
+              let itemPerSide = perExchangeInvestment;
+              if (strategyConfig.compoundInvesting) {
+                const shortBal = remainingBal[item.opp.shortExchange] ?? 0;
+                const longBal = remainingBal[item.opp.longExchange] ?? 0;
+                itemPerSide = Math.max(0, Math.min(shortBal, longBal) * 0.9);
+                // 이 기회가 사용할 마진을 잔고에서 순차 차감
+                if (itemPerSide > 0) {
+                  remainingBal[item.opp.shortExchange] = (remainingBal[item.opp.shortExchange] ?? 0) - itemPerSide;
+                  remainingBal[item.opp.longExchange] = (remainingBal[item.opp.longExchange] ?? 0) - itemPerSide;
+                }
+              }
+              const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage);
               // 마이너스 순수익은 대기(opportunity) 상태만 숨김 — 예약/활성은 항상 표시
               if (item.status === 'opportunity' && profit.netPerFunding <= 0) return null;
 
@@ -541,20 +554,8 @@ export default function OpportunityCard() {
 
                     {/* Expected Investment — 복리 시 순차 잔고 기반, 단리 시 설정값 */}
                     {(() => {
-                      let perSide = perExchangeInvestment;
-                      if (strategyConfig.compoundInvesting) {
-                        const shortBal = remainingBal[item.opp.shortExchange] ?? 0;
-                        const longBal = remainingBal[item.opp.longExchange] ?? 0;
-                        perSide = Math.min(shortBal, longBal) * 0.9; // 90% 가용
-                        // 이 기회가 사용할 마진을 잔고에서 순차 차감
-                        if (perSide > 0) {
-                          remainingBal[item.opp.shortExchange] = (remainingBal[item.opp.shortExchange] ?? 0) - perSide;
-                          remainingBal[item.opp.longExchange] = (remainingBal[item.opp.longExchange] ?? 0) - perSide;
-                        }
-                      }
-                      perSide = Math.max(0, perSide);
-                      const totalInvest = perSide * 2;
-                      const posSize = perSide * strategyConfig.leverage;
+                      const totalInvest = itemPerSide * 2;
+                      const posSize = itemPerSide * strategyConfig.leverage;
                       return (
                         <div className="opp-hide-mobile" style={{ textAlign: 'right' }}>
                           <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: '#a78bfa' }}>
