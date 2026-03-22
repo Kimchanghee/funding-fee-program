@@ -33,32 +33,35 @@ export default function ReturnProjectionPanel() {
     const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
     const perFunding = notional * best.spread;
     const TAKER_FEE = 0.0005;
-    const totalFees = notional * TAKER_FEE * 4;
+    const feesPerCycle = notional * TAKER_FEE * 4; // 매 스나이프 사이클 왕복 수수료
+    const netPerFunding = perFunding - feesPerCycle;
 
     const intervalMs = best.fundingIntervalMs ?? 8 * 3600000;
     const intervalH = intervalMs / 3600000;
     const fundingsPerDay = 24 / intervalH;
 
+    // 단리: 매 사이클마다 수수료 차감된 순수익 기준
     const simple: Record<PeriodKey, number> = {
-      '1h': perFunding / intervalH,
-      '4h': perFunding * (4 / intervalH),
-      '8h': perFunding * (8 / intervalH),
-      day: perFunding * fundingsPerDay - totalFees,
-      week: perFunding * fundingsPerDay * 7 - totalFees,
-      month: perFunding * fundingsPerDay * 30 - totalFees,
+      '1h': netPerFunding / intervalH,
+      '4h': netPerFunding * (4 / intervalH),
+      '8h': netPerFunding * (8 / intervalH),
+      day: netPerFunding * fundingsPerDay,
+      week: netPerFunding * fundingsPerDay * 7,
+      month: netPerFunding * fundingsPerDay * 30,
     };
 
-    const ratePerFunding = perFunding / portfolio;
+    // 복리: 순수익률 기준 복리 계산
+    const netRatePerFunding = netPerFunding / portfolio;
     const compound: Record<PeriodKey, number> = {
-      '1h': portfolio * (Math.pow(1 + ratePerFunding, 1 / intervalH) - 1),
-      '4h': portfolio * (Math.pow(1 + ratePerFunding, 4 / intervalH) - 1),
-      '8h': portfolio * (Math.pow(1 + ratePerFunding, 8 / intervalH) - 1),
-      day: portfolio * (Math.pow(1 + ratePerFunding, fundingsPerDay) - 1) - totalFees,
-      week: portfolio * (Math.pow(1 + ratePerFunding, fundingsPerDay * 7) - 1) - totalFees,
-      month: portfolio * (Math.pow(1 + ratePerFunding, fundingsPerDay * 30) - 1) - totalFees,
+      '1h': portfolio * (Math.pow(1 + netRatePerFunding, 1 / intervalH) - 1),
+      '4h': portfolio * (Math.pow(1 + netRatePerFunding, 4 / intervalH) - 1),
+      '8h': portfolio * (Math.pow(1 + netRatePerFunding, 8 / intervalH) - 1),
+      day: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay) - 1),
+      week: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 7) - 1),
+      month: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 30) - 1),
     };
 
-    return { best, simple, compound, perFunding, totalFees, intervalH };
+    return { best, simple, compound, perFunding, totalFees: feesPerCycle, intervalH };
   }, [opportunities, strategyConfig.investmentUSDT, strategyConfig.leverage, portfolio]);
 
   if (!projection) return null;

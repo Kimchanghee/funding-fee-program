@@ -286,6 +286,7 @@ export async function fetchPositions(id: ExchangeId, config: ApiConfig): Promise
 export function analyzeOrderbook(
   levels: number[][],
   notionalUSDT: number,
+  side: 'buy' | 'sell' = 'buy',
 ): { fillPrice: number; worstPrice: number; totalQty: number } {
   if (!levels || levels.length === 0) {
     throw new Error('Empty orderbook levels');
@@ -319,7 +320,9 @@ export function analyzeOrderbook(
     const penaltyMultiplier = 1 + LIQUIDITY_PENALTY * (1 - filledPct);
     const lastPrice = levels[levels.length - 1][0];
     // Apply penalty: buys get worse (higher) price, sells get worse (lower) price
-    const penalizedPrice = lastPrice * penaltyMultiplier;
+    const penalizedPrice = side === 'sell'
+      ? lastPrice * (1 - LIQUIDITY_PENALTY * (1 - filledPct))   // sell → lower price = worse
+      : lastPrice * penaltyMultiplier;                           // buy → higher price = worse
     const fillQty = remainingUSD / penalizedPrice;
     totalCost += fillQty * penalizedPrice;
     totalQty += fillQty;
@@ -365,7 +368,8 @@ export async function openPosition(
     }
 
     const notional = amountUSDT * leverage;
-    const analysis = analyzeOrderbook(levels, notional);
+    const obSide = side === 'long' ? 'buy' : 'sell';
+    const analysis = analyzeOrderbook(levels, notional, obSide);
 
     // 2. Set limit price with small buffer beyond worst level to ensure full fill
     //    Buy: slightly above worst ask level, Sell: slightly below worst bid level
@@ -587,7 +591,9 @@ export async function closePosition(
     }
 
     const estimatedNotional = amount * levels[0][0];
-    const analysis = analyzeOrderbook(levels, estimatedNotional);
+    // close long = sell (bids), close short = buy (asks)
+    const closeSide = side === 'long' ? 'sell' : 'buy';
+    const analysis = analyzeOrderbook(levels, estimatedNotional, closeSide);
 
     // Set limit price with buffer
     const PRICE_BUFFER = 0.0005;
@@ -722,9 +728,12 @@ export async function fetchMarketFillPrice(
     // Insufficient liquidity — apply penalty instead of naive extrapolation
     const filledPct = 1 - (remainingUSD / notionalUSDT);
     const LIQUIDITY_PENALTY = 0.005;
-    const penaltyMultiplier = 1 + LIQUIDITY_PENALTY * (1 - filledPct);
+    const penaltyFraction = LIQUIDITY_PENALTY * (1 - filledPct);
     const lastPrice = levels[levels.length - 1][0];
-    const penalizedPrice = lastPrice * penaltyMultiplier;
+    // sell → lower price is worse; buy → higher price is worse
+    const penalizedPrice = side === 'sell'
+      ? lastPrice * (1 - penaltyFraction)
+      : lastPrice * (1 + penaltyFraction);
     const fillQty = remainingUSD / penalizedPrice;
     totalCost += fillQty * penalizedPrice;
     totalQty += fillQty;
