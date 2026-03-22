@@ -472,6 +472,10 @@ export default function OpportunityCard() {
                   remainingBal[ex] = Math.max(0, remainingBal[ex] - locked);
                 }
               }
+              // 펀딩 시간대별 자금 복귀 추적: 이전 시간대 스나이프 완료 → 자금 반환
+              let lastFundingWindow = 0; // 현재 처리 중인 펀딩 시간 윈도우
+              const pendingReturns: { exchange: string; amount: number; fundingTime: number }[] = [];
+
               return scheduledCoins.map((item) => {
               const isExpanded = expandedAsset === item.asset;
               const realSpread = realSpreads[item.asset];
@@ -482,13 +486,31 @@ export default function OpportunityCard() {
               // 순차 잔고 기반 투자금 계산 (복리: 이전 기회 마진 소진 반영)
               let itemPerSide = perExchangeInvestment;
               if (strategyConfig.compoundInvesting) {
+                // 새 펀딩 시간대로 넘어갈 때: 이전 시간대 스나이프 자금 복귀 반영
+                const currentWindow = item.fundingTime;
+                if (lastFundingWindow > 0 && currentWindow - lastFundingWindow > 120_000) {
+                  // 현재 시간대보다 이전에 완료될 스나이프의 자금 복귀
+                  for (const ret of pendingReturns) {
+                    if (ret.fundingTime < currentWindow - 60_000) { // 1분 마진
+                      remainingBal[ret.exchange] = (remainingBal[ret.exchange] ?? 0) + ret.amount;
+                    }
+                  }
+                  // 복귀 완료된 항목 제거
+                  const keepIdx = pendingReturns.findIndex(r => r.fundingTime >= currentWindow - 60_000);
+                  if (keepIdx > 0) pendingReturns.splice(0, keepIdx);
+                }
+                lastFundingWindow = currentWindow;
+
                 const shortBal = remainingBal[item.opp.shortExchange] ?? 0;
                 const longBal = remainingBal[item.opp.longExchange] ?? 0;
                 itemPerSide = Math.max(0, Math.min(shortBal, longBal) * 0.9);
-                // 이 기회가 사용할 마진을 잔고에서 순차 차감
+                // 이 기회가 사용할 마진을 잔고에서 순차 차감 + 복귀 예약
                 if (itemPerSide > 0) {
                   remainingBal[item.opp.shortExchange] = (remainingBal[item.opp.shortExchange] ?? 0) - itemPerSide;
                   remainingBal[item.opp.longExchange] = (remainingBal[item.opp.longExchange] ?? 0) - itemPerSide;
+                  // 스나이프 완료 후 자금 복귀 예약 (마진 반환)
+                  pendingReturns.push({ exchange: item.opp.shortExchange, amount: itemPerSide, fundingTime: item.fundingTime });
+                  pendingReturns.push({ exchange: item.opp.longExchange, amount: itemPerSide, fundingTime: item.fundingTime });
                 }
               }
               // 투자금 $1 미만이면 거래 불가 — 후보는 숨김 (예약/활성은 표시)
