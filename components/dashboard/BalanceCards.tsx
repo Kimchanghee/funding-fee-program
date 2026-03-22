@@ -214,8 +214,9 @@ function SimModeColumn({
 
       {/* 투자금 정보 */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 6, fontSize: 10, color: '#94a3b8' }}>
-        <span>거래소당 <span className="mono" style={{ color: '#a78bfa', fontWeight: 700 }}>${investmentUSDT.toLocaleString()}</span></span>
-        <span>총 투입 <span className="mono" style={{ fontWeight: 700 }}>${(investmentUSDT * enabledExchanges.length).toLocaleString()}</span></span>
+        <span>포지션당 <span className="mono" style={{ color: '#a78bfa', fontWeight: 700 }}>${investmentUSDT.toLocaleString()}</span></span>
+        <span>거래소당 <span className="mono" style={{ fontWeight: 700 }}>${(investmentUSDT * 2).toLocaleString()}</span> <span style={{ fontSize: 9 }}>(롱+숏)</span></span>
+        <span>총 투입 <span className="mono" style={{ color: '#f59e0b', fontWeight: 700 }}>${(investmentUSDT * 2 * enabledExchanges.length).toLocaleString()}</span> <span style={{ fontSize: 9 }}>({enabledExchanges.length}개)</span></span>
         <span>노셔널 <span className="mono" style={{ fontWeight: 700 }}>${(investmentUSDT * leverage).toLocaleString()}</span> ({leverage}x)</span>
       </div>
 

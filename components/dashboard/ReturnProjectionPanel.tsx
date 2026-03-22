@@ -12,29 +12,37 @@ const TIME_PERIODS = [
   { key: '8h', label: '8시간' },
   { key: 'day', label: '하루' },
   { key: 'week', label: '일주일' },
-  { key: 'month', label: '월간' },
+  { key: 'month', label: '1개월' },
+  { key: '3month', label: '3개월' },
+  { key: '6month', label: '6개월' },
 ] as const;
 
 type PeriodKey = typeof TIME_PERIODS[number]['key'];
 
 export default function ReturnProjectionPanel() {
-  const { opportunities, strategyConfig, simulationMode, simBalances, simPositions, balances } = useFundingStore();
+  const { opportunities, strategyConfig, enabledExchanges, snipeActive, snipeStartCapital, realSpreads } = useFundingStore();
   const [compoundMode, setCompoundMode] = useState(false);
 
-  const totalPortfolio = simulationMode
-    ? Object.values(simBalances).reduce((s, v) => s + v, 0) + simPositions.reduce((s, p) => s + p.margin, 0)
-    : Object.values(balances).filter(b => b?.status === 'connected').reduce((sum, b) => sum + (b?.totalUSDT || 0), 0);
-
-  const portfolio = totalPortfolio || strategyConfig.investmentUSDT * 2;
+  // 총 투입 자본 = 거래소 수 × 포지션당 투자금 × 2 (롱+숏)
+  const totalCapital = strategyConfig.investmentUSDT * 2 * enabledExchanges.length;
+  // 자동투자 ON 상태면 ON 시점 자본 기준, 아니면 현재 설정 기준
+  const portfolio = (snipeActive && snipeStartCapital > 0) ? snipeStartCapital : totalCapital;
 
   const projection = useMemo(() => {
     const best = opportunities[0];
     if (!best) return null;
 
     const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
-    const perFunding = notional * best.spread;
-    const roundTripFee = getHedgeFees(best.shortExchange, best.longExchange, 'taker');
-    const feesPerCycle = notional * roundTripFee; // 거래소별 taker 기준 왕복 수수료 (보수적)
+
+    // 오더북 실측 스프레드가 있으면 사용 (슬리피지 반영), 없으면 이론값
+    const rs = realSpreads[best.baseAsset];
+    const hasRealSpread = rs && Date.now() - rs.updatedAt < 30_000;
+    const effectiveSpread = hasRealSpread ? rs.effectiveSpread / 100 : best.spread;
+    // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
+    const roundTripFee = hasRealSpread ? 0 : getHedgeFees(best.shortExchange, best.longExchange, 'taker');
+
+    const perFunding = notional * effectiveSpread;
+    const feesPerCycle = notional * roundTripFee;
     const netPerFunding = perFunding - feesPerCycle;
 
     const intervalMs = best.fundingIntervalMs ?? 8 * 3600000;
@@ -49,6 +57,8 @@ export default function ReturnProjectionPanel() {
       day: netPerFunding * fundingsPerDay,
       week: netPerFunding * fundingsPerDay * 7,
       month: netPerFunding * fundingsPerDay * 30,
+      '3month': netPerFunding * fundingsPerDay * 90,
+      '6month': netPerFunding * fundingsPerDay * 180,
     };
 
     // 복리: 순수익률 기준 복리 계산
@@ -60,14 +70,17 @@ export default function ReturnProjectionPanel() {
       day: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay) - 1),
       week: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 7) - 1),
       month: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 30) - 1),
+      '3month': portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 90) - 1),
+      '6month': portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 180) - 1),
     };
 
-    return { best, simple, compound, perFunding, totalFees: feesPerCycle, intervalH };
-  }, [opportunities, strategyConfig.investmentUSDT, strategyConfig.leverage, portfolio]);
+    const displaySpreadPercent = hasRealSpread ? rs.effectiveSpread : best.spreadPercent;
+    return { best, simple, compound, perFunding, totalFees: feesPerCycle, intervalH, displaySpreadPercent, hasRealSpread };
+  }, [opportunities, strategyConfig.investmentUSDT, strategyConfig.leverage, portfolio, realSpreads]);
 
   if (!projection) return null;
 
-  const { best, simple, compound, perFunding, totalFees, intervalH } = projection;
+  const { best, simple, compound, perFunding, totalFees, intervalH, displaySpreadPercent, hasRealSpread } = projection;
   const data = compoundMode ? compound : simple;
 
   return (
@@ -88,9 +101,9 @@ export default function ReturnProjectionPanel() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--color-text-muted)' }}>
           <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{best.baseAsset}</span>
           <span>{best.shortExchange.toUpperCase()} ⇄ {best.longExchange.toUpperCase()}</span>
-          <span className="mono" style={{ fontWeight: 800, color: '#10b981' }}>+{fmtNum(best.spreadPercent, 4)}%</span>
+          <span className="mono" style={{ fontWeight: 800, color: '#10b981' }}>+{fmtNum(displaySpreadPercent, 4)}%{hasRealSpread ? ' (실측)' : ''}</span>
           <span>({intervalH}h 주기)</span>
-          <span>• 투자금 ${portfolio.toLocaleString()}</span>
+          <span>• 총 투입 ${portfolio.toLocaleString()} ({enabledExchanges.length}개 거래소)</span>
         </div>
 
         <div style={{ flex: 1 }} />
@@ -118,7 +131,7 @@ export default function ReturnProjectionPanel() {
 
       {/* Projections Grid */}
       <div style={{ padding: '14px 20px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 8 }}>
           {TIME_PERIODS.map(({ key: periodKey, label }) => {
             const value = data[periodKey];
             const roi = (value / portfolio) * 100;

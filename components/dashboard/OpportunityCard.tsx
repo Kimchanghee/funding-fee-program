@@ -119,7 +119,7 @@ export default function OpportunityCard() {
     snipeActive, snipeTargets, scheduleAllSnipes, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
-    simBalances, balances,
+    simBalances, balances, enabledExchanges,
   } = useFundingStore();
 
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' | 'error' } | null>(null);
@@ -161,7 +161,9 @@ export default function OpportunityCard() {
       cancelSnipe();
       setToastMsg({ text: '자동 투자 중지됨', type: 'success' });
     } else {
-      useFundingStore.setState({ snipeActive: true });
+      const state = useFundingStore.getState();
+      const totalCapital = state.strategyConfig.investmentUSDT * 2 * state.enabledExchanges.length;
+      useFundingStore.setState({ snipeActive: true, snipeStartCapital: totalCapital });
       scheduleAllSnipes();
       const count = Object.keys(useFundingStore.getState().snipeTargets).length;
       setToastMsg({ text: `스나이핑 시작! ${count}개 코인 예약`, type: 'success' });
@@ -319,8 +321,8 @@ export default function OpportunityCard() {
               }}>
                 헷징
               </span>
-              <span>거래소당 <strong style={{ color: 'var(--color-text)' }}>${perExchangeInvestment.toLocaleString()}</strong></span>
-              <span>총 <strong style={{ color: '#f59e0b' }}>${(perExchangeInvestment * 2).toLocaleString()}</strong></span>
+              <span>포지션당 <strong style={{ color: 'var(--color-text)' }}>${perExchangeInvestment.toLocaleString()}</strong></span>
+              <span>거래소당 <strong style={{ color: '#f59e0b' }}>${(perExchangeInvestment * 2).toLocaleString()}</strong> <span style={{ fontSize: 9, color: 'var(--color-text-muted)' }}>(롱+숏)</span></span>
               <span>레버리지 <strong style={{ color: 'var(--color-text)' }}>{strategyConfig.leverage}x</strong></span>
               <span style={{ color: strategyConfig.compoundInvesting ? '#a78bfa' : '#10b981', fontWeight: 700 }}>
                 {strategyConfig.compoundInvesting ? '복리' : '단리'}
@@ -551,8 +553,10 @@ export default function OpportunityCard() {
                       cursor: 'pointer',
                       borderRadius: 8,
                       background: rowBg,
-                      borderLeft: intervalBorder ? `2px solid ${intervalBorder}` : undefined,
-                      border: isExpanded ? '1px solid rgba(59,130,246,0.2)' : '1px solid transparent',
+                      borderTop: isExpanded ? '1px solid rgba(59,130,246,0.2)' : '1px solid transparent',
+                      borderRight: isExpanded ? '1px solid rgba(59,130,246,0.2)' : '1px solid transparent',
+                      borderBottom: isExpanded ? '1px solid rgba(59,130,246,0.2)' : '1px solid transparent',
+                      borderLeft: intervalBorder ? `2px solid ${intervalBorder}` : (isExpanded ? '1px solid rgba(59,130,246,0.2)' : '1px solid transparent'),
                       transition: 'all 0.15s',
                     }}
                     onMouseEnter={e => { if (!isExpanded) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
@@ -677,6 +681,7 @@ export default function OpportunityCard() {
             compoundMode={compoundMode}
             setCompoundMode={setCompoundMode}
             realSpreads={realSpreads}
+            enabledExchangeCount={enabledExchanges.length}
           />
         )}
       </div>
@@ -685,20 +690,21 @@ export default function OpportunityCard() {
 }
 
 /* ─── Portfolio Profit Summary Row ─── */
-function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, compoundMode, setCompoundMode, realSpreads }: {
+function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, compoundMode, setCompoundMode, realSpreads, enabledExchangeCount }: {
   label: string;
   labelColor: string;
   coins: Array<{ asset: string; opp: ArbitrageOpportunity; status: string; mode: 'hedge' }>;
   investmentUSDT: number;
   leverage: number;
   compoundMode: boolean;
+  enabledExchangeCount: number;
   setCompoundMode: (v: boolean) => void;
   realSpreads?: Record<string, { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number }>;
 }) {
   const activeCoins = coins.filter(c => c.status === 'active' || c.status === 'scheduled');
 
   const capitalPerPosition = investmentUSDT * 2;
-  const deployedCapital = activeCoins.length * capitalPerPosition;
+  const totalCapital = enabledExchangeCount * capitalPerPosition;
 
   const byInterval = useMemo(() => {
     const groups: Record<string, typeof activeCoins> = { '1h': [], '4h': [], '8h': [] };
@@ -712,9 +718,9 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
 
   const totals = useMemo(() => {
     let perDay = 0, per2Day = 0, per3Day = 0, per4Day = 0, per5Day = 0, per6Day = 0;
-    let perWeek = 0, per2Week = 0, per3Week = 0, perMonth = 0;
+    let perWeek = 0, per2Week = 0, per3Week = 0, perMonth = 0, per3Month = 0, per6Month = 0;
     let cDay = 0, c2Day = 0, c3Day = 0, c4Day = 0, c5Day = 0, c6Day = 0;
-    let cWeek = 0, c2Week = 0, c3Week = 0, cMonth = 0;
+    let cWeek = 0, c2Week = 0, c3Week = 0, cMonth = 0, c3Month = 0, c6Month = 0;
 
     for (const c of activeCoins) {
       const rs = realSpreads?.[c.asset];
@@ -725,12 +731,14 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
       perDay += profit.perDay; per2Day += profit.per2Day; per3Day += profit.per3Day;
       per4Day += profit.per4Day; per5Day += profit.per5Day; per6Day += profit.per6Day;
       perWeek += profit.perWeek; per2Week += profit.per2Week; per3Week += profit.per3Week; perMonth += profit.perMonth;
+      per3Month += profit.per3Month; per6Month += profit.per6Month;
       cDay += profit.compound.perDay; c2Day += profit.compound.per2Day; c3Day += profit.compound.per3Day;
       c4Day += profit.compound.per4Day; c5Day += profit.compound.per5Day; c6Day += profit.compound.per6Day;
       cWeek += profit.compound.perWeek; c2Week += profit.compound.per2Week; c3Week += profit.compound.per3Week; cMonth += profit.compound.perMonth;
+      c3Month += profit.compound.per3Month; c6Month += profit.compound.per6Month;
     }
-    return { perDay, per2Day, per3Day, per4Day, per5Day, per6Day, perWeek, per2Week, per3Week, perMonth,
-             cDay, c2Day, c3Day, c4Day, c5Day, c6Day, cWeek, c2Week, c3Week, cMonth };
+    return { perDay, per2Day, per3Day, per4Day, per5Day, per6Day, perWeek, per2Week, per3Week, perMonth, per3Month, per6Month,
+             cDay, c2Day, c3Day, c4Day, c5Day, c6Day, cWeek, c2Week, c3Week, cMonth, c3Month, c6Month };
   }, [activeCoins, investmentUSDT, leverage, realSpreads]);
 
   if (activeCoins.length === 0) return null;
@@ -763,7 +771,7 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
           })}
         </div>
         <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
-          투입: ${deployedCapital.toLocaleString()} ({activeCoins.length}개 × ${capitalPerPosition.toLocaleString()})
+          투입: ${totalCapital.toLocaleString()} ({enabledExchangeCount}개 거래소 × ${capitalPerPosition.toLocaleString()})
         </span>
         <div className="interval-badges" style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
           {Object.entries(byInterval).map(([interval, list]) => list.length > 0 && (
@@ -789,7 +797,7 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
           { label: '6일', simple: totals.per6Day, compound: totals.c6Day },
         ].map(({ label: lb, simple, compound }) => {
           const value = compoundMode ? compound : simple;
-          const roi = deployedCapital > 0 ? (value / deployedCapital) * 100 : 0;
+          const roi = totalCapital > 0 ? (value / totalCapital) * 100 : 0;
           const color = compoundMode ? '#a78bfa' : labelColor;
           const negColor = '#ef4444';
           return (
@@ -809,15 +817,17 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
           );
         })}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4, marginTop: 4 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4, marginTop: 4 }}>
         {[
           { label: '1주', simple: totals.perWeek, compound: totals.cWeek },
           { label: '2주', simple: totals.per2Week, compound: totals.c2Week },
           { label: '3주', simple: totals.per3Week, compound: totals.c3Week },
           { label: '1달', simple: totals.perMonth, compound: totals.cMonth },
+          { label: '3달', simple: totals.per3Month, compound: totals.c3Month },
+          { label: '6달', simple: totals.per6Month, compound: totals.c6Month },
         ].map(({ label: lb, simple, compound }) => {
           const value = compoundMode ? compound : simple;
-          const roi = deployedCapital > 0 ? (value / deployedCapital) * 100 : 0;
+          const roi = totalCapital > 0 ? (value / totalCapital) * 100 : 0;
           const color = compoundMode ? '#a78bfa' : labelColor;
           const negColor = '#ef4444';
           return (

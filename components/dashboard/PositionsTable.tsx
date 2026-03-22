@@ -241,6 +241,8 @@ export default function PositionsTable() {
                       key={simPos ? simPos.simId : `${pos.exchange}-${pos.symbol}-${pos.side}-${i}`}
                       className="table-row-hover"
                       style={{
+                        borderTop: 'none',
+                        borderRight: 'none',
                         borderBottom: '1px solid rgba(30,45,66,0.6)',
                         borderLeft: `3px solid ${pos.side === 'long' ? '#10b98133' : '#ef444433'}`,
                       }}

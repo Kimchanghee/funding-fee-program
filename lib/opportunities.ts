@@ -112,6 +112,8 @@ export interface ProfitEstimate {
   per2Week: number;
   per3Week: number;
   perMonth: number;
+  per3Month: number;
+  per6Month: number;
   perYear: number;
   roiPerFunding: number;    // 총 자산 대비 8h 수익률 (%)
   roiPer1h: number;
@@ -133,6 +135,8 @@ export interface ProfitEstimate {
     per2Week: number;
     per3Week: number;
     perMonth: number;
+    per3Month: number;
+    per6Month: number;
     perYear: number;
     roiPer1h: number;
     roiPer4h: number;
@@ -178,6 +182,8 @@ export function estimateProfit(
   const netPer2Week = netPerDay * 14;
   const netPer3Week = netPerDay * 21;
   const netPerMonth = netPerDay * 30;
+  const netPer3Month = netPerDay * 90;
+  const netPer6Month = netPerDay * 180;
   const netPerYear = netPerDay * 365;
 
   // ROI: 해당 쌍 투입 자본 대비
@@ -203,18 +209,20 @@ export function estimateProfit(
   const compound2Week = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 14) - 1);
   const compound3Week = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 21) - 1);
   const compoundMonth = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 30) - 1);
+  const compound3Month = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 90) - 1);
+  const compound6Month = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 180) - 1);
   const compoundYear = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 365) - 1);
 
   return {
     perFunding: grossPerFunding, netPerFunding, totalFees: feesPerCycle, totalCapital, actualPortfolio: totalCapital,
     per1h: netPer1h, per4h: netPer4h,
     perDay: netPerDay, per2Day: netPer2Day, per3Day: netPer3Day, per4Day: netPer4Day, per5Day: netPer5Day, per6Day: netPer6Day,
-    perWeek: netPerWeek, per2Week: netPer2Week, per3Week: netPer3Week, perMonth: netPerMonth, perYear: netPerYear,
+    perWeek: netPerWeek, per2Week: netPer2Week, per3Week: netPer3Week, perMonth: netPerMonth, per3Month: netPer3Month, per6Month: netPer6Month, perYear: netPerYear,
     roiPerFunding, roiPer1h, roiPer4h, roiPerDay, roiPerWeek, roiPerMonth, roiPerYear,
     compound: {
       per1h: compound1h, per4h: compound4h,
       perDay: compoundDay, per2Day: compound2Day, per3Day: compound3Day, per4Day: compound4Day, per5Day: compound5Day, per6Day: compound6Day,
-      perWeek: compoundWeek, per2Week: compound2Week, per3Week: compound3Week, perMonth: compoundMonth, perYear: compoundYear,
+      perWeek: compoundWeek, per2Week: compound2Week, per3Week: compound3Week, perMonth: compoundMonth, per3Month: compound3Month, per6Month: compound6Month, perYear: compoundYear,
       roiPer1h: (compound1h / totalCapital) * 100, roiPer4h: (compound4h / totalCapital) * 100,
       roiPerDay: (compoundDay / totalCapital) * 100, roiPerWeek: (compoundWeek / totalCapital) * 100,
       roiPerMonth: (compoundMonth / totalCapital) * 100, roiPerYear: (compoundYear / totalCapital) * 100,
