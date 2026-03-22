@@ -1755,7 +1755,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       ...(simulationMode ? simPositions : positions).map(p => p.baseAsset),
     ]);
 
-    const CONFLICT_WINDOW_MS = 30 * 1000; // 30초 — 스나이프 실행은 ~10-15초
+    // 충돌 체크 제거: 다른 코인은 같은 시간에 동시 예약 가능 (잔고 기반 제한만 적용)
 
     const MAX_SCHEDULE_AHEAD_MS = 5 * 60 * 60 * 1000; // 5시간 이내 펀딩만 예약 (8h 주기의 ~60%)
 
@@ -1797,12 +1797,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return;
     }
 
-    // 이미 스케줄된 펀딩 시간+거래소 수집 (같은 거래소 동시 주문 충돌 체크용)
-    const scheduledEntries: { time: number; shortEx: string; longEx: string }[] = [];
-    for (const snipeKey of Object.keys(snipeTargets)) {
-      const opp = opportunities.find(o => o.baseAsset === snipeKey);
-      if (opp) scheduledEntries.push({ time: opp.nextFundingTime, shortEx: opp.shortExchange, longEx: opp.longExchange });
-    }
+    // (충돌 체크 제거됨 — 잔고 기반 필터가 동시 예약을 자연 제한)
 
     // 실슬리피지 반영 순수익 기준 정렬 (복리 시 실잔고 기반 notional)
     const { realSpreads: currentRealSpreads, simBalances, balances: realBalances } = get();
@@ -1901,21 +1896,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const shortAvail = availableBalance[opp.shortExchange] ?? 0;
       const longAvail = availableBalance[opp.longExchange] ?? 0;
       if (shortAvail < perSideInvestment || longAvail < perSideInvestment) { balanceSkips++; continue; }
-
-      // 같은 거래소가 30초 이내 겹치면 스킵 (다른 거래소 조합은 동시 진입 가능)
-      const sharesExchange = (a: { shortEx: string; longEx: string }, b: { shortEx: string; longEx: string }) =>
-        a.shortEx === b.shortEx || a.shortEx === b.longEx || a.longEx === b.shortEx || a.longEx === b.longEx;
-      const oppExs = { shortEx: opp.shortExchange, longEx: opp.longExchange };
-      const conflictsWithScheduled = scheduledEntries.some(s =>
-        Math.abs(s.time - opp.nextFundingTime) < CONFLICT_WINDOW_MS && sharesExchange(s, oppExs),
-      );
-      if (conflictsWithScheduled) { conflictSkips++; continue; }
-      // 이번 라운드에서 선택된 것과 같은 거래소 + 30초 이내 겹치면 스킵
-      const conflictsWithResult = result.some(r =>
-        Math.abs(r.nextFundingTime - opp.nextFundingTime) < CONFLICT_WINDOW_MS &&
-        sharesExchange({ shortEx: r.shortExchange, longEx: r.longExchange }, oppExs),
-      );
-      if (conflictsWithResult) { conflictSkips++; continue; }
       result.push(opp);
       // 선택된 코인의 거래소 잔고 차감 (다음 코인 체크 시 반영)
       availableBalance[opp.shortExchange] = (availableBalance[opp.shortExchange] ?? 0) - perSideInvestment;

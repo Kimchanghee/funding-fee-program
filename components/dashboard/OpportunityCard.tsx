@@ -251,6 +251,7 @@ export default function OpportunityCard() {
 
   const scheduledCount = Object.keys(snipeTargets).length;
   const activeCount = simulationMode ? simPositions.length : positions.length;
+  const candidateCount = scheduledCoins.filter(c => c.status === 'opportunity').length;
 
   return (
     <>
@@ -298,6 +299,7 @@ export default function OpportunityCard() {
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               <StatPill label="예약" value={`${scheduledCount}개`} color="#3b82f6" active={scheduledCount > 0} />
               <StatPill label="활성 포지션" value={`${activeCount}개`} color="#f59e0b" active={activeCount > 0} />
+              <StatPill label="후보" value={`${candidateCount}개`} color="#64748b" active={candidateCount > 0} />
               <StatPill label="기회" value={`${opportunities.length}개`} color="#8b5cf6" active={opportunities.length > 0} />
             </div>
             {/* Config summary */}
@@ -412,9 +414,20 @@ export default function OpportunityCard() {
           </div>
         )}
 
-        {/* ═══ SECTION 2: Scheduled Trades Table ═══ */}
+        {/* ═══ SECTION 2: Scheduled/Candidate Table ═══ */}
         {scheduledCoins.length > 0 && (
           <div style={{ marginBottom: 0 }}>
+            {scheduledCount === 0 && activeCount === 0 && candidateCount > 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '8px 12px', marginBottom: 10, borderRadius: 8,
+                background: 'rgba(245,158,11,0.08)',
+                border: '1px solid rgba(245,158,11,0.18)',
+                fontSize: 11, color: '#fbbf24',
+              }}>
+                아래 `후보` 행은 실제 예약이 아니라 현재 상위 기회입니다. 실제 예약은 상단 `예약` 수치에만 반영됩니다.
+              </div>
+            )}
             {/* Table Header */}
             <div className="opp-table-header" style={{
               display: 'grid',
@@ -431,12 +444,28 @@ export default function OpportunityCard() {
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>롱</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>예상 투자금</span>
               <span style={{ textAlign: 'right' }}>예상 수익</span>
-              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>카운트다운</span>
+              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩까지</span>
             </div>
 
             {/* Rows — 실효스프레드 기반 순수익 마이너스 자동 필터링 */}
             {(() => {
               let visibleIdx = 0;
+              // 순차적 잔고 추적: 이전 기회의 마진 사용을 반영
+              const remainingBal: Record<string, number> = {};
+              if (strategyConfig.compoundInvesting) {
+                const allExchanges = simulationMode
+                  ? Object.keys(simBalances) as ExchangeId[]
+                  : Object.keys(balances) as ExchangeId[];
+                for (const ex of allExchanges) {
+                  remainingBal[ex] = simulationMode
+                    ? (simBalances[ex] ?? 0)
+                    : (balances[ex]?.availableUSDT ?? 0);
+                  // 활성 포지션의 locked margin 차감
+                  const locked = (simulationMode ? simPositions : positions)
+                    .filter(p => p.exchange === ex).reduce((s, p) => s + p.margin, 0);
+                  remainingBal[ex] = Math.max(0, remainingBal[ex] - locked);
+                }
+              }
               return scheduledCoins.map((item) => {
               const isExpanded = expandedAsset === item.asset;
               const realSpread = realSpreads[item.asset];
@@ -483,13 +512,21 @@ export default function OpportunityCard() {
                     {/* Status Badge */}
                     <StatusBadge status={item.status} />
 
-                    {/* Coin */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--color-text)' }}>
-                        {item.asset}
-                      </span>
-                      <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>/USDT</span>
-                      {isExpanded ? <ChevronUp size={12} color="var(--color-text-muted)" /> : <ChevronDown size={12} color="var(--color-text-muted)" />}
+                    {/* Coin + Mobile Exchange Badges */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--color-text)' }}>
+                          {item.asset}
+                        </span>
+                        <span className="opp-hide-mobile" style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>/USDT</span>
+                        {isExpanded ? <ChevronUp size={12} color="var(--color-text-muted)" /> : <ChevronDown size={12} color="var(--color-text-muted)" />}
+                      </div>
+                      {/* 모바일: 거래소 뱃지 인라인 */}
+                      <div className="opp-show-mobile" style={{ display: 'none', alignItems: 'center', gap: 4, fontSize: 9 }}>
+                        <ExBadge ex={item.opp.shortExchange} />
+                        <span style={{ color: 'var(--color-text-muted)' }}>↔</span>
+                        <ExBadge ex={item.opp.longExchange} />
+                      </div>
                     </div>
 
                     {/* Short Exchange */}
@@ -502,18 +539,20 @@ export default function OpportunityCard() {
                       <ExBadge ex={item.opp.longExchange} />
                     </div>
 
-                    {/* Expected Investment — 복리 시 가용잔고 기반, 단리 시 설정값 */}
+                    {/* Expected Investment — 복리 시 순차 잔고 기반, 단리 시 설정값 */}
                     {(() => {
                       let perSide = perExchangeInvestment;
                       if (strategyConfig.compoundInvesting) {
-                        const shortBal = simulationMode
-                          ? (simBalances[item.opp.shortExchange] ?? 0)
-                          : (balances[item.opp.shortExchange]?.availableUSDT ?? 0);
-                        const longBal = simulationMode
-                          ? (simBalances[item.opp.longExchange] ?? 0)
-                          : (balances[item.opp.longExchange]?.availableUSDT ?? 0);
+                        const shortBal = remainingBal[item.opp.shortExchange] ?? 0;
+                        const longBal = remainingBal[item.opp.longExchange] ?? 0;
                         perSide = Math.min(shortBal, longBal) * 0.9; // 90% 가용
+                        // 이 기회가 사용할 마진을 잔고에서 순차 차감
+                        if (perSide > 0) {
+                          remainingBal[item.opp.shortExchange] = (remainingBal[item.opp.shortExchange] ?? 0) - perSide;
+                          remainingBal[item.opp.longExchange] = (remainingBal[item.opp.longExchange] ?? 0) - perSide;
+                        }
                       }
+                      perSide = Math.max(0, perSide);
                       const totalInvest = perSide * 2;
                       const posSize = perSide * strategyConfig.leverage;
                       return (
@@ -528,8 +567,8 @@ export default function OpportunityCard() {
                       );
                     })()}
 
-                    {/* Net Profit */}
-                    <div style={{ textAlign: 'right' }}>
+                    {/* Net Profit — 후보는 dimmed */}
+                    <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
                       <span className="mono" style={{
                         fontSize: 13, fontWeight: 700,
                         color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444',
@@ -541,8 +580,8 @@ export default function OpportunityCard() {
                       </div>
                     </div>
 
-                    {/* Countdown */}
-                    <div className="opp-hide-mobile" style={{ textAlign: 'right' }}>
+                    {/* Countdown — 후보는 dimmed 표시 */}
+                    <div className="opp-hide-mobile" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.4 : 1 }}>
                       <InlineCountdown targetMs={item.fundingTime} />
                     </div>
                   </div>
@@ -610,8 +649,10 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
   }, [activeCoins]);
 
   const totals = useMemo(() => {
-    let per1h = 0, per4h = 0, per8h = 0, perDay = 0, perWeek = 0, perMonth = 0;
-    let c1h = 0, c4h = 0, c8h = 0, cDay = 0, cWeek = 0, cMonth = 0;
+    let perDay = 0, per2Day = 0, per3Day = 0, per4Day = 0, per5Day = 0, per6Day = 0;
+    let perWeek = 0, per2Week = 0, per3Week = 0, perMonth = 0;
+    let cDay = 0, c2Day = 0, c3Day = 0, c4Day = 0, c5Day = 0, c6Day = 0;
+    let cWeek = 0, c2Week = 0, c3Week = 0, cMonth = 0;
 
     for (const c of activeCoins) {
       const rs = realSpreads?.[c.asset];
@@ -619,12 +660,15 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
         ? { ...c.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
         : c.opp;
       const profit = estimateProfit(opp, investmentUSDT, leverage);
-      per1h += profit.per1h; per4h += profit.per4h; per8h += profit.netPerFunding;
-      perDay += profit.perDay; perWeek += profit.perWeek; perMonth += profit.perMonth;
-      c1h += profit.compound.per1h; c4h += profit.compound.per4h; c8h += profit.netPerFunding;
-      cDay += profit.compound.perDay; cWeek += profit.compound.perWeek; cMonth += profit.compound.perMonth;
+      perDay += profit.perDay; per2Day += profit.per2Day; per3Day += profit.per3Day;
+      per4Day += profit.per4Day; per5Day += profit.per5Day; per6Day += profit.per6Day;
+      perWeek += profit.perWeek; per2Week += profit.per2Week; per3Week += profit.per3Week; perMonth += profit.perMonth;
+      cDay += profit.compound.perDay; c2Day += profit.compound.per2Day; c3Day += profit.compound.per3Day;
+      c4Day += profit.compound.per4Day; c5Day += profit.compound.per5Day; c6Day += profit.compound.per6Day;
+      cWeek += profit.compound.perWeek; c2Week += profit.compound.per2Week; c3Week += profit.compound.per3Week; cMonth += profit.compound.perMonth;
     }
-    return { per1h, per4h, per8h, perDay, perWeek, perMonth, c1h, c4h, c8h, cDay, cWeek, cMonth };
+    return { perDay, per2Day, per3Day, per4Day, per5Day, per6Day, perWeek, per2Week, per3Week, perMonth,
+             cDay, c2Day, c3Day, c4Day, c5Day, c6Day, cWeek, c2Week, c3Week, cMonth };
   }, [activeCoins, investmentUSDT, leverage, realSpreads]);
 
   if (activeCoins.length === 0) return null;
@@ -672,15 +716,43 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
         </div>
       </div>
 
-      {/* Profit Grid */}
-      <div className="profit-grid-6" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6 }}>
+      {/* Profit Grid — 2행: 상단 6일, 하단 1주/2주/1달 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4 }}>
         {[
-          { label: '1h', simple: totals.per1h, compound: totals.c1h },
-          { label: '4h', simple: totals.per4h, compound: totals.c4h },
-          { label: '8h', simple: totals.per8h, compound: totals.c8h },
-          { label: '일', simple: totals.perDay, compound: totals.cDay },
-          { label: '주', simple: totals.perWeek, compound: totals.cWeek },
-          { label: '월', simple: totals.perMonth, compound: totals.cMonth },
+          { label: '1일', simple: totals.perDay, compound: totals.cDay },
+          { label: '2일', simple: totals.per2Day, compound: totals.c2Day },
+          { label: '3일', simple: totals.per3Day, compound: totals.c3Day },
+          { label: '4일', simple: totals.per4Day, compound: totals.c4Day },
+          { label: '5일', simple: totals.per5Day, compound: totals.c5Day },
+          { label: '6일', simple: totals.per6Day, compound: totals.c6Day },
+        ].map(({ label: lb, simple, compound }) => {
+          const value = compoundMode ? compound : simple;
+          const roi = deployedCapital > 0 ? (value / deployedCapital) * 100 : 0;
+          const color = compoundMode ? '#a78bfa' : labelColor;
+          const negColor = '#ef4444';
+          return (
+            <div key={lb} style={{
+              padding: '8px 6px', borderRadius: 8, textAlign: 'center',
+              background: 'var(--bg-accent)',
+              border: `1px solid ${compoundMode ? 'rgba(139,92,246,0.15)' : 'var(--color-border)'}`,
+            }}>
+              <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>{lb}</div>
+              <div className="mono" style={{ fontSize: 14, fontWeight: 800, color: value >= 0 ? color : negColor }}>
+                {value >= 0 ? '+' : ''}${fmtNum(value)}
+              </div>
+              <div className="mono" style={{ fontSize: 10, color: roi >= 0 ? (compoundMode ? '#c4b5fd' : '#6ee7b7') : '#fca5a5', marginTop: 2 }}>
+                {roi >= 0 ? '+' : ''}{fmtNum(roi, 2)}%
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4, marginTop: 4 }}>
+        {[
+          { label: '1주', simple: totals.perWeek, compound: totals.cWeek },
+          { label: '2주', simple: totals.per2Week, compound: totals.c2Week },
+          { label: '3주', simple: totals.per3Week, compound: totals.c3Week },
+          { label: '1달', simple: totals.perMonth, compound: totals.cMonth },
         ].map(({ label: lb, simple, compound }) => {
           const value = compoundMode ? compound : simple;
           const roi = deployedCapital > 0 ? (value / deployedCapital) * 100 : 0;
@@ -712,7 +784,7 @@ function StatusBadge({ status }: { status: 'scheduled' | 'active' | 'opportunity
   const config = {
     active: { label: '실행 중', bg: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: 'rgba(245,158,11,0.3)', dot: true },
     scheduled: { label: '예약됨', bg: 'rgba(16,185,129,0.12)', color: '#10b981', border: 'rgba(16,185,129,0.25)', dot: true },
-    opportunity: { label: '대기', bg: 'rgba(100,116,139,0.1)', color: '#94a3b8', border: 'rgba(100,116,139,0.2)', dot: false },
+    opportunity: { label: '후보', bg: 'rgba(100,116,139,0.1)', color: '#94a3b8', border: 'rgba(100,116,139,0.2)', dot: false },
   }[status];
 
   return (
