@@ -144,6 +144,42 @@ export interface SimPosition extends Position {
 
 export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx'];
 
+// ── Per-exchange fee matrix (VIP0 / basic tier, USDT-M futures) ──
+// Source: official fee schedules as of 2026-03
+export interface ExchangeFees {
+  taker: number;  // decimal (0.0005 = 0.05%)
+  maker: number;  // decimal (0.0002 = 0.02%)
+}
+
+export const EXCHANGE_FEES: Record<ExchangeId, ExchangeFees> = {
+  binance: { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
+  bybit:   { taker: 0.00055, maker: 0.00020 },  // 0.055% / 0.020%
+  okx:     { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
+  bitget:  { taker: 0.00060, maker: 0.00020 },  // 0.060% / 0.020%
+  gate:    { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
+  bingx:   { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
+};
+
+/** Get round-trip fee for a hedge pair (entry + exit on both sides) */
+export function getHedgeFees(
+  shortEx: ExchangeId,
+  longEx: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+): number {
+  const shortFee = EXCHANGE_FEES[shortEx][orderType];
+  const longFee = EXCHANGE_FEES[longEx][orderType];
+  // Round trip = 4 trades: open short + open long + close short + close long
+  return (shortFee + longFee) * 2;
+}
+
+/** Get single-side fee */
+export function getExchangeFee(
+  exchange: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+): number {
+  return EXCHANGE_FEES[exchange][orderType];
+}
+
 // Popular symbols to track (top coins by OI)
 export const TRACKED_SYMBOLS = [
   'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'ADA', 'AVAX', 'DOT', 'LINK',

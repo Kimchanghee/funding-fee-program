@@ -8,11 +8,11 @@ import { fmtNum } from '@/lib/format';
 
 /** 거래소 미니 카드 (상세 잔고 분석) */
 function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
-  const { simBalances, simPositions, fundingHistory, strategyConfig } = useFundingStore();
+  const { simBalances, simInitialBalances, simPositions, fundingHistory } = useFundingStore();
   const color = EXCHANGE_COLORS[exchange];
 
   const bal = simBalances[exchange] ?? 0;
-  const initialBal = strategyConfig.investmentUSDT;
+  const initialBal = simInitialBalances[exchange] ?? simBalances[exchange] ?? 0;
   const exPositions = simPositions.filter(p =>
     p.exchange === exchange && (p.positionType === 'hedge_long' || p.positionType === 'hedge_short')
   );
@@ -28,9 +28,9 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
 
   // 총 자산 = 가용 + 마진
   const totalAsset = bal + margin;
-  // 잔고 변동 = 현재 총자산 - 초기자산 - 미실현PnL
+  // 잔고 변동 = 현재 총자산 - 초기자산
   const balanceChange = totalAsset - initialBal;
-  // 순입출금 (이체) = 잔고변동 - 펀딩 + 수수료 - 미실현PnL
+  // 순입출금 (이체) = 잔고변동 - 펀딩 + 수수료 - PnL
   const netTransfer = balanceChange - fundingNet + entryFees - unrealizedPnl;
 
   return (
@@ -40,9 +40,18 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
     }}>
       {/* 거래소명 + 총 자산 */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-        <span style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '0.05em' }}>
-          {EXCHANGE_NAMES[exchange]}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: '0.05em' }}>
+            {EXCHANGE_NAMES[exchange]}
+          </span>
+          <span style={{
+            fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 3,
+            background: fundingEntries.length > 0 ? `${color}20` : 'rgba(100,116,139,0.15)',
+            color: fundingEntries.length > 0 ? color : '#64748b',
+          }}>
+            {fundingEntries.length}회
+          </span>
+        </div>
         <span className="mono" style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-text)' }}>
           ${fmtNum(totalAsset)}
         </span>
@@ -85,7 +94,7 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
           </div>
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: '#64748b' }}>미실현 PnL</span>
+          <span style={{ color: '#64748b' }}>PnL</span>
           <span className="mono" style={{ color: unrealizedPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
             {unrealizedPnl >= 0 ? '+' : ''}${fmtNum(unrealizedPnl, 4)}
           </span>
@@ -230,7 +239,7 @@ function SimModeColumn({
           <span className="mono" style={{ fontWeight: 700, color: '#ef4444' }}>-${fmtNum(fees, 4)}</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: '#64748b' }}>미실현 PnL</span>
+          <span style={{ color: '#64748b' }}>PnL</span>
           <span className="mono" style={{ fontWeight: 700, color: modePnl >= 0 ? '#10b981' : '#ef4444' }}>
             {modePnl >= 0 ? '+' : ''}${fmtNum(modePnl, 4)}
           </span>

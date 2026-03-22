@@ -18,18 +18,19 @@ import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState } from '@/lib/keyStore';
 import { estimateProfit, findOpportunities } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
+import { getHedgeFees, getExchangeFee } from '@/lib/types';
 
 // ─────────────────────────────────────────────
-// Fee constants
+// Fee constants (fallback for contexts without exchange info)
 // ─────────────────────────────────────────────
-const TAKER_FEE = 0.0005; // 0.05% per side
+const TAKER_FEE_FALLBACK = 0.0006; // 0.06% worst-case fallback (bitget taker)
 let _lastScheduleDiagAt = 0; // 진단 로그 스팸 방지
-// 왕복 수수료: 진입(숏+롱) + 청산(숏+롱) = 4 × 0.05% = 0.2%
-const ROUND_TRIP_FEE = TAKER_FEE * 4; // 0.002 (0.2%)
-const ROUND_TRIP_FEE_PERCENT = ROUND_TRIP_FEE * 100; // 0.2%
+// Taker 기준 최소 왕복 수수료 (보수적): ~0.05% × 4 = 0.20%
+// 거래소별 실제 수수료는 getHedgeFees()로 정확히 계산, 여기는 최소 안전 기준
+const MIN_ROUND_TRIP_FEE_PERCENT = 0.20;
 
 function getEffectiveMinSpread(config: { minSpreadPercent: number }): number {
-  return Math.max(config.minSpreadPercent, ROUND_TRIP_FEE_PERCENT);
+  return Math.max(config.minSpreadPercent, MIN_ROUND_TRIP_FEE_PERCENT);
 }
 
 /** 복리/단리에 따른 실제 notional 계산 */
@@ -131,7 +132,7 @@ interface FundingState {
   startPolling: () => void;
   stopPolling: () => void;
 
-  executeStrategy: (opportunity: ArbitrageOpportunity) => Promise<boolean>;
+  executeStrategy: (opportunity: ArbitrageOpportunity) => Promise<ExecuteStrategyResult>;
   closePosition: (position: Position) => Promise<void>;
   testConnection: (exchange: ExchangeId) => Promise<boolean>;
 
@@ -187,6 +188,62 @@ function makeLog(level: LogLevel, message: string, exchange?: ExchangeId, detail
     message,
     exchange,
     detail,
+  };
+}
+
+interface StrategyOrderExecution {
+  orderId: string;
+  price: number;
+  amount: number;
+  filledNotional: number;
+  orderType: 'maker' | 'taker';
+}
+
+interface StrategyExecutionLeg {
+  success: boolean;
+  data?: StrategyOrderExecution;
+  error?: string;
+}
+
+interface ExecuteStrategyResult {
+  success: boolean;
+  short?: StrategyExecutionLeg;
+  long?: StrategyExecutionLeg;
+  rollback?: string;
+  hedgeTrim?: string;
+  error?: string;
+}
+
+function makeSyntheticClosePosition(
+  opportunity: ArbitrageOpportunity,
+  legSide: 'long' | 'short',
+  data: StrategyOrderExecution,
+  leverage: number,
+): Position {
+  const isShort = legSide === 'short';
+  const markPrice = isShort ? opportunity.shortMarkPrice : opportunity.longMarkPrice;
+  const price = data.price || markPrice;
+  const sizeUSD = data.filledNotional || data.amount * price;
+  const margin = leverage > 0 ? sizeUSD / leverage : 0;
+
+  return {
+    exchange: isShort ? opportunity.shortExchange : opportunity.longExchange,
+    symbol: isShort ? opportunity.shortSymbol : opportunity.longSymbol,
+    displaySymbol: `${opportunity.baseAsset}/USDT`,
+    baseAsset: opportunity.baseAsset,
+    side: legSide,
+    size: data.amount,
+    sizeUSD,
+    entryPrice: price,
+    markPrice,
+    leverage,
+    margin,
+    unrealizedPnl: 0,
+    unrealizedPnlPercent: 0,
+    liquidationPrice: price,
+    fundingRate: isShort ? opportunity.shortRate : opportunity.longRate,
+    openedAt: Date.now(),
+    positionType: isShort ? 'hedge_short' : 'hedge_long',
   };
 }
 
@@ -857,7 +914,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
         spreadPercent: opportunity.spreadPercent, reason: `스프레드 ${opportunity.spreadPercent.toFixed(4)}% < 최소 ${effectiveMinSpread}%`,
       });
-      return false;
+      return { success: false };
     }
 
     // Guard: 순수익 검증
@@ -876,19 +933,20 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     })();
     const estFundingRevenue = notionalEst * opportunity.spread;
-    const estTotalFees = notionalEst * ROUND_TRIP_FEE;
+    const estRoundTripFee = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker');
+    const estTotalFees = notionalEst * estRoundTripFee;
     if (estFundingRevenue <= estTotalFees) {
-      get().addLog('warning',
-        `[수익성 검증 실패] ${opportunity.baseAsset} 펀딩수익 $${fmtNum(estFundingRevenue)} ≤ 수수료 $${fmtNum(estTotalFees)} — 진입 스킵`,
-        undefined,
-        `스프레드: ${fmtNum(opportunity.spreadPercent, 4)}% | 필요 최소: ${ROUND_TRIP_FEE_PERCENT}%`,
-      );
+        get().addLog('warning',
+          `[수익성 검증 실패] ${opportunity.baseAsset} 펀딩수익 $${fmtNum(estFundingRevenue)} ≤ 수수료 $${fmtNum(estTotalFees)} — 진입 스킵`,
+          undefined,
+          `스프레드: ${fmtNum(opportunity.spreadPercent, 4)}% | 필요 최소: ${(estRoundTripFee * 100).toFixed(3)}%`,
+        );
       queueTrade({
         timestamp: Date.now(), type: 'guard_block', simulation: get().simulationMode,
         baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
         spreadPercent: opportunity.spreadPercent, reason: `수익성 실패: 펀딩 $${estFundingRevenue.toFixed(2)} ≤ 수수료 $${estTotalFees.toFixed(2)}`,
       });
-      return false;
+      return { success: false };
     }
 
     // Guard: duplicate position — 같은 코인 중복 진입 방지
@@ -900,7 +958,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           undefined,
           `기존 포지션: ${existingPair.side.toUpperCase()} @ ${existingPair.exchange.toUpperCase()}`,
         );
-        return false;
+        return { success: false };
       }
     }
 
@@ -920,12 +978,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           undefined,
           `숏 ${opportunity.shortExchange.toUpperCase()}: ${opportunity.shortMarkPrice}, 롱 ${opportunity.longExchange.toUpperCase()}: ${opportunity.longMarkPrice}`,
         );
-        return false;
+        return { success: false };
       }
-      const notional = margin * leverage;
-      const shortEntryFee = notional * TAKER_FEE;
-      const shortCostPerSide = margin + shortEntryFee;
       const { shortExchange, longExchange } = opportunity;
+      const notional = margin * leverage;
+      const shortEntryFee = notional * getExchangeFee(shortExchange, 'maker');
+      const shortCostPerSide = margin + shortEntryFee;
 
       // ── 잔고 부족 시 여유 거래소에서 내부 이체 (최소 $1,400 유지) ──
       const MIN_BALANCE = strategyConfig.investmentUSDT; // 거래소당 최소 유지 잔고
@@ -978,7 +1036,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             target,
             `필요: $${fmtNum(shortCostPerSide, 0)} | 가용: $${fmtNum((get().simBalances[target] ?? 0), 0)} | 이체 가능한 여유 거래소 없음`,
           );
-          return false;
+          return { success: false };
         }
       }
 
@@ -1015,7 +1073,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
 
       // ── 양쪽 별도 수수료/마진/비용 계산 ──
-      const longEntryFee = adjustedLongNotional * TAKER_FEE;
+      const longEntryFee = adjustedLongNotional * getExchangeFee(longExchange, 'maker');
       const longMargin = adjustedLongNotional / leverage;
       const longCostPerSide = longMargin + longEntryFee;
 
@@ -1095,7 +1153,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // Persist sim state after entry
       const st1 = get();
       saveSimState({ simBalances: st1.simBalances, simInitialBalances: st1.simInitialBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees });
-      const totalRoundTripFees = (notional + adjustedLongNotional) * TAKER_FEE * 2; // 진입+청산 양쪽
+      const totalRoundTripFees = notional * getExchangeFee(shortExchange, 'taker') * 2 + adjustedLongNotional * getExchangeFee(longExchange, 'taker') * 2; // 진입+청산 보수적 추정
       const netProfit = perFunding - totalRoundTripFees;
       get().addLog('success',
         `[SIM] ${opportunity.baseAsset} 헷징 진입 완료 (${isSnipe ? '스나이프' : '홀딩'})`,
@@ -1121,7 +1179,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         totalRoundTripFees,
         pairId,
       });
-      return true;
+      return { success: true };
     }
 
     // ── Real trading branch ────────────────────
@@ -1130,11 +1188,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     if (!shortConfig) {
       get().addLog('error', `${opportunity.shortExchange.toUpperCase()} API 키 없음`, opportunity.shortExchange);
-      return false;
+      return { success: false, error: `${opportunity.shortExchange.toUpperCase()} API 키 없음` };
     }
     if (!longConfig) {
       get().addLog('error', `${opportunity.longExchange.toUpperCase()} API 키 없음`, opportunity.longExchange);
-      return false;
+      return { success: false, error: `${opportunity.longExchange.toUpperCase()} API 키 없음` };
     }
 
     let realInvestment = strategyConfig.investmentUSDT;
@@ -1174,11 +1232,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }),
       });
 
-      const json = await res.json() as {
-        success: boolean;
-        short: { success: boolean; error?: string };
-        long: { success: boolean; error?: string };
-      };
+      const json = await res.json() as ExecuteStrategyResult;
 
       if (json.short?.success) {
         get().addLog('success',
@@ -1220,14 +1274,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         success: json.success,
         pairId: `pair-${Date.now()}-${opportunity.baseAsset}`,
       });
-      return json.success === true;
+      return json;
     } catch (err) {
       get().addLog('error', '전략 실행 중 오류 발생', undefined, (err as Error).message);
       queueTrade({
         timestamp: Date.now(), type: 'error', simulation: false,
         baseAsset: opportunity.baseAsset, reason: (err as Error).message,
       });
-      return false;
+      return { success: false, error: (err as Error).message };
     } finally {
       set({ strategyRunning: false });
     }
@@ -1376,7 +1430,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
 
     const exitNotional = pos.size * exitPrice; // 현재 가격 기반 실제 청산 노셔널
-    const exitFee = exitNotional * TAKER_FEE;
+    const exitFee = exitNotional * getExchangeFee(pos.exchange, 'maker');
     const pricePnl = pos.side === 'short'
       ? (pos.entryPrice - exitPrice) * pos.size
       : (exitPrice - pos.entryPrice) * pos.size;
@@ -1671,7 +1725,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
       const spread = hasRS ? rs.effectiveSpread / 100 : opp.spread;
       // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
-      const fees = hasRS ? 0 : notional * TAKER_FEE * 4;
+      const fees = hasRS ? 0 : notional * getHedgeFees(opp.shortExchange, opp.longExchange, 'taker');
       return notional * spread - fees;
     };
 
@@ -1697,7 +1751,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const effectiveSpread = effectiveSpreadPercent / 100;
       const oppNotional = getEffectiveNotional(currentOpp, strategyConfig, simBalances, realBalances, simulationMode);
       // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
-      const revalFees = hasRealSpreadData ? 0 : oppNotional * TAKER_FEE * 4;
+      const revalFees = hasRealSpreadData ? 0 : oppNotional * getHedgeFees(currentOpp.shortExchange, currentOpp.longExchange, 'taker');
       const liveNetProfit = oppNotional * effectiveSpread - revalFees;
 
       // 순수익 ≤ 0 시 해제 (minSpreadPercent는 이론 스프레드에만 적용, 실효 스프레드는 순수익 기준)
@@ -1810,7 +1864,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // realSpread: 슬리피지(수수료 포함) 이미 반영 → 추가 수수료 차감 불필요
       // 이론값: 슬리피지 미반영 → 왕복 수수료 4회 차감
       const spread = hasRealSpread ? rs.effectiveSpread / 100 : o.spread;
-      const fees = hasRealSpread ? 0 : n * TAKER_FEE * 4;
+      const fees = hasRealSpread ? 0 : n * getHedgeFees(o.shortExchange, o.longExchange, 'taker');
       return n * spread - fees;
     };
     // 순수익 양수만 선택 + 정렬
@@ -1978,6 +2032,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ★ 내부: 펀딩 직전 진입 실행 + 수령 후 자동청산 예약
   _executeSnipeEntry(opportunity: ArbitrageOpportunity, targetFundingTime: number) {
+    // 자동화 비활성 시 진입 차단 (청산 실패 등으로 일시정지된 경우)
+    if (!get().snipeActive) {
+      get().addLog('warning', `[스나이핑-헷징] ${opportunity.baseAsset} 진입 스킵 — 자동화 비활성 상태`);
+      return;
+    }
+
     const asset = opportunity.baseAsset;
     const snipeKey = asset;
     const { enabledExchanges: currentEnabled } = get();
@@ -1998,7 +2058,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
       const effSpreadPct = hasRS ? rs.effectiveSpread : o.spreadPercent;
       // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
-      const fees = hasRS ? 0 : n * TAKER_FEE * 4;
+      const fees = hasRS ? 0 : n * getHedgeFees(o.shortExchange, o.longExchange, 'taker');
       const liveNet = n * (effSpreadPct / 100) - fees;
       return liveNet > 0;
     };
@@ -2019,15 +2079,114 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       `숏:${finalTarget.shortExchange.toUpperCase()} 롱:${finalTarget.longExchange.toUpperCase()} | 스프레드: +${fmtNum(finalTarget.spreadPercent, 4)}%`,
     );
 
+    // 실행 직전 최종 확인 — 다른 자산 청산 실패로 비활성화됐을 수 있음
+    if (!get().snipeActive) {
+      get().addLog('warning', `[스나이핑-헷징] ${asset} 진입 직전 취소 — 자동화 비활성 상태`);
+      get().cancelSnipeForAsset(snipeKey);
+      return;
+    }
+
     const entryTarget = { ...finalTarget, nextFundingTime: targetFundingTime };
-    get().executeStrategy(entryTarget).then((success) => {
-      if (success) {
+    get().executeStrategy(entryTarget).then((result) => {
+      if (result.success) {
+        // 진입 성공 후 자동화 비활성 체크 — 다른 자산 청산 실패로 정지된 경우
+        // in-flight 요청이 성공해도 즉시 청산하여 잔여 포지션 방지
+        if (!get().snipeActive) {
+          get().addLog('warning',
+            `[스나이핑-헷징] ${asset} 진입 성공했으나 자동화 비활성 — 서버 체결 수량으로 즉시 정리`,
+          );
+          const cleanupStaleEntry = async () => {
+            if (get().simulationMode) {
+              await get()._executeSnipeClose(finalTarget);
+              return;
+            }
+
+            const leverage = get().strategyConfig.leverage;
+            const stalePositions: Position[] = [];
+            if (result.short?.success && result.short.data) {
+              stalePositions.push(makeSyntheticClosePosition(finalTarget, 'short', result.short.data, leverage));
+            }
+            if (result.long?.success && result.long.data) {
+              stalePositions.push(makeSyntheticClosePosition(finalTarget, 'long', result.long.data, leverage));
+            }
+
+            if (stalePositions.length === 0) {
+              get().addLog('error',
+                `[스나이핑-헷징] ${asset} stale 진입 정리 실패 — 체결 정보 없음, 수동 확인 필요`,
+              );
+              get().cancelSnipeForAsset(snipeKey);
+              return;
+            }
+
+            let pendingClosures = stalePositions;
+            let lastCloseErrors: string[] = [];
+
+            for (let attempt = 0; attempt < 2 && pendingClosures.length > 0; attempt++) {
+              const closeResults = await Promise.allSettled(
+                pendingClosures.map(pos => get().closePosition(pos)),
+              );
+              const failedPositions: Position[] = [];
+              lastCloseErrors = [];
+
+              closeResults.forEach((closeResult, index) => {
+                if (closeResult.status === 'rejected') {
+                  failedPositions.push(pendingClosures[index]);
+                  lastCloseErrors.push(closeResult.reason?.message || 'unknown');
+                }
+              });
+
+              if (failedPositions.length === 0) {
+                pendingClosures = [];
+                break;
+              }
+
+              pendingClosures = failedPositions;
+              if (attempt === 0) {
+                get().addLog('warning',
+                  `[스나이핑-헷징] ${asset} stale 진입 자동 정리 1차 실패 — 1초 후 재시도`,
+                  undefined,
+                  lastCloseErrors.join('; '),
+                );
+                await new Promise(r => setTimeout(r, 1_000));
+              }
+            }
+
+            if (pendingClosures.length > 0) {
+              get().addLog('error',
+                `[스나이핑-헷징] ${asset} stale 진입 자동 정리 ${pendingClosures.length}/${stalePositions.length}개 실패 — 수동 확인 필요`,
+                undefined,
+                lastCloseErrors.join('; '),
+              );
+              queueTrade({
+                timestamp: Date.now(), type: 'exit_failed', simulation: false,
+                baseAsset: asset, shortExchange: finalTarget.shortExchange, longExchange: finalTarget.longExchange,
+                detail: `stale_cleanup_failed:${pendingClosures.length}/${stalePositions.length}`,
+              });
+            } else {
+              get().addLog('success',
+                `[스나이핑-헷징] ${asset} stale 진입 자동 정리 완료`,
+              );
+            }
+
+            get().cancelSnipeForAsset(snipeKey);
+          };
+          void cleanupStaleEntry().catch((err) => {
+            get().addLog('error',
+              `[스나이핑-헷징] ${asset} stale 진입 정리 중 오류`,
+              undefined,
+              (err as Error).message,
+            );
+            get().cancelSnipeForAsset(snipeKey);
+          });
+          return;
+        }
+
         get().addLog('success',
           `[스나이핑-헷징] ${asset} 진입 완료`,
           undefined,
           `펀딩까지 ~${secsToFunding}초`,
         );
-        const closeDelay = Math.max(0, targetFundingTime - Date.now()) + 5_000;
+        const closeDelay = Math.max(0, targetFundingTime - Date.now()) + 2_000;
         const closeTimer = setTimeout(() => {
           get()._executeSnipeClose(finalTarget);
         }, closeDelay);
@@ -2042,7 +2201,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           get().scheduleAllSnipes();
         }
       } else {
-        get().addLog('error', `[스나이핑-헷징] ${asset} 진입 실패`);
+        get().addLog('error', `[스나이핑-헷징] ${asset} 진입 실패`, undefined, result.error);
         get().cancelSnipeForAsset(snipeKey);
         // 실패해도 다른 기회 시도
         if (get().snipeActive) {
@@ -2057,6 +2216,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const { simulationMode } = get();
     const asset = target.baseAsset;
     const snipeKey = asset;
+    let closeFailed = false;
 
     if (simulationMode) {
       // 시뮬레이션: tickSimFunding 의존 X → 직접 해당 코인 포지션 찾아서 청산
@@ -2077,39 +2237,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         );
       }
     } else {
-      // ★ 실거래: 펀딩 수령 확인 후 청산
-      get().addLog('info', `[스나이핑-헷징] ${asset} 펀딩 수령 확인 중...`);
-
-      let fundingVerified = false;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await get().fetchFundingHistory();
-          const { fundingHistory } = get();
-          // 양쪽 거래소 모두 확인 (short 또는 long 어느 쪽이든 수령 확인)
-          const recentFunding = fundingHistory.find(f =>
-            f.symbol.includes(asset) &&
-            (f.exchange === target.shortExchange || f.exchange === target.longExchange) &&
-            f.timestamp > Date.now() - 60_000,
-          );
-          if (recentFunding) {
-            fundingVerified = true;
-            get().addLog('success',
-              `[스나이핑-헷징] ${asset} 펀딩 수령 확인`,
-              recentFunding.exchange,
-              `$${fmtNum(Math.abs(recentFunding.amount), 4)} (${fmtNum(recentFunding.rate * 100, 4)}%)`,
-            );
-            break;
-          }
-        } catch { /* ignore */ }
-        if (attempt < 2) {
-          await new Promise(r => setTimeout(r, 5_000));
-        }
-      }
-
-      if (!fundingVerified) {
-        get().addLog('warning', `[스나이핑-헷징] ${asset} 펀딩 확인 불가 — 청산 진행`);
-      }
-
+      // ★ 실거래: 즉시 청산 (T+2s) → 펀딩 검증은 비동기로 후처리
       const currentPositions = get().positions;
       const targetPositions = currentPositions.filter(p => {
         if (p.baseAsset !== asset) return false;
@@ -2119,23 +2247,80 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
 
       if (targetPositions.length > 0) {
-        get().addLog('info', `[스나이핑-헷징] ${asset} ${targetPositions.length}개 청산 중...`);
-        await Promise.allSettled(
+        get().addLog('info', `[스나이핑-헷징] ${asset} ${targetPositions.length}개 즉시 청산 중...`);
+        const closeResults = await Promise.allSettled(
           targetPositions.map(pos => get().closePosition(pos)),
         );
-        get().addLog('success', `[스나이핑-헷징] ${asset} 청산 완료`);
-        queueTrade({
-          timestamp: Date.now(), type: 'snipe_complete', simulation: false,
-          baseAsset: asset, shortExchange: target.shortExchange, longExchange: target.longExchange,
-          detail: `fundingVerified:${fundingVerified} | mode:hedge`,
-        });
+        const failedLegs = closeResults.filter(r => r.status === 'rejected');
+        if (failedLegs.length > 0) {
+          closeFailed = true;
+          get().addLog('error',
+            `[스나이핑-헷징] ${asset} 청산 ${failedLegs.length}/${targetPositions.length}개 실패 — 자동화 일시정지, 수동 확인 필요`,
+            undefined,
+            failedLegs.map(r => (r as PromiseRejectedResult).reason?.message || 'unknown').join('; '),
+          );
+          queueTrade({
+            timestamp: Date.now(), type: 'exit_failed', simulation: false,
+            baseAsset: asset, shortExchange: target.shortExchange, longExchange: target.longExchange,
+            detail: `${failedLegs.length}/${targetPositions.length} legs failed`,
+          });
+        } else {
+          get().addLog('success', `[스나이핑-헷징] ${asset} 청산 완료`);
+
+          // 펀딩 수령 확인은 비동기로 — 청산을 지연시키지 않음
+          (async () => {
+            let fundingVerified = false;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                await get().fetchFundingHistory();
+                const { fundingHistory } = get();
+                const recentFunding = fundingHistory.find(f =>
+                  f.symbol.includes(asset) &&
+                  (f.exchange === target.shortExchange || f.exchange === target.longExchange) &&
+                  f.timestamp > Date.now() - 60_000,
+                );
+                if (recentFunding) {
+                  fundingVerified = true;
+                  get().addLog('success',
+                    `[스나이핑-헷징] ${asset} 펀딩 수령 확인`,
+                    recentFunding.exchange,
+                    `$${fmtNum(Math.abs(recentFunding.amount), 4)} (${fmtNum(recentFunding.rate * 100, 4)}%)`,
+                  );
+                  break;
+                }
+              } catch { /* ignore */ }
+              if (attempt < 2) await new Promise(r => setTimeout(r, 5_000));
+            }
+            if (!fundingVerified) {
+              get().addLog('warning', `[스나이핑-헷징] ${asset} 펀딩 수령 미확인 — 로그 확인 필요`);
+            }
+            queueTrade({
+              timestamp: Date.now(), type: 'snipe_complete', simulation: false,
+              baseAsset: asset, shortExchange: target.shortExchange, longExchange: target.longExchange,
+              detail: `fundingVerified:${fundingVerified} | mode:hedge`,
+            });
+          })();
+        }
       } else {
         get().addLog('warning', `[스나이핑-헷징] ${asset} 청산할 포지션 없음`);
       }
     }
 
-    // 해당 키 타이머 정리 + 다음 사이클 재예약
+    // 해당 키 타이머 정리
     get().cancelSnipeForAsset(snipeKey);
+
+    // 청산 실패 시 자동화 일시정지 — 잔여 포지션이 있는 상태에서 새 스나이프 차단
+    if (!simulationMode && closeFailed) {
+      // 진입 타이머만 정리 — 청산 타이머는 유지 (다른 자산의 열린 포지션 보호)
+      const { _snipeTimers } = get();
+      for (const timer of Object.values(_snipeTimers)) clearTimeout(timer);
+      set({ snipeActive: false, snipeTargets: {}, _snipeTimers: {} });
+      get().addLog('error',
+        `[스나이핑-헷징] 청산 실패로 자동화 일시정지 — 진입 예약 해제 (기존 청산 타이머 유지), 잔여 포지션 확인 후 수동 재개 필요`,
+      );
+      return;
+    }
+
     if (get().snipeActive) {
       get().scheduleAllSnipes();
     }

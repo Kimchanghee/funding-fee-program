@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { TrendingUp } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { fmtNum } from '@/lib/format';
+import { getHedgeFees } from '@/lib/types';
 
 const TIME_PERIODS = [
   { key: '1h', label: '1시간' },
@@ -32,8 +33,8 @@ export default function ReturnProjectionPanel() {
 
     const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
     const perFunding = notional * best.spread;
-    const TAKER_FEE = 0.0005;
-    const feesPerCycle = notional * TAKER_FEE * 4; // 매 스나이프 사이클 왕복 수수료
+    const roundTripFee = getHedgeFees(best.shortExchange, best.longExchange, 'taker');
+    const feesPerCycle = notional * roundTripFee; // 거래소별 taker 기준 왕복 수수료 (보수적)
     const netPerFunding = perFunding - feesPerCycle;
 
     const intervalMs = best.fundingIntervalMs ?? 8 * 3600000;

@@ -223,14 +223,19 @@ export default function OpportunityCard() {
     // 마이너스 순수익 필터링 (활성 포지션은 유지)
     const profitable = items.filter(i => i.status === 'active' || i.opp.netProfit > 0);
 
-    // Sort: active first, then by 가장 빠른 시간 + 높은 순수익
+    // Sort: active first, then by 가장 빠른 시간 + 높은 수익률
     return profitable.sort((a, b) => {
       const priority = { active: 0, scheduled: 1, opportunity: 2 };
       if (priority[a.status] !== priority[b.status]) return priority[a.status] - priority[b.status];
-      // 같은 상태면: 빠른 시간 우선, 같은 시간이면 순수익 높은 순
+      // 같은 상태면: 빠른 시간 우선, 같은 시간이면 수익률(spreadPercent) 높은 순
       const timeDiff = a.fundingTime - b.fundingTime;
       if (Math.abs(timeDiff) > 120_000) return timeDiff; // 2분 이상 차이나면 시간 우선
-      return b.opp.netProfit - a.opp.netProfit; // 비슷한 시간이면 순수익 우선
+      // 비슷한 시간이면: 시간당 순수익 기준 (1h 펀딩이 8h보다 우선, 수수료 반영)
+      const aIntervalH = (a.opp.fundingIntervalMs ?? 8 * 3600000) / 3600000;
+      const bIntervalH = (b.opp.fundingIntervalMs ?? 8 * 3600000) / 3600000;
+      const aRoiPerH = a.opp.netProfit / aIntervalH;
+      const bRoiPerH = b.opp.netProfit / bIntervalH;
+      return bRoiPerH - aRoiPerH;
     });
   }, [opportunities, snipeTargets, simPositions, positions, simulationMode]);
 
@@ -486,6 +491,8 @@ export default function OpportunityCard() {
                   remainingBal[item.opp.longExchange] = (remainingBal[item.opp.longExchange] ?? 0) - itemPerSide;
                 }
               }
+              // 투자금 $1 미만이면 거래 불가 — 후보는 숨김 (예약/활성은 표시)
+              if (item.status === 'opportunity' && itemPerSide < 1) return null;
               const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage);
               // 마이너스 순수익은 대기(opportunity) 상태만 숨김 — 예약/활성은 항상 표시
               if (item.status === 'opportunity' && profit.netPerFunding <= 0) return null;

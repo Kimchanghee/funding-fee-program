@@ -109,12 +109,13 @@ function normalizeFr(id: ExchangeId, sym: string, fr: any): FundingRate | null {
 }
 
 // ── Load markets with timeout and retry ──
+// 5s per attempt (max 10s total) — loadMarkets is cached after first call
 async function ensureMarkets(ex: any, id: ExchangeId, config?: ApiConfig): Promise<any> {
   try {
     await Promise.race([
       ex.loadMarkets() as Promise<unknown>,
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] loadMarkets timeout (10s)`)), 10000),
+        setTimeout(() => reject(new Error(`[${id}] loadMarkets timeout`)), 5000),
       ),
     ]);
     return ex;
@@ -125,7 +126,7 @@ async function ensureMarkets(ex: any, id: ExchangeId, config?: ApiConfig): Promi
     await Promise.race([
       freshEx.loadMarkets() as Promise<unknown>,
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] loadMarkets retry timeout (10s)`)), 10000),
+        setTimeout(() => reject(new Error(`[${id}] loadMarkets retry timeout`)), 5000),
       ),
     ]);
     return freshEx;
@@ -337,9 +338,9 @@ export function analyzeOrderbook(
 }
 
 /**
- * Open position using limit IOC order based on orderbook analysis.
- * Provides precise notional control and slippage protection vs market orders.
- * Falls back to market order if limit IOC fill is insufficient.
+ * Open position using Post-Only maker order at best bid/ask.
+ * Strategy: Post-Only → rejected (crossing) → IOC taker fallback.
+ * This saves ~60% on fees vs pure taker (0.02% maker vs 0.05% taker).
  */
 export async function openPosition(
   id: ExchangeId,
@@ -348,20 +349,20 @@ export async function openPosition(
   side: 'long' | 'short',
   amountUSDT: number,
   leverage: number,
-): Promise<{ orderId: string; price: number; amount: number; filledNotional: number }> {
-  const ex = makeExchange(id, config);
+): Promise<{ orderId: string; price: number; amount: number; filledNotional: number; orderType: 'maker' | 'taker' }> {
+  let ex = makeExchange(id, config);
   try {
+    ex = await ensureMarkets(ex, id, config);
     await ex.setLeverage(leverage, symbol).catch(() => {});
 
     // 1. Fetch orderbook for price analysis
     const ob = await Promise.race([
       ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 8000),
+        setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 3000),
       ),
     ]);
 
-    // Buy (long) eats asks, Sell (short) eats bids
     const levels = side === 'long' ? ob.asks : ob.bids;
     if (!levels || levels.length === 0) {
       throw new Error(`[${id}] Empty orderbook for ${symbol} (${side})`);
@@ -371,16 +372,8 @@ export async function openPosition(
     const obSide = side === 'long' ? 'buy' : 'sell';
     const analysis = analyzeOrderbook(levels, notional, obSide);
 
-    // 2. Set limit price with small buffer beyond worst level to ensure full fill
-    //    Buy: slightly above worst ask level, Sell: slightly below worst bid level
-    const PRICE_BUFFER = 0.0005; // 0.05%
-    const limitPrice = side === 'long'
-      ? analysis.worstPrice * (1 + PRICE_BUFFER)
-      : analysis.worstPrice * (1 - PRICE_BUFFER);
-
-    // 3. Calculate contract amount from expected fill price for precise notional
+    // 2. Calculate contract amount
     let contractAmount = notional / analysis.fillPrice;
-    // Adjust for exchanges that use contract count instead of base currency amount
     if (ex.markets && ex.markets[symbol]) {
       const market = ex.markets[symbol];
       if (market.contractSize && market.contractSize !== 1) {
@@ -389,70 +382,160 @@ export async function openPosition(
       contractAmount = parseFloat(ex.amountToPrecision(symbol, contractAmount));
     }
 
+    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
+    const orderSide = side === 'long' ? 'buy' : 'sell';
+
+    // 3. Try Post-Only maker order at best bid/ask (0% spread from BBO)
+    //    Long: place at best bid (we join the bid), Short: place at best ask (we join the ask)
+    const bestBid = ob.bids?.[0]?.[0];
+    const bestAsk = ob.asks?.[0]?.[0];
+    const makerPrice = side === 'long' ? bestBid : bestAsk;
+
+    if (makerPrice && makerPrice > 0) {
+      try {
+        console.log(
+          `[${id}] ${symbol} ${side} POST-ONLY: price=${makerPrice.toFixed(4)}, ` +
+          `qty=${contractAmount.toFixed(6)}, notional=$${notional.toFixed(2)}`,
+        );
+
+        const makerOrder = await Promise.race([
+          ex.createOrder(symbol, 'limit', orderSide, contractAmount, makerPrice, {
+            postOnly: true,
+            reduceOnly: false,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Post-Only timeout')), 3000),
+          ),
+        ]);
+
+        const filledAmount = (makerOrder.filled as number) || 0;
+        const filledPrice = (makerOrder.average as number) || makerPrice;
+
+        // Post-Only succeeded and filled (at least partially)
+        if (filledAmount >= contractAmount * 0.90) {
+          const filledNotional = filledAmount * cSize * filledPrice;
+          console.log(
+            `[${id}] ${symbol} ${side} MAKER FILLED: price=${filledPrice.toFixed(4)}, ` +
+            `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}, fee=MAKER`,
+          );
+          return {
+            orderId: (makerOrder.id as string) || '',
+            price: filledPrice,
+            amount: filledAmount * cSize,
+            filledNotional,
+            orderType: 'maker',
+          };
+        }
+
+        // Partial or zero fill — cancel resting maker order before IOC fallback
+        if (filledAmount < contractAmount * 0.90) {
+          // Cancel any resting portion of the maker order
+          if (makerOrder.id) {
+            try {
+              await ex.cancelOrder(makerOrder.id, symbol);
+              console.log(`[${id}] ${symbol} ${side} cancelled resting maker order ${makerOrder.id}`);
+            } catch { /* already filled or cancelled */ }
+          }
+
+          if (filledAmount > 0) {
+            const remaining = contractAmount - filledAmount;
+            const iocPrice = side === 'long'
+              ? analysis.worstPrice * 1.0005
+              : analysis.worstPrice * 0.9995;
+
+            console.log(
+              `[${id}] ${symbol} ${side} MAKER partial ${((filledAmount / contractAmount) * 100).toFixed(1)}%, ` +
+              `IOC-filling remaining ${remaining.toFixed(6)}`,
+            );
+
+            const iocOrder = await Promise.race([
+              ex.createOrder(symbol, 'limit', orderSide, remaining, iocPrice, {
+                timeInForce: 'IOC', reduceOnly: false,
+              }),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('IOC fallback timeout')), 3000),
+              ),
+            ]);
+
+            const iocFilled = (iocOrder.filled as number) || 0;
+            const iocFilledPrice = (iocOrder.average as number) || iocPrice;
+            const totalFilled = filledAmount + iocFilled;
+            const avgPrice = totalFilled > 0
+              ? (filledAmount * filledPrice + iocFilled * iocFilledPrice) / totalFilled
+              : filledPrice;
+
+            return {
+              orderId: (makerOrder.id as string) || (iocOrder.id as string) || '',
+              price: avgPrice,
+              amount: totalFilled * cSize,
+              filledNotional: totalFilled * cSize * avgPrice,
+              orderType: 'taker',
+            };
+          }
+          // filledAmount === 0 → order cancelled, fall through to IOC
+        }
+      } catch (makerErr) {
+        // Post-Only rejected (crossing book) or timeout — fall through to IOC
+        console.log(
+          `[${id}] ${symbol} ${side} Post-Only rejected/timeout: ${(makerErr as Error).message} — falling back to IOC`,
+        );
+      }
+    }
+
+    // 4. Fallback: IOC taker order (original strategy)
+    const PRICE_BUFFER = 0.0005;
+    const limitPrice = side === 'long'
+      ? analysis.worstPrice * (1 + PRICE_BUFFER)
+      : analysis.worstPrice * (1 - PRICE_BUFFER);
+
     console.log(
-      `[${id}] ${symbol} ${side} LIMIT IOC: limit=${limitPrice.toFixed(4)}, ` +
-      `qty=${contractAmount.toFixed(6)}, expectedFill=${analysis.fillPrice.toFixed(4)}, ` +
-      `worst=${analysis.worstPrice.toFixed(4)}, notional=$${notional.toFixed(2)}`,
+      `[${id}] ${symbol} ${side} IOC FALLBACK: limit=${limitPrice.toFixed(4)}, ` +
+      `qty=${contractAmount.toFixed(6)}, notional=$${notional.toFixed(2)}`,
     );
 
-    // 4. Place limit IOC order
-    const order = await ex.createOrder(
-      symbol,
-      'limit',
-      side === 'long' ? 'buy' : 'sell',
-      contractAmount,
-      limitPrice,
-      { timeInForce: 'IOC', reduceOnly: false },
-    );
+    const order = await Promise.race([
+      ex.createOrder(symbol, 'limit', orderSide, contractAmount, limitPrice, {
+        timeInForce: 'IOC', reduceOnly: false,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[${id}] IOC order timeout`)), 3000),
+      ),
+    ]);
 
     const filledAmount = (order.filled as number) || 0;
     const filledPrice = (order.average as number) || limitPrice;
-    // contractSize 반영: 계약 수 × contractSize × 가격 = 실제 notional
-    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
     const filledNotional = filledAmount * cSize * filledPrice;
 
-    // 5. If IOC fill < 90%, supplement with market order for remaining
     if (filledAmount < contractAmount * 0.90) {
       const remaining = contractAmount - filledAmount;
       console.log(
         `[${id}] ${symbol} ${side} IOC partial fill ${((filledAmount / contractAmount) * 100).toFixed(1)}%, ` +
         `market-filling remaining ${remaining.toFixed(6)}`,
       );
-      const mktOrder = await ex.createMarketOrder(
-        symbol,
-        side === 'long' ? 'buy' : 'sell',
-        remaining,
-        undefined,
-        { reduceOnly: false },
-      );
+      const mktOrder = await Promise.race([
+        ex.createMarketOrder(symbol, orderSide, remaining, undefined, { reduceOnly: false }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Market order timeout')), 3000)),
+      ]);
       const mktFilled = (mktOrder.filled as number) || remaining;
       const mktPrice = (mktOrder.average as number) || limitPrice;
       const totalFilled = filledAmount + mktFilled;
       const avgPrice = (filledAmount * filledPrice + mktFilled * mktPrice) / totalFilled;
 
-      console.log(
-        `[${id}] ${symbol} ${side} COMBINED: avgPrice=${avgPrice.toFixed(4)}, ` +
-        `totalQty=${totalFilled.toFixed(6)}, notional=$${(totalFilled * cSize * avgPrice).toFixed(2)}`,
-      );
-
       return {
         orderId: (order.id as string) || (mktOrder.id as string) || '',
         price: avgPrice,
-        amount: totalFilled * cSize, // base asset 수량으로 변환
+        amount: totalFilled * cSize,
         filledNotional: totalFilled * cSize * avgPrice,
+        orderType: 'taker',
       };
     }
-
-    console.log(
-      `[${id}] ${symbol} ${side} FILLED: price=${filledPrice.toFixed(4)}, ` +
-      `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}`,
-    );
 
     return {
       orderId: (order.id as string) || '',
       price: filledPrice,
-      amount: filledAmount * cSize, // base asset 수량으로 변환
+      amount: filledAmount * cSize,
       filledNotional,
+      orderType: 'taker',
     };
   } catch (err) {
     throw new Error(`[${id}] openPosition failed: ${(err as Error).message}`);
@@ -464,7 +547,7 @@ export async function openPosition(
  * Falls back to market order if limit IOC doesn't fill sufficiently.
  */
 /**
- * Open position with pre-computed quantity and limit price.
+ * Open position with pre-computed quantity using Post-Only maker → IOC taker fallback.
  * Used for coordinated hedge execution where both sides' quantities
  * are calculated together for equal notional exposure (100% hedge).
  */
@@ -476,13 +559,12 @@ export async function openPositionExact(
   qty: number,
   limitPrice: number,
   leverage: number,
-): Promise<{ orderId: string; price: number; amount: number; filledNotional: number }> {
+): Promise<{ orderId: string; price: number; amount: number; filledNotional: number; orderType: 'maker' | 'taker' }> {
   let ex = makeExchange(id, config);
   try {
     ex = await ensureMarkets(ex, id, config);
     await ex.setLeverage(leverage, symbol).catch(() => {});
 
-    // Adjust qty for exchanges that use contract count instead of base currency amount
     if (ex.markets && ex.markets[symbol]) {
       const market = ex.markets[symbol];
       if (market.contractSize && market.contractSize !== 1) {
@@ -491,66 +573,147 @@ export async function openPositionExact(
       qty = parseFloat(ex.amountToPrecision(symbol, qty));
     }
 
+    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
+    const orderSide = side === 'long' ? 'buy' : 'sell';
+
+    // 1. Try Post-Only maker at the provided limit price (best bid/ask from caller)
+    try {
+      // Post-Only maker price: for buy, use slightly below limitPrice; for sell, slightly above
+      // This ensures we're providing liquidity, not taking it
+      const ob = await Promise.race([
+        ex.fetchOrderBook(symbol, 5) as Promise<{ asks: number[][]; bids: number[][] }>,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('OB timeout')), 3000),
+        ),
+      ]);
+
+      const makerPrice = side === 'long'
+        ? (ob.bids?.[0]?.[0] || limitPrice * 0.999)
+        : (ob.asks?.[0]?.[0] || limitPrice * 1.001);
+
+      console.log(
+        `[${id}] ${symbol} ${side} EXACT POST-ONLY: price=${makerPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
+      );
+
+      const makerOrder = await Promise.race([
+        ex.createOrder(symbol, 'limit', orderSide, qty, makerPrice, {
+          postOnly: true, reduceOnly: false,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Post-Only timeout')), 3000),
+        ),
+      ]);
+
+      const filledAmount = (makerOrder.filled as number) || 0;
+      const filledPrice = (makerOrder.average as number) || makerPrice;
+
+      if (filledAmount >= qty * 0.90) {
+        const filledNotional = filledAmount * cSize * filledPrice;
+        console.log(
+          `[${id}] ${symbol} ${side} EXACT MAKER FILLED: price=${filledPrice.toFixed(4)}, ` +
+          `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}`,
+        );
+        return {
+          orderId: (makerOrder.id as string) || '',
+          price: filledPrice,
+          amount: filledAmount * cSize,
+          filledNotional,
+          orderType: 'maker',
+        };
+      }
+
+      // Partial or zero fill — cancel resting maker order before IOC fallback
+      if (filledAmount < qty * 0.90) {
+        if (makerOrder.id) {
+          try {
+            await ex.cancelOrder(makerOrder.id, symbol);
+            console.log(`[${id}] ${symbol} ${side} cancelled resting maker order ${makerOrder.id}`);
+          } catch { /* already filled or cancelled */ }
+        }
+
+        if (filledAmount > 0) {
+          const remaining = qty - filledAmount;
+          console.log(
+            `[${id}] ${symbol} ${side} EXACT MAKER partial ${((filledAmount / qty) * 100).toFixed(1)}%, IOC remaining`,
+          );
+          const iocOrder = await Promise.race([
+            ex.createOrder(symbol, 'limit', orderSide, remaining, limitPrice, {
+              timeInForce: 'IOC', reduceOnly: false,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('IOC timeout')), 3000),
+            ),
+          ]);
+          const iocFilled = (iocOrder.filled as number) || 0;
+          const iocPrice = (iocOrder.average as number) || limitPrice;
+          const totalFilled = filledAmount + iocFilled;
+          const avgPrice = totalFilled > 0
+            ? (filledAmount * filledPrice + iocFilled * iocPrice) / totalFilled
+            : filledPrice;
+          return {
+            orderId: (makerOrder.id as string) || (iocOrder.id as string) || '',
+            price: avgPrice,
+            amount: totalFilled * cSize,
+            filledNotional: totalFilled * cSize * avgPrice,
+            orderType: 'taker',
+          };
+        }
+        // filledAmount === 0 → cancelled, fall through to IOC
+      }
+    } catch (makerErr) {
+      console.log(
+        `[${id}] ${symbol} ${side} EXACT Post-Only failed: ${(makerErr as Error).message} — IOC fallback`,
+      );
+    }
+
+    // 2. Fallback: IOC taker
     console.log(
-      `[${id}] ${symbol} ${side} EXACT LIMIT IOC: limit=${limitPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
+      `[${id}] ${symbol} ${side} EXACT IOC FALLBACK: limit=${limitPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
     );
 
-    const order = await ex.createOrder(
-      symbol,
-      'limit',
-      side === 'long' ? 'buy' : 'sell',
-      qty,
-      limitPrice,
-      { timeInForce: 'IOC', reduceOnly: false },
-    );
+    const order = await Promise.race([
+      ex.createOrder(symbol, 'limit', orderSide, qty, limitPrice, {
+        timeInForce: 'IOC', reduceOnly: false,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[${id}] IOC order timeout`)), 3000),
+      ),
+    ]);
 
     const filledAmount = (order.filled as number) || 0;
     const filledPrice = (order.average as number) || limitPrice;
-    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
 
-    // If IOC fill < 90%, supplement with market order
     if (filledAmount < qty * 0.90) {
       const remaining = qty - filledAmount;
       console.log(
         `[${id}] ${symbol} ${side} IOC partial fill ${((filledAmount / qty) * 100).toFixed(1)}%, ` +
         `market-filling remaining ${remaining.toFixed(6)}`,
       );
-      const mktOrder = await ex.createMarketOrder(
-        symbol,
-        side === 'long' ? 'buy' : 'sell',
-        remaining,
-        undefined,
-        { reduceOnly: false },
-      );
+      const mktOrder = await Promise.race([
+        ex.createMarketOrder(symbol, orderSide, remaining, undefined, { reduceOnly: false }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Market order timeout')), 3000)),
+      ]);
       const mktFilled = (mktOrder.filled as number) || remaining;
       const mktPrice = (mktOrder.average as number) || limitPrice;
       const totalFilled = filledAmount + mktFilled;
       const avgPrice = (filledAmount * filledPrice + mktFilled * mktPrice) / totalFilled;
-
-      console.log(
-        `[${id}] ${symbol} ${side} EXACT COMBINED: avgPrice=${avgPrice.toFixed(4)}, ` +
-        `totalQty=${totalFilled.toFixed(6)}, notional=$${(totalFilled * cSize * avgPrice).toFixed(2)}`,
-      );
 
       return {
         orderId: (order.id as string) || (mktOrder.id as string) || '',
         price: avgPrice,
         amount: totalFilled * cSize,
         filledNotional: totalFilled * cSize * avgPrice,
+        orderType: 'taker',
       };
     }
 
     const filledNotional = filledAmount * cSize * filledPrice;
-    console.log(
-      `[${id}] ${symbol} ${side} EXACT FILLED: price=${filledPrice.toFixed(4)}, ` +
-      `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}`,
-    );
-
     return {
       orderId: (order.id as string) || '',
       price: filledPrice,
       amount: filledAmount * cSize,
       filledNotional,
+      orderType: 'taker',
     };
   } catch (err) {
     throw new Error(`[${id}] openPositionExact failed: ${(err as Error).message}`);
@@ -567,21 +730,16 @@ export async function closePosition(
   let ex = makeExchange(id, config);
   try {
     ex = await ensureMarkets(ex, id, config);
-    // 1. Fetch orderbook for price analysis
     const ob = await Promise.race([
       ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 8000),
+        setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 3000),
       ),
     ]);
 
-    // Close long = sell into bids, Close short = buy from asks
     const levels = side === 'long' ? ob.bids : ob.asks;
-    if (!levels || levels.length === 0) {
-      throw new Error('empty orderbook');
-    }
+    if (!levels || levels.length === 0) throw new Error('empty orderbook');
 
-    // amount는 base asset 수량 → contractSize로 나눠 계약 단위로 변환
     if (ex.markets && ex.markets[symbol]) {
       const market = ex.markets[symbol];
       if (market.contractSize && market.contractSize !== 1) {
@@ -590,60 +748,103 @@ export async function closePosition(
       amount = parseFloat(ex.amountToPrecision(symbol, amount));
     }
 
+    const closeSide: 'buy' | 'sell' = side === 'long' ? 'sell' : 'buy';
     const estimatedNotional = amount * levels[0][0];
-    // close long = sell (bids), close short = buy (asks)
-    const closeSide = side === 'long' ? 'sell' : 'buy';
     const analysis = analyzeOrderbook(levels, estimatedNotional, closeSide);
 
-    // Set limit price with buffer
-    const PRICE_BUFFER = 0.0005;
-    const limitPrice = side === 'long'
-      ? analysis.worstPrice * (1 - PRICE_BUFFER) // selling: slightly below worst bid
-      : analysis.worstPrice * (1 + PRICE_BUFFER); // buying: slightly above worst ask
+    // 1. Try Post-Only maker close at best bid/ask
+    const makerPrice = side === 'long'
+      ? (ob.bids?.[0]?.[0] || analysis.fillPrice)   // close long = sell at best bid
+      : (ob.asks?.[0]?.[0] || analysis.fillPrice);   // close short = buy at best ask
 
-    console.log(
-      `[${id}] ${symbol} CLOSE ${side} LIMIT IOC: limit=${limitPrice.toFixed(4)}, qty=${amount.toFixed(6)}`,
-    );
+    try {
+      console.log(`[${id}] ${symbol} CLOSE ${side} POST-ONLY: price=${makerPrice.toFixed(4)}, qty=${amount.toFixed(6)}`);
 
-    // 2. Place limit IOC order
-    const order = await ex.createOrder(
-      symbol,
-      'limit',
-      side === 'long' ? 'sell' : 'buy',
-      amount,
-      limitPrice,
-      { timeInForce: 'IOC', reduceOnly: true },
-    );
+      const makerOrder = await Promise.race([
+        ex.createOrder(symbol, 'limit', closeSide, amount, makerPrice, {
+          postOnly: true, reduceOnly: true,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Close Post-Only timeout')), 3000),
+        ),
+      ]);
 
-    const filledAmount = (order.filled as number) || 0;
+      const filledAmount = (makerOrder.filled as number) || 0;
+      if (filledAmount >= amount * 0.90) {
+        console.log(`[${id}] ${symbol} CLOSE ${side} MAKER complete`);
+        return;
+      }
 
-    // 3. If IOC didn't fill enough, market close the remainder
-    if (filledAmount < amount * 0.90) {
-      const remaining = amount - filledAmount;
-      console.log(
-        `[${id}] ${symbol} close IOC partial (${((filledAmount / amount) * 100).toFixed(1)}%), ` +
-        `market-closing remaining ${remaining.toFixed(6)}`,
-      );
-      await ex.createMarketOrder(
-        symbol,
-        side === 'long' ? 'sell' : 'buy',
-        remaining,
-        undefined,
-        { reduceOnly: true },
-      );
+      // Partial or zero fill — cancel resting maker order before fallback
+      if (filledAmount < amount * 0.90) {
+        if (makerOrder.id) {
+          try {
+            await ex.cancelOrder(makerOrder.id, symbol);
+            console.log(`[${id}] ${symbol} CLOSE ${side} cancelled resting maker order ${makerOrder.id}`);
+          } catch { /* already filled or cancelled */ }
+        }
+
+        if (filledAmount > 0) {
+          const remaining = amount - filledAmount;
+          const PRICE_BUFFER = 0.0005;
+          const iocPrice = side === 'long'
+            ? analysis.worstPrice * (1 - PRICE_BUFFER)
+            : analysis.worstPrice * (1 + PRICE_BUFFER);
+          await Promise.race([
+            ex.createOrder(symbol, 'limit', closeSide, remaining, iocPrice, {
+              timeInForce: 'IOC', reduceOnly: true,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Close IOC timeout')), 3000),
+            ),
+          ]);
+          console.log(`[${id}] ${symbol} CLOSE ${side} MAKER+IOC complete`);
+          return;
+        }
+        // filledAmount === 0 → cancelled, fall through to IOC
+      }
+    } catch (makerErr) {
+      console.log(`[${id}] ${symbol} CLOSE ${side} Post-Only failed: ${(makerErr as Error).message} — IOC fallback`);
     }
 
+    // 2. Fallback: IOC taker close
+    const PRICE_BUFFER = 0.0005;
+    const limitPrice = side === 'long'
+      ? analysis.worstPrice * (1 - PRICE_BUFFER)
+      : analysis.worstPrice * (1 + PRICE_BUFFER);
+
+    console.log(`[${id}] ${symbol} CLOSE ${side} IOC: limit=${limitPrice.toFixed(4)}, qty=${amount.toFixed(6)}`);
+
+    const order = await Promise.race([
+      ex.createOrder(symbol, 'limit', closeSide, amount, limitPrice, {
+        timeInForce: 'IOC', reduceOnly: true,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Close IOC timeout`)), 3000),
+      ),
+    ]);
+
+    const filledAmount = (order.filled as number) || 0;
+    if (filledAmount < amount * 0.90) {
+      const remaining = amount - filledAmount;
+      await Promise.race([
+        ex.createMarketOrder(symbol, closeSide, remaining, undefined, { reduceOnly: true }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Close market timeout')), 3000)),
+      ]);
+    }
     console.log(`[${id}] ${symbol} CLOSE ${side} complete`);
   } catch (err) {
-    // Fallback: market close on any limit order failure
-    console.error(`[${id}] closePosition limit failed, fallback to market: ${(err as Error).message}`);
-    await ex.createMarketOrder(
-      symbol,
-      side === 'long' ? 'sell' : 'buy',
-      amount,
-      undefined,
-      { reduceOnly: true },
-    );
+    console.error(`[${id}] closePosition failed, fallback to market: ${(err as Error).message}`);
+    await Promise.race([
+      ex.createMarketOrder(
+        symbol,
+        side === 'long' ? 'sell' : 'buy',
+        amount,
+        undefined,
+        { reduceOnly: true },
+      ),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Emergency close timeout')), 3000)),
+    ]);
   }
 }
 
@@ -686,13 +887,13 @@ export async function fetchMarketFillPrice(
   side: 'buy' | 'sell',
   notionalUSDT: number,
 ): Promise<{ fillPrice: number; slippagePercent: number; midPrice: number; worstPrice: number }> {
-  const ex = getPublicExchange(id);
-  await ensureMarkets(ex, id);
+  const rawEx = getPublicExchange(id);
+  const ex = await ensureMarkets(rawEx, id);
 
   const ob = await Promise.race([
     ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 8000),
+      setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 3000),
     ),
   ]);
 

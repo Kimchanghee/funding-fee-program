@@ -28,7 +28,7 @@ export interface FileLogEntry {
 // ── Trade event (entry, exit, funding, error) ──
 export interface TradeEvent {
   timestamp: number;
-  type: 'entry' | 'exit' | 'funding' | 'snipe_entry' | 'snipe_exit' | 'snipe_complete' | 'auto_exit' | 'error' | 'guard_block';
+  type: 'entry' | 'exit' | 'funding' | 'snipe_entry' | 'snipe_exit' | 'snipe_complete' | 'auto_exit' | 'error' | 'guard_block' | 'exit_failed';
   simulation: boolean;
   baseAsset?: string;
   shortExchange?: string;
