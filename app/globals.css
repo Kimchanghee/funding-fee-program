@@ -336,20 +336,34 @@ body {
     min-width: unset !important;
   }
 
-  /* Opportunity grid: 2-col compact on mobile */
-  .opp-table-header,
+  /* Opportunity grid: card-style on mobile */
+  .opp-table-header {
+    display: none !important;
+  }
   .opp-table-row {
-    grid-template-columns: 1fr 1fr !important;
-    gap: 4px !important;
-    padding: 8px !important;
+    grid-template-columns: auto 1fr auto !important;
+    gap: 6px !important;
+    padding: 10px 12px !important;
+    margin-bottom: 2px;
   }
   .opp-hide-mobile {
     display: none !important;
   }
+  .opp-show-mobile {
+    display: flex !important;
+  }
+  /* 모바일 수익 텍스트 크기 조정 */
+  .opp-table-row .mono {
+    font-size: 13px !important;
+  }
 
   /* Profit grid: 3-col on mobile */
-  .profit-grid-6 {
+  .profit-grid-6,
+  [style*="grid-template-columns: repeat(6"] {
     grid-template-columns: repeat(3, 1fr) !important;
+  }
+  [style*="grid-template-columns: repeat(4"] {
+    grid-template-columns: repeat(2, 1fr) !important;
   }
 
   /* Funding history header: stack vertically */
@@ -400,13 +414,13 @@ body {
 
   /* Header: compact on mobile */
   .app-header {
-    padding: 0 10px !important;
-    gap: 8px !important;
+    padding: 0 8px !important;
+    gap: 6px !important;
     height: auto !important;
-    min-height: 48px;
+    min-height: 44px;
     flex-wrap: wrap !important;
-    padding-top: 8px !important;
-    padding-bottom: 8px !important;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
   }
   .header-hide-mobile {
     display: none !important;
@@ -417,11 +431,56 @@ body {
     justify-content: center !important;
     flex-wrap: wrap !important;
     padding-bottom: 2px;
+    gap: 3px !important;
+  }
+  .header-exchanges button {
+    padding: 2px 5px !important;
+  }
+  .header-exchanges span {
+    font-size: 9px !important;
+  }
+  .header-mode-group {
+    order: 2;
+    gap: 4px !important;
   }
 
   /* Main content padding */
   .main-content {
     padding: 8px !important;
     gap: 10px !important;
+  }
+
+  /* Glass cards — 모바일 패딩 축소 */
+  .glass-card {
+    border-radius: 10px !important;
+  }
+
+  /* Balance cards — 세로 스택 시 컴팩트 */
+  .balance-cards-container > div {
+    padding: 8px 10px !important;
+  }
+
+  /* 예상 수익 그리드 — 2열로 */
+  .profit-grid-6 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+/* 초소형 모바일 (< 480px) */
+@media (max-width: 480px) {
+  .app-header {
+    padding: 0 6px !important;
+    gap: 4px !important;
+  }
+  .header-exchanges button span {
+    display: none !important;
+  }
+  .header-exchanges button {
+    padding: 3px 5px !important;
+    min-width: unset !important;
+  }
+  .opp-table-row {
+    padding: 8px !important;
+    gap: 4px !important;
   }
 }

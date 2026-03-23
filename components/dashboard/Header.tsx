@@ -129,85 +129,75 @@ export default function Header() {
 
       <div className="header-hide-mobile" style={{ width: 1, height: 24, background: 'var(--color-border)' }} />
 
-      {/* Snipe status */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '4px 12px',
-          borderRadius: 20,
-          background: snipeActive ? 'rgba(16,185,129,0.15)' : 'var(--bg-accent)',
-          border: `1px solid ${snipeActive ? 'rgba(16,185,129,0.4)' : 'var(--color-border)'}`,
-        }}
-      >
-        {snipeActive && (
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 4px #10b981', animation: 'blink 1.5s ease-in-out infinite' }} />
-        )}
-        <Activity size={12} color={snipeActive ? '#10b981' : 'var(--color-text-muted)'} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: snipeActive ? '#10b981' : 'var(--color-text-muted)' }}>
-          {snipeActive ? '자동 투자 중' : '대기중'}
-        </span>
-        {snipeActive && simPositions.length > 0 && (
-          <span className="mono" style={{ fontSize: 10, color: '#6ee7b7' }}>
-            {simPositions.length}P
-          </span>
-        )}
-      </div>
+      {/* Mode + Status 그룹 */}
+      <div className="header-mode-group" style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+        {/* SIM / REAL 세그먼트 */}
+        <div style={{
+          display: 'flex', alignItems: 'center',
+          borderRadius: 8, overflow: 'hidden',
+          border: `2px solid ${simulationMode ? '#a78bfa' : '#ef4444'}`,
+          background: 'rgba(0,0,0,0.3)',
+          flexShrink: 0,
+        }}>
+          <button
+            onClick={() => { if (!simulationMode) toggleSimulationMode(); }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '4px 10px', border: 'none', cursor: 'pointer',
+              background: simulationMode ? '#a78bfa' : 'transparent',
+              color: simulationMode ? '#fff' : 'var(--color-text-muted)',
+              fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap',
+            }}
+          >
+            <FlaskConical size={11} />
+            SIM
+          </button>
+          <button
+            onClick={() => { if (simulationMode) toggleSimulationMode(); }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '4px 10px', border: 'none', cursor: 'pointer',
+              background: !simulationMode ? '#ef4444' : 'transparent',
+              color: !simulationMode ? '#fff' : 'var(--color-text-muted)',
+              fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap',
+            }}
+          >
+            <Zap size={11} />
+            REAL
+          </button>
+        </div>
 
-      {/* Mode Switch — SIM / REAL 세그먼트 컨트롤 */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 0,
-        borderRadius: 10, overflow: 'hidden',
-        border: `2px solid ${simulationMode ? '#a78bfa' : '#ef4444'}`,
-        background: 'rgba(0,0,0,0.3)',
-      }}>
-        <button
-          onClick={() => { if (!simulationMode) toggleSimulationMode(); }}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 5,
-            padding: '6px 14px', border: 'none', cursor: 'pointer',
-            background: simulationMode ? '#a78bfa' : 'transparent',
-            color: simulationMode ? '#fff' : 'var(--color-text-muted)',
-            fontSize: 12, fontWeight: 800,
-            transition: 'all 0.2s ease',
-          }}
-        >
-          <FlaskConical size={13} />
-          SIM
-        </button>
-        <button
-          onClick={() => { if (simulationMode) toggleSimulationMode(); }}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 5,
-            padding: '6px 14px', border: 'none', cursor: 'pointer',
-            background: !simulationMode ? '#ef4444' : 'transparent',
-            color: !simulationMode ? '#fff' : 'var(--color-text-muted)',
-            fontSize: 12, fontWeight: 800,
-            transition: 'all 0.2s ease',
-          }}
-        >
-          <Zap size={13} />
-          REAL
-        </button>
+        {/* Snipe status — 컴팩트 */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 4,
+          padding: '4px 8px', borderRadius: 6, flexShrink: 0,
+          background: snipeActive ? 'rgba(16,185,129,0.12)' : 'transparent',
+          border: `1px solid ${snipeActive ? 'rgba(16,185,129,0.3)' : 'var(--color-border)'}`,
+        }}>
+          {snipeActive && (
+            <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 4px #10b981', animation: 'blink 1.5s ease-in-out infinite', flexShrink: 0 }} />
+          )}
+          <span style={{ fontSize: 10, fontWeight: 700, color: snipeActive ? '#10b981' : 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+            {snipeActive ? `투자중${simPositions.length > 0 ? ` ${simPositions.length}P` : ''}` : '대기'}
+          </span>
+        </div>
+
+        {simulationMode && (
+          <button
+            onClick={resetSimulation}
+            title={`시뮬레이션 초기화 ($${(strategyConfig.investmentUSDT * 2).toLocaleString()} 리셋)`}
+            style={{
+              padding: '4px 8px', borderRadius: 6, flexShrink: 0,
+              border: '1px solid rgba(167,139,250,0.3)',
+              background: 'transparent',
+              color: '#a78bfa', fontSize: 10, fontWeight: 700,
+              cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
+          >
+            리셋
+          </button>
+        )}
       </div>
-      {simulationMode && (
-        <button
-          onClick={resetSimulation}
-          title={`시뮬레이션 초기화 ($${(strategyConfig.investmentUSDT * 2).toLocaleString()} 리셋)`}
-          style={{
-            padding: '5px 10px',
-            borderRadius: 8,
-            border: '1px solid rgba(167,139,250,0.3)',
-            background: 'transparent',
-            color: '#a78bfa',
-            fontSize: 11,
-            cursor: 'pointer',
-          }}
-        >
-          리셋
-        </button>
-      )}
 
       {/* Action buttons */}
       <button
