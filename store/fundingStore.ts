@@ -623,16 +623,38 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               }
             }
           } else {
+            // success:false 또는 데이터 0건 → 5초 후 재시도
             const errMsg = json.error || '데이터 없음';
-            console.warn(`[refreshRates] ${exchangeId}: ${errMsg}`);
-            set(s => ({
-              exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'error' },
-              exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: errMsg },
-            }));
+            console.warn(`[refreshRates] ${exchangeId} 1차 실패(응답): ${errMsg} — 5초 후 재시도`);
+            await new Promise(r => setTimeout(r, 5000));
+            const retryRes2 = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, { signal: AbortSignal.timeout(30000) });
+            const retryJson2 = await retryRes2.json() as typeof json;
+            if (retryJson2.success && retryJson2.data.rates.length > 0) {
+              console.log(`[refreshRates] ${exchangeId} 재시도 성공: ${retryJson2.data.rates.length}개`);
+              set(s => {
+                const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
+                const merged = [...otherRates, ...retryJson2.data.rates];
+                const { investmentUSDT, leverage } = s.strategyConfig;
+                const opportunities = findOpportunities(merged, s.snipeActive ? 50 : 20, investmentUSDT, leverage);
+                return {
+                  fundingRates: merged, opportunities,
+                  lastRatesUpdate: retryJson2.timestamp || Date.now(),
+                  ratesStatus: 'success', ratesError: null,
+                  exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'ok' },
+                  exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: undefined },
+                };
+              });
+            } else {
+              console.warn(`[refreshRates] ${exchangeId} 재시도도 실패: ${retryJson2.error || '데이터 없음'}`);
+              set(s => ({
+                exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'error' },
+                exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: retryJson2.error || errMsg },
+              }));
+            }
           }
         } catch (err) {
-          // 1회 자동 재시도 (5초 후, 타임아웃 단축)
-          console.warn(`[refreshRates] ${exchangeId} 1차 실패 — 5초 후 재시도:`, (err as Error).message);
+          // 네트워크/타임아웃 에러 → 5초 후 재시도
+          console.warn(`[refreshRates] ${exchangeId} 1차 실패(네트워크) — 5초 후 재시도:`, (err as Error).message);
           try {
             await new Promise(r => setTimeout(r, 5000));
             const retryRes = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, {
@@ -1707,6 +1729,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         );
 
         // 텔레그램: 스나이프 완료 알림 (코인별 1건으로 합산)
+        // 실제 순손익 = pricePnl + funding - entryFee - exitFee
         const byAsset = new Map<string, { short: string; long: string; funding: number; pnl: number }>();
         for (const pos of snipeToClose) {
           const pair = positionsSnapshot.find(p => p.pairId === pos.pairId && p.simId !== pos.simId);
@@ -1719,7 +1742,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             else prev.long = pair.exchange;
           }
           prev.funding += pos.fundingCollected;
-          prev.pnl += pos.unrealizedPnl;
+          // 순손익: 가격PnL + 펀딩 - 진입수수료 - 청산수수료(추정)
+          const exitNotional = pos.size * pos.markPrice;
+          const exitFee = exitNotional * getExchangeFee(pos.exchange, 'maker');
+          const pricePnl = pos.side === 'short'
+            ? (pos.entryPrice - pos.markPrice) * pos.size
+            : (pos.markPrice - pos.entryPrice) * pos.size;
+          prev.pnl += pricePnl + pos.fundingCollected - (pos.entryFee ?? 0) - exitFee;
           byAsset.set(key, prev);
         }
         for (const [asset, info] of byAsset) {
@@ -2399,6 +2428,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           });
         } else {
           get().addLog('success', `[스나이핑-헷징] ${asset} 청산 완료`);
+
+          // 텔레그램: 실거래 스나이프 완료 알림
+          void sendTelegramMessage(formatSnipeCompleteAlert({
+            baseAsset: asset,
+            shortExchange: target.shortExchange,
+            longExchange: target.longExchange,
+            fundingCollected: 0, // 펀딩 검증은 비동기로 후처리
+            pnl: 0, // 실거래 PnL은 거래소 API에서 확인
+            simulation: false,
+          }));
 
           // 펀딩 수령 확인은 비동기로 — 청산을 지연시키지 않음
           (async () => {

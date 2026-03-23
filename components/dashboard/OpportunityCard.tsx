@@ -256,7 +256,8 @@ export default function OpportunityCard() {
       : '펀딩률 데이터 조회 중...'
     : null;
 
-  const scheduledCount = Object.keys(snipeTargets).length;
+  // 실제 표시되는 항목 기준 카운트 (음수 수익으로 숨겨진 예약은 제외)
+  const scheduledCount = scheduledCoins.filter(c => c.status === 'scheduled').length;
   const activeCount = simulationMode ? simPositions.length : positions.length;
   const candidateCount = scheduledCoins.filter(c => c.status === 'opportunity').length;
 
