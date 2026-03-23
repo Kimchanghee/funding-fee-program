@@ -149,7 +149,7 @@ interface FundingState {
   toggleSimulationMode: () => void;
   resetSimulation: () => void;
   clearSimFundingHistory: () => void;
-  closeSimPosition: (simId: string) => Promise<void>;
+  closeSimPosition: (simId: string) => Promise<{ netPnl: number; funding: number } | null>;
   tickSimFunding: () => void;
 
   // Snipe actions (코인별 독립 스나이핑)
@@ -1490,7 +1490,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   async closeSimPosition(simId) {
     const pos = get().simPositions.find(p => p.simId === simId);
-    if (!pos) return;
+    if (!pos) return null;
 
     // ── 실제 호가창 기반 청산 체결가 (슬리피지 반영) ──
     let exitPrice = pos.markPrice;
@@ -1578,6 +1578,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       entryFee: pos.entryFee ?? 0, pricePnl,
       detail: `margin:$${pos.margin.toFixed(2)} size:${pos.size.toFixed(6)} entry:${pos.entryPrice} exit:${exitPrice}`,
     });
+    return { netPnl, funding: actualFunding };
   },
 
   tickSimFunding() {
@@ -1714,12 +1715,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // 스나이핑: 펀딩 수령 완료 → 즉시 청산 → 다음 사이클 재예약
     if (snipeToClose.length > 0) {
-      queueMicrotask(() => {
+      queueMicrotask(async () => {
         // 포지션 닫기 전에 pair 정보 캡처 (닫은 후에는 simPositions에서 사라짐)
         const positionsSnapshot = [...get().simPositions];
 
+        // 청산 후 실제 결과를 수집
+        const closeResults: { pos: typeof snipeToClose[0]; result: { netPnl: number; funding: number } | null }[] = [];
         for (const pos of snipeToClose) {
-          get().closeSimPosition(pos.simId);
+          const result = await get().closeSimPosition(pos.simId);
+          closeResults.push({ pos, result });
         }
         const totalCollected = snipeToClose.reduce((s, p) => s + p.fundingCollected, 0);
         get().addLog('success',
@@ -1728,10 +1732,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           `총 수령: $${fmtNum(totalCollected, 4)}`,
         );
 
-        // 텔레그램: 스나이프 완료 알림 (코인별 1건으로 합산)
-        // 실제 순손익 = pricePnl + funding - entryFee - exitFee
+        // 텔레그램: 스나이프 완료 알림 — 실제 청산 결과(fillPrice 기반 netPnl) 사용
         const byAsset = new Map<string, { short: string; long: string; funding: number; pnl: number }>();
-        for (const pos of snipeToClose) {
+        for (const { pos, result } of closeResults) {
           const pair = positionsSnapshot.find(p => p.pairId === pos.pairId && p.simId !== pos.simId);
           const key = pos.baseAsset;
           const prev = byAsset.get(key) ?? { short: '?', long: '?', funding: 0, pnl: 0 };
@@ -1741,14 +1744,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             if (pair.side === 'short') prev.short = pair.exchange;
             else prev.long = pair.exchange;
           }
-          prev.funding += pos.fundingCollected;
-          // 순손익: 가격PnL + 펀딩 - 진입수수료 - 청산수수료(추정)
-          const exitNotional = pos.size * pos.markPrice;
-          const exitFee = exitNotional * getExchangeFee(pos.exchange, 'maker');
-          const pricePnl = pos.side === 'short'
-            ? (pos.entryPrice - pos.markPrice) * pos.size
-            : (pos.markPrice - pos.entryPrice) * pos.size;
-          prev.pnl += pricePnl + pos.fundingCollected - (pos.entryFee ?? 0) - exitFee;
+          prev.funding += result?.funding ?? pos.fundingCollected;
+          prev.pnl += result?.netPnl ?? 0;
           byAsset.set(key, prev);
         }
         for (const [asset, info] of byAsset) {
@@ -2429,17 +2426,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         } else {
           get().addLog('success', `[스나이핑-헷징] ${asset} 청산 완료`);
 
-          // 텔레그램: 실거래 스나이프 완료 알림
-          void sendTelegramMessage(formatSnipeCompleteAlert({
-            baseAsset: asset,
-            shortExchange: target.shortExchange,
-            longExchange: target.longExchange,
-            fundingCollected: 0, // 펀딩 검증은 비동기로 후처리
-            pnl: 0, // 실거래 PnL은 거래소 API에서 확인
-            simulation: false,
-          }));
-
-          // 펀딩 수령 확인은 비동기로 — 청산을 지연시키지 않음
+          // 펀딩 수령 확인은 비동기로 — 청산을 지연시키지 않음 (확인 후 텔레그램 알림)
           (async () => {
             let fundingVerified = false;
             for (let attempt = 0; attempt < 3; attempt++) {
@@ -2466,6 +2453,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             if (!fundingVerified) {
               get().addLog('warning', `[스나이핑-헷징] ${asset} 펀딩 수령 미확인 — 로그 확인 필요`);
             }
+            // 텔레그램: 실거래 스나이프 완료 알림 (펀딩 검증 후 실제 데이터)
+            const { fundingHistory: fh } = get();
+            const recentFundings = fh.filter(f =>
+              f.symbol.includes(asset) &&
+              (f.exchange === target.shortExchange || f.exchange === target.longExchange) &&
+              f.timestamp > Date.now() - 120_000,
+            );
+            const totalFundingReal = recentFundings.reduce((s, f) => s + f.amount, 0);
+            void sendTelegramMessage(formatSnipeCompleteAlert({
+              baseAsset: asset,
+              shortExchange: target.shortExchange,
+              longExchange: target.longExchange,
+              fundingCollected: totalFundingReal,
+              pnl: totalFundingReal, // 실거래: 헷징이므로 가격PnL ≈ 0, 순손익 ≈ 펀딩 - 수수료
+              simulation: false,
+            }));
             queueTrade({
               timestamp: Date.now(), type: 'snipe_complete', simulation: false,
               baseAsset: asset, shortExchange: target.shortExchange, longExchange: target.longExchange,
