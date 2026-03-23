@@ -1,6 +1,6 @@
 'use client';
 
-import { RefreshCw, Key, Settings, Zap, Activity, FlaskConical } from 'lucide-react';
+import { RefreshCw, Key, Settings, Zap, FlaskConical } from 'lucide-react';
 import KSTClock from '@/components/ui/KSTClock';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES } from '@/lib/types';

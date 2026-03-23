@@ -22,14 +22,21 @@ interface TradeEvent {
   perFunding?: number;
   totalRoundTripFees?: number;
   pairId?: string;
+  shortPrice?: number;
+  longPrice?: number;
+  shortLiquidity?: string;
+  longLiquidity?: string;
   // exit fields
   exchange?: string;
   side?: string;
   symbol?: string;
   pnl?: number;
   fundingAmount?: number;
+  fundingCollected?: number | null;
   exitFee?: number;
   pricePnl?: number;
+  exitPrice?: number;
+  liquidity?: string;
   detail?: string;
   success?: boolean;
 }
@@ -58,6 +65,7 @@ interface HedgePair {
   shortPricePnl: number;
   longPricePnl: number;
   status: 'open' | 'partial' | 'closed';
+  completion?: TradeEvent | null;
 }
 
 function buildPairs(events: TradeEvent[]): HedgePair[] {
@@ -89,6 +97,7 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
         shortPricePnl: 0,
         longPricePnl: 0,
         status: 'open',
+        completion: null,
       });
     }
   }
@@ -99,7 +108,11 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
   for (const ex of exits) {
     // Find the matching pair
     let matchedPair: HedgePair | null = null;
+    if (ex.pairId && pairs.has(ex.pairId)) {
+      matchedPair = pairs.get(ex.pairId) ?? null;
+    }
     for (const pair of pairs.values()) {
+      if (matchedPair) break;
       if (pair.baseAsset !== ex.baseAsset) continue;
 
       if (ex.side === 'short' && ex.exchange === pair.shortExchange && !pair.shortExit) {
@@ -137,6 +150,32 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
     }
   }
 
+  // Third pass: pair completion events — prefer verified aggregate PnL/funding when present
+  const completions = events.filter(ev => ev.type === 'snipe_complete');
+  for (const completion of completions) {
+    let matchedPair: HedgePair | null = null;
+    if (completion.pairId && pairs.has(completion.pairId)) {
+      matchedPair = pairs.get(completion.pairId) ?? null;
+    }
+    if (!matchedPair) {
+      matchedPair = Array.from(pairs.values()).find(pair =>
+        pair.baseAsset === completion.baseAsset
+        && pair.shortExchange === completion.shortExchange
+        && pair.longExchange === completion.longExchange
+        && pair.status === 'closed',
+      ) ?? null;
+    }
+    if (!matchedPair) continue;
+
+    matchedPair.completion = completion;
+    if (completion.fundingCollected != null) {
+      matchedPair.totalFunding = completion.fundingCollected;
+    }
+    if (completion.pnl != null) {
+      matchedPair.totalPnl = completion.pnl;
+    }
+  }
+
   return Array.from(pairs.values()).sort((a, b) => b.entryTime - a.entryTime);
 }
 
@@ -149,6 +188,11 @@ function PairRow({ pair }: { pair: HedgePair }) {
   const statusLabel = pair.status === 'closed' ? '완료' : pair.status === 'partial' ? '일부' : '진행중';
 
   const investmentUSDT = pair.margin * 2; // 숏+롱 양쪽 마진
+  const actualTotalFees = (pair.shortExit?.entryFee ?? 0) + (pair.shortExit?.exitFee ?? 0)
+    + (pair.longExit?.entryFee ?? 0) + (pair.longExit?.exitFee ?? 0);
+  const displayTotalFees = pair.status === 'closed' && actualTotalFees > 0
+    ? actualTotalFees
+    : pair.notional * 0.002;
 
   return (
     <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -214,13 +258,15 @@ function PairRow({ pair }: { pair: HedgePair }) {
             </div>
             <div>
               <div style={{ color: '#64748b', marginBottom: 2 }}>수수료 (왕복)</div>
-              <div className="mono" style={{ color: '#ef4444', fontWeight: 600 }}>-${fmtNum(pair.notional * 0.002, 2)}</div>
-              <div style={{ color: '#64748b', fontSize: 9, marginTop: 1 }}>4×0.05%</div>
+              <div className="mono" style={{ color: '#ef4444', fontWeight: 600 }}>-${fmtNum(displayTotalFees, 2)}</div>
+              <div style={{ color: '#64748b', fontSize: 9, marginTop: 1 }}>
+                {pair.status === 'closed' && actualTotalFees > 0 ? '실체결 추정치' : '하드코딩 기준'}
+              </div>
             </div>
             <div>
               <div style={{ color: '#64748b', marginBottom: 2 }}>체결 효율</div>
               {(() => {
-                const totalFees = pair.notional * 0.002;
+                const totalFees = displayTotalFees;
                 const grossProfit = pair.totalPnl + totalFees;
                 const expected = pair.expectedProfit + totalFees;
                 const efficiency = expected > 0 ? (grossProfit / expected) * 100 : 0;

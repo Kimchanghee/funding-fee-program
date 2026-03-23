@@ -13,6 +13,7 @@ import type {
   LogLevel,
   ExchangeId,
   FundingPayment,
+  OrderLiquidity,
 } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState } from '@/lib/keyStore';
@@ -54,6 +55,14 @@ function getEffectiveNotional(
   return Math.max(perSide, 0) * config.leverage;
 }
 
+function makePositionKey(
+  exchange: ExchangeId,
+  symbol: string,
+  side: 'long' | 'short',
+): string {
+  return `${exchange}:${symbol}:${side}`;
+}
+
 // ─────────────────────────────────────────────
 // State shape
 // ─────────────────────────────────────────────
@@ -90,6 +99,7 @@ interface FundingState {
 
   // Simulation (헷징 전용 잔고 풀)
   simulationMode: boolean;
+  realPositionMeta: Record<string, RealPositionMeta>;
   simBalances: Record<ExchangeId, number>;
   simInitialBalances: Record<ExchangeId, number>;
   simPositions: SimPosition[];
@@ -139,7 +149,7 @@ interface FundingState {
   stopPolling: () => void;
 
   executeStrategy: (opportunity: ArbitrageOpportunity) => Promise<ExecuteStrategyResult>;
-  closePosition: (position: Position) => Promise<void>;
+  closePosition: (position: Position) => Promise<ClosePositionResult>;
   testConnection: (exchange: ExchangeId) => Promise<boolean>;
 
   addLog: (level: LogLevel, message: string, exchange?: ExchangeId, detail?: string) => void;
@@ -202,7 +212,8 @@ interface StrategyOrderExecution {
   price: number;
   amount: number;
   filledNotional: number;
-  orderType: 'maker' | 'taker';
+  liquidity: OrderLiquidity;
+  estimatedFee: number;
 }
 
 interface StrategyExecutionLeg {
@@ -218,6 +229,29 @@ interface ExecuteStrategyResult {
   rollback?: string;
   hedgeTrim?: string;
   error?: string;
+  pairId?: string;
+}
+
+interface RealPositionMeta {
+  pairId: string;
+  positionType: 'hedge_long' | 'hedge_short';
+  openedAt: number;
+  entryFee: number;
+  entryOrderLiquidity: OrderLiquidity;
+  entryFilledNotional: number;
+}
+
+interface ClosePositionResult extends StrategyOrderExecution {
+  exchange: ExchangeId;
+  baseAsset: string;
+  symbol: string;
+  side: 'long' | 'short';
+  pairId?: string;
+  entryFee: number;
+  exitFee: number;
+  pricePnl: number;
+  pnl: number;
+  fundingAmount: number;
 }
 
 function makeSyntheticClosePosition(
@@ -225,6 +259,7 @@ function makeSyntheticClosePosition(
   legSide: 'long' | 'short',
   data: StrategyOrderExecution,
   leverage: number,
+  pairId?: string,
 ): Position {
   const isShort = legSide === 'short';
   const markPrice = isShort ? opportunity.shortMarkPrice : opportunity.longMarkPrice;
@@ -250,6 +285,10 @@ function makeSyntheticClosePosition(
     fundingRate: isShort ? opportunity.shortRate : opportunity.longRate,
     openedAt: Date.now(),
     positionType: isShort ? 'hedge_short' : 'hedge_long',
+    pairId,
+    entryFee: data.estimatedFee,
+    entryOrderLiquidity: data.liquidity,
+    entryFilledNotional: data.filledNotional,
   };
 }
 
@@ -333,6 +372,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
   fundingHistory: [],
   simulationMode: true,
+  realPositionMeta: {},
   simBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
   simInitialBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
   simPositions: [],
@@ -728,15 +768,31 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }),
     );
 
-    // 기존 포지션의 positionType 보존 (exchange+symbol+side 기준 매칭)
+    const metaMap = get().realPositionMeta;
+
+    // 기존 포지션의 positionType / 메타 보존 (exchange+symbol+side 기준 매칭)
     const prevPositions = get().positions;
     for (const pos of allPositions) {
+      const meta = metaMap[makePositionKey(pos.exchange, pos.symbol, pos.side)];
+      if (meta) {
+        pos.positionType = meta.positionType;
+        pos.openedAt = meta.openedAt;
+        pos.pairId = meta.pairId;
+        pos.entryFee = meta.entryFee;
+        pos.entryOrderLiquidity = meta.entryOrderLiquidity;
+        pos.entryFilledNotional = meta.entryFilledNotional;
+      }
+
       const prev = prevPositions.find(p =>
         p.exchange === pos.exchange && p.symbol === pos.symbol && p.side === pos.side,
       );
       if (prev && prev.positionType !== 'manual') {
         pos.positionType = prev.positionType;
         pos.openedAt = prev.openedAt;
+        pos.pairId = prev.pairId;
+        pos.entryFee = prev.entryFee;
+        pos.entryOrderLiquidity = prev.entryOrderLiquidity;
+        pos.entryFilledNotional = prev.entryFilledNotional;
       }
     }
 
@@ -1284,6 +1340,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       `투자금: $${fmtNum(realInvestment, 0)} | 예상 8h순수익: $${fmtNum(profit.netPerFunding)} (수수료: -$${fmtNum(profit.totalFees)})`,
     );
 
+    const pairId = `pair-${Date.now()}-${opportunity.baseAsset}`;
     set({ strategyRunning: true });
 
     try {
@@ -1303,33 +1360,62 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
 
       const json = await res.json() as ExecuteStrategyResult;
+      const result: ExecuteStrategyResult = { ...json, pairId };
 
-      if (json.short?.success) {
+      if (result.short?.success) {
         get().addLog('success',
           `${opportunity.shortExchange.toUpperCase()} 숏 포지션 진입 성공`,
           opportunity.shortExchange,
-          `${opportunity.baseAsset} Short @${opportunity.shortMarkPrice}`,
+          `${opportunity.baseAsset} Short @${fmtNum(result.short.data?.price ?? opportunity.shortMarkPrice, 4)} | fee -$${fmtNum(result.short.data?.estimatedFee ?? 0, 4)} | ${result.short.data?.liquidity ?? 'unknown'}`,
         );
       } else {
         get().addLog('error',
           `${opportunity.shortExchange.toUpperCase()} 숏 포지션 진입 실패`,
           opportunity.shortExchange,
-          json.short?.error,
+          result.short?.error,
         );
       }
 
-      if (json.long?.success) {
+      if (result.long?.success) {
         get().addLog('success',
           `${opportunity.longExchange.toUpperCase()} 롱 포지션 진입 성공`,
           opportunity.longExchange,
-          `${opportunity.baseAsset} Long @${opportunity.longMarkPrice}`,
+          `${opportunity.baseAsset} Long @${fmtNum(result.long.data?.price ?? opportunity.longMarkPrice, 4)} | fee -$${fmtNum(result.long.data?.estimatedFee ?? 0, 4)} | ${result.long.data?.liquidity ?? 'unknown'}`,
         );
       } else {
         get().addLog('error',
           `${opportunity.longExchange.toUpperCase()} 롱 포지션 진입 실패`,
           opportunity.longExchange,
-          json.long?.error,
+          result.long?.error,
         );
+      }
+
+      const shortData = result.short?.data;
+      const longData = result.long?.data;
+
+      if (result.success && shortData && longData) {
+        const openedAt = Date.now();
+        set(s => ({
+          realPositionMeta: {
+            ...s.realPositionMeta,
+            [makePositionKey(opportunity.shortExchange, opportunity.shortSymbol, 'short')]: {
+              pairId,
+              positionType: 'hedge_short',
+              openedAt,
+              entryFee: shortData.estimatedFee,
+              entryOrderLiquidity: shortData.liquidity,
+              entryFilledNotional: shortData.filledNotional,
+            },
+            [makePositionKey(opportunity.longExchange, opportunity.longSymbol, 'long')]: {
+              pairId,
+              positionType: 'hedge_long',
+              openedAt,
+              entryFee: longData.estimatedFee,
+              entryOrderLiquidity: longData.liquidity,
+              entryFilledNotional: longData.filledNotional,
+            },
+          },
+        }));
       }
 
       setTimeout(() => get().refreshAndStampPositions(
@@ -1340,11 +1426,20 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
         spread: opportunity.spread, spreadPercent: opportunity.spreadPercent,
         margin: realInvestment, leverage: strategyConfig.leverage,
-        detail: `short:${json.short?.success ? 'OK' : json.short?.error} long:${json.long?.success ? 'OK' : json.long?.error}`,
-        success: json.success,
-        pairId: `pair-${Date.now()}-${opportunity.baseAsset}`,
+        notional: result.short?.data?.filledNotional ?? result.long?.data?.filledNotional ?? (realInvestment * strategyConfig.leverage),
+        entryFee: (result.short?.data?.estimatedFee ?? 0) + (result.long?.data?.estimatedFee ?? 0),
+        netProfit: profit.netPerFunding,
+        perFunding: profit.perFunding,
+        totalRoundTripFees: profit.totalFees,
+        shortPrice: result.short?.data?.price,
+        longPrice: result.long?.data?.price,
+        shortLiquidity: result.short?.data?.liquidity,
+        longLiquidity: result.long?.data?.liquidity,
+        detail: `short:${result.short?.success ? 'OK' : result.short?.error} long:${result.long?.success ? 'OK' : result.long?.error}${result.hedgeTrim ? ` | trim:${result.hedgeTrim}` : ''}${result.rollback ? ` | rollback:${result.rollback}` : ''}`,
+        success: result.success,
+        pairId,
       });
-      return json;
+      return result;
     } catch (err) {
       get().addLog('error', '전략 실행 중 오류 발생', undefined, (err as Error).message);
       queueTrade({
@@ -1378,24 +1473,61 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           amount: position.size,
         }),
       });
-      const json = await res.json() as { success: boolean; error?: string };
+      const json = await res.json() as { success: boolean; data?: StrategyOrderExecution; error?: string };
 
-      if (json.success) {
+      if (json.success && json.data) {
+        const entryNotional = position.entryFilledNotional ?? (position.entryPrice * position.size);
+        const entryFee = position.entryFee ?? (entryNotional * TAKER_FEE_FALLBACK);
+        const exitFee = json.data.estimatedFee;
+        const pricePnl = position.side === 'short'
+          ? (position.entryPrice - json.data.price) * json.data.amount
+          : (json.data.price - position.entryPrice) * json.data.amount;
+        const pnl = pricePnl - entryFee - exitFee;
+        const pairId = position.pairId;
+        const closeResult: ClosePositionResult = {
+          ...json.data,
+          exchange: position.exchange,
+          baseAsset: position.baseAsset,
+          symbol: position.symbol,
+          side: position.side,
+          pairId,
+          entryFee,
+          exitFee,
+          pricePnl,
+          pnl,
+          fundingAmount: 0,
+        };
+
         get().addLog('success',
           `${position.displaySymbol} ${position.side.toUpperCase()} 청산 완료`,
           position.exchange,
+          `exit @${fmtNum(json.data.price, 4)} | pricePnL ${pricePnl >= 0 ? '+' : ''}$${fmtNum(pricePnl, 4)} | fees -$${fmtNum(entryFee + exitFee, 4)}`,
         );
+        set(s => {
+          const nextMeta = { ...s.realPositionMeta };
+          delete nextMeta[makePositionKey(position.exchange, position.symbol, position.side)];
+          return { realPositionMeta: nextMeta };
+        });
         queueTrade({
           timestamp: Date.now(),
           type: 'exit',
           simulation: false,
           baseAsset: position.baseAsset,
           exchange: position.exchange,
-          shortExchange: position.exchange,
           side: position.side,
-          pairId: `exit-${Date.now()}-${position.baseAsset}`,
+          symbol: position.symbol,
+          pairId: pairId ?? `exit-${Date.now()}-${position.baseAsset}`,
+          entryFee,
+          exitFee,
+          pricePnl,
+          pnl,
+          fundingAmount: 0,
+          exitPrice: json.data.price,
+          liquidity: json.data.liquidity,
+          detail: `entry:${fmtNum(position.entryPrice, 4)} exit:${fmtNum(json.data.price, 4)} amount:${fmtNum(json.data.amount, 6)} liquidity:${json.data.liquidity}`,
         });
         setTimeout(() => get().refreshPositions(), 2000);
+        return closeResult;
       } else {
         get().addLog('error', `청산 실패: ${json.error}`, position.exchange);
         throw new Error(`청산 실패: ${json.error}`);
@@ -2263,10 +2395,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             const leverage = get().strategyConfig.leverage;
             const stalePositions: Position[] = [];
             if (result.short?.success && result.short.data) {
-              stalePositions.push(makeSyntheticClosePosition(finalTarget, 'short', result.short.data, leverage));
+              stalePositions.push(makeSyntheticClosePosition(finalTarget, 'short', result.short.data, leverage, result.pairId));
             }
             if (result.long?.success && result.long.data) {
-              stalePositions.push(makeSyntheticClosePosition(finalTarget, 'long', result.long.data, leverage));
+              stalePositions.push(makeSyntheticClosePosition(finalTarget, 'long', result.long.data, leverage, result.pairId));
             }
 
             if (stalePositions.length === 0) {
@@ -2411,6 +2543,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           targetPositions.map(pos => get().closePosition(pos)),
         );
         const failedLegs = closeResults.filter(r => r.status === 'rejected');
+        const closedLegs = closeResults
+          .filter((r): r is PromiseFulfilledResult<ClosePositionResult> => r.status === 'fulfilled')
+          .map(r => r.value);
+        const pairId = closedLegs.find(leg => leg.pairId)?.pairId ?? targetPositions.find(pos => pos.pairId)?.pairId;
         if (failedLegs.length > 0) {
           closeFailed = true;
           get().addLog('error',
@@ -2426,10 +2562,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         } else {
           get().addLog('success', `[스나이핑-헷징] ${asset} 청산 완료`);
 
-          // 펀딩 수령 확인은 비동기로 — 청산을 지연시키지 않음 (확인 후 텔레그램 알림)
+          // 펀딩 수령 확인은 비동기로 — 청산을 지연시키지 않음 (확인 후 실제 순손익 확정)
           (async () => {
             let fundingVerified = false;
             let verifiedFunding: number | null = null;
+            let verifiedPnl: number | null = null;
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
                 await get().fetchFundingHistory();
@@ -2442,14 +2579,25 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 if (recentFundings.length > 0) {
                   fundingVerified = true;
                   const totalFunding = recentFundings.reduce((sum, funding) => sum + funding.amount, 0);
+                  const fundingByLeg = new Map<string, number>();
+                  for (const leg of closedLegs) {
+                    const legFunding = recentFundings
+                      .filter(funding => funding.exchange === leg.exchange && funding.symbol === leg.symbol)
+                      .reduce((sum, funding) => sum + funding.amount, 0);
+                    fundingByLeg.set(makePositionKey(leg.exchange, leg.symbol, leg.side), legFunding);
+                  }
                   verifiedFunding = totalFunding;
+                  verifiedPnl = closedLegs.reduce((sum, leg) => {
+                    const legFunding = fundingByLeg.get(makePositionKey(leg.exchange, leg.symbol, leg.side)) ?? 0;
+                    return sum + leg.pricePnl - leg.entryFee - leg.exitFee + legFunding;
+                  }, 0);
                   const fundingBreakdown = recentFundings
                     .map(funding => `${funding.exchange}:$${fmtNum(funding.amount, 4)}`)
                     .join(' | ');
                   get().addLog('success',
                     `[스나이핑-헷징] ${asset} 펀딩 수령 확인`,
                     undefined,
-                    `${recentFundings.length}건 / 합계 $${fmtNum(totalFunding, 4)}${fundingBreakdown ? ` | ${fundingBreakdown}` : ''}`,
+                    `${recentFundings.length}건 / 합계 $${fmtNum(totalFunding, 4)} | 최종 순손익 ${verifiedPnl >= 0 ? '+' : ''}$${fmtNum(verifiedPnl ?? 0, 4)}${fundingBreakdown ? ` | ${fundingBreakdown}` : ''}`,
                   );
                   break;
                 }
@@ -2457,25 +2605,29 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               if (attempt < 2) await new Promise(r => setTimeout(r, 5_000));
             }
             if (!fundingVerified) {
-              get().addLog('warning', `[스나이핑-헷징] ${asset} 펀딩 수령 미확인 — 로그 확인 필요`);
+              verifiedPnl = closedLegs.reduce((sum, leg) => sum + leg.pnl, 0);
+              get().addLog(
+                'warning',
+                `[스나이핑-헷징] ${asset} 펀딩 수령 미확인 — 가격손익 기준 잠정 순손익 ${verifiedPnl >= 0 ? '+' : ''}$${fmtNum(verifiedPnl ?? 0, 4)}`,
+              );
             }
-            // 텔레그램: 실거래 스나이프 완료 알림 (펀딩 검증 후 실제 데이터)
-            const note = fundingVerified
-              ? '순손익은 거래소 체결/정산 내역 기준으로 확인 필요'
-              : '펀딩 수령 내역과 순손익은 거래소 체결/정산 내역에서 확인 필요';
+
             void sendTelegramMessage(formatSnipeCompleteAlert({
               baseAsset: asset,
               shortExchange: target.shortExchange,
               longExchange: target.longExchange,
               fundingCollected: verifiedFunding,
-              pnl: null,
+              pnl: verifiedPnl,
               simulation: false,
-              note,
+              note: fundingVerified ? undefined : '펀딩 수령은 거래소 정산 내역 추가 확인 필요',
             }));
             queueTrade({
               timestamp: Date.now(), type: 'snipe_complete', simulation: false,
               baseAsset: asset, shortExchange: target.shortExchange, longExchange: target.longExchange,
-              detail: `fundingVerified:${fundingVerified} | verifiedFunding:${verifiedFunding ?? 'pending'} | mode:hedge`,
+              pairId,
+              fundingCollected: verifiedFunding,
+              pnl: verifiedPnl,
+              detail: `fundingVerified:${fundingVerified} | verifiedFunding:${verifiedFunding ?? 'pending'} | verifiedPnl:${verifiedPnl ?? 'pending'} | mode:hedge`,
             });
           })();
         }

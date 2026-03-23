@@ -65,6 +65,8 @@ export interface ArbitrageOpportunity {
   netProfit: number;          // 수수료 차감 후 순수익 per funding (notional*spread - notional*0.0005*4)
 }
 
+export type OrderLiquidity = 'maker' | 'taker' | 'mixed';
+
 export interface Position {
   exchange: ExchangeId;
   symbol: string;
@@ -83,6 +85,10 @@ export interface Position {
   fundingRate: number;
   openedAt: number;
   positionType: 'hedge_long' | 'hedge_short' | 'manual';
+  pairId?: string;
+  entryFee?: number;
+  entryOrderLiquidity?: OrderLiquidity;
+  entryFilledNotional?: number;
 }
 
 export interface Balance {

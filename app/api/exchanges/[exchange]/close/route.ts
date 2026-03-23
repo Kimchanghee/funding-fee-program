@@ -45,8 +45,8 @@ export async function POST(
       return NextResponse.json({ success: false, error: 'Invalid amount: must be positive number' }, { status: 400 });
     }
 
-    await closePosition(id, config, body.symbol, body.side, body.amount);
-    return NextResponse.json({ success: true });
+    const result = await closePosition(id, config, body.symbol, body.side, body.amount);
+    return NextResponse.json({ success: true, data: result });
   } catch (err) {
     return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
   }

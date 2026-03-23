@@ -1,8 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as ccxt from 'ccxt';
-import type { ApiConfig, ExchangeId, FundingRate, Balance, Position } from '../types';
-import { TRACKED_SYMBOLS } from '../types';
+import type { ApiConfig, ExchangeId, FundingRate, Balance, Position, OrderLiquidity } from '../types';
+import { TRACKED_SYMBOLS, getExchangeFee } from '../types';
 import { normalizeFundingRate } from './utils';
+
+export interface ExecutedOrderSummary {
+  orderId: string;
+  price: number;
+  amount: number;
+  filledNotional: number;
+  liquidity: OrderLiquidity;
+  estimatedFee: number;
+}
 
 // ── Exchange instance cache ──
 const publicExchangeCache = new Map<ExchangeId, any>();
@@ -337,6 +346,13 @@ export function analyzeOrderbook(
   };
 }
 
+function estimateExecutionFee(
+  exchange: ExchangeId,
+  parts: Array<{ notional: number; liquidity: Exclude<OrderLiquidity, 'mixed'> }>,
+): number {
+  return parts.reduce((sum, part) => sum + (part.notional * getExchangeFee(exchange, part.liquidity)), 0);
+}
+
 /**
  * Open position using Post-Only maker order at best bid/ask.
  * Strategy: Post-Only → rejected (crossing) → IOC taker fallback.
@@ -349,7 +365,7 @@ export async function openPosition(
   side: 'long' | 'short',
   amountUSDT: number,
   leverage: number,
-): Promise<{ orderId: string; price: number; amount: number; filledNotional: number; orderType: 'maker' | 'taker' }> {
+): Promise<ExecutedOrderSummary> {
   let ex = makeExchange(id, config);
   try {
     ex = await ensureMarkets(ex, id, config);
@@ -423,7 +439,8 @@ export async function openPosition(
             price: filledPrice,
             amount: filledAmount * cSize,
             filledNotional,
-            orderType: 'maker',
+            liquidity: 'maker',
+            estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }]),
           };
         }
 
@@ -469,7 +486,11 @@ export async function openPosition(
               price: avgPrice,
               amount: totalFilled * cSize,
               filledNotional: totalFilled * cSize * avgPrice,
-              orderType: 'taker',
+              liquidity: 'mixed',
+              estimatedFee: estimateExecutionFee(id, [
+                { notional: filledAmount * cSize * filledPrice, liquidity: 'maker' },
+                { notional: iocFilled * cSize * iocFilledPrice, liquidity: 'taker' },
+              ]),
             };
           }
           // filledAmount === 0 → order cancelled, fall through to IOC
@@ -526,7 +547,8 @@ export async function openPosition(
         price: avgPrice,
         amount: totalFilled * cSize,
         filledNotional: totalFilled * cSize * avgPrice,
-        orderType: 'taker',
+        liquidity: 'taker',
+        estimatedFee: estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }]),
       };
     }
 
@@ -535,7 +557,8 @@ export async function openPosition(
       price: filledPrice,
       amount: filledAmount * cSize,
       filledNotional,
-      orderType: 'taker',
+      liquidity: 'taker',
+      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
     };
   } catch (err) {
     throw new Error(`[${id}] openPosition failed: ${(err as Error).message}`);
@@ -559,7 +582,7 @@ export async function openPositionExact(
   qty: number,
   limitPrice: number,
   leverage: number,
-): Promise<{ orderId: string; price: number; amount: number; filledNotional: number; orderType: 'maker' | 'taker' }> {
+): Promise<ExecutedOrderSummary> {
   let ex = makeExchange(id, config);
   try {
     ex = await ensureMarkets(ex, id, config);
@@ -618,7 +641,8 @@ export async function openPositionExact(
           price: filledPrice,
           amount: filledAmount * cSize,
           filledNotional,
-          orderType: 'maker',
+          liquidity: 'maker',
+          estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }]),
         };
       }
 
@@ -655,7 +679,11 @@ export async function openPositionExact(
             price: avgPrice,
             amount: totalFilled * cSize,
             filledNotional: totalFilled * cSize * avgPrice,
-            orderType: 'taker',
+            liquidity: 'mixed',
+            estimatedFee: estimateExecutionFee(id, [
+              { notional: filledAmount * cSize * filledPrice, liquidity: 'maker' },
+              { notional: iocFilled * cSize * iocPrice, liquidity: 'taker' },
+            ]),
           };
         }
         // filledAmount === 0 → cancelled, fall through to IOC
@@ -703,7 +731,8 @@ export async function openPositionExact(
         price: avgPrice,
         amount: totalFilled * cSize,
         filledNotional: totalFilled * cSize * avgPrice,
-        orderType: 'taker',
+        liquidity: 'taker',
+        estimatedFee: estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }]),
       };
     }
 
@@ -713,7 +742,8 @@ export async function openPositionExact(
       price: filledPrice,
       amount: filledAmount * cSize,
       filledNotional,
-      orderType: 'taker',
+      liquidity: 'taker',
+      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
     };
   } catch (err) {
     throw new Error(`[${id}] openPositionExact failed: ${(err as Error).message}`);
@@ -726,8 +756,9 @@ export async function closePosition(
   symbol: string,
   side: 'long' | 'short',
   amount: number,
-): Promise<void> {
+): Promise<ExecutedOrderSummary> {
   let ex = makeExchange(id, config);
+  let cSize = 1;
   try {
     ex = await ensureMarkets(ex, id, config);
     const ob = await Promise.race([
@@ -747,6 +778,7 @@ export async function closePosition(
       }
       amount = parseFloat(ex.amountToPrecision(symbol, amount));
     }
+    cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
 
     const closeSide: 'buy' | 'sell' = side === 'long' ? 'sell' : 'buy';
     const estimatedNotional = amount * levels[0][0];
@@ -771,8 +803,17 @@ export async function closePosition(
 
       const filledAmount = (makerOrder.filled as number) || 0;
       if (filledAmount >= amount * 0.90) {
+        const filledPrice = (makerOrder.average as number) || makerPrice;
+        const filledNotional = filledAmount * cSize * filledPrice;
         console.log(`[${id}] ${symbol} CLOSE ${side} MAKER complete`);
-        return;
+        return {
+          orderId: (makerOrder.id as string) || '',
+          price: filledPrice,
+          amount: filledAmount * cSize,
+          filledNotional,
+          liquidity: 'maker',
+          estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }]),
+        };
       }
 
       // Partial or zero fill — cancel resting maker order before fallback
@@ -790,7 +831,7 @@ export async function closePosition(
           const iocPrice = side === 'long'
             ? analysis.worstPrice * (1 - PRICE_BUFFER)
             : analysis.worstPrice * (1 + PRICE_BUFFER);
-          await Promise.race([
+          const iocOrder = await Promise.race([
             ex.createOrder(symbol, 'limit', closeSide, remaining, iocPrice, {
               timeInForce: 'IOC', reduceOnly: true,
             }),
@@ -798,8 +839,27 @@ export async function closePosition(
               setTimeout(() => reject(new Error('Close IOC timeout')), 3000),
             ),
           ]);
+          const makerPriceFilled = (makerOrder.average as number) || makerPrice;
+          const iocFilled = (iocOrder.filled as number) || 0;
+          const iocFilledPrice = (iocOrder.average as number) || iocPrice;
+          const totalFilled = filledAmount + iocFilled;
+          const avgPrice = totalFilled > 0
+            ? (filledAmount * makerPriceFilled + iocFilled * iocFilledPrice) / totalFilled
+            : makerPriceFilled;
+          const makerNotional = filledAmount * cSize * makerPriceFilled;
+          const iocNotional = iocFilled * cSize * iocFilledPrice;
           console.log(`[${id}] ${symbol} CLOSE ${side} MAKER+IOC complete`);
-          return;
+          return {
+            orderId: (makerOrder.id as string) || (iocOrder.id as string) || '',
+            price: avgPrice,
+            amount: totalFilled * cSize,
+            filledNotional: makerNotional + iocNotional,
+            liquidity: 'mixed',
+            estimatedFee: estimateExecutionFee(id, [
+              { notional: makerNotional, liquidity: 'maker' },
+              { notional: iocNotional, liquidity: 'taker' },
+            ]),
+          };
         }
         // filledAmount === 0 → cancelled, fall through to IOC
       }
@@ -827,15 +887,42 @@ export async function closePosition(
     const filledAmount = (order.filled as number) || 0;
     if (filledAmount < amount * 0.90) {
       const remaining = amount - filledAmount;
-      await Promise.race([
+      const mktOrder = await Promise.race([
         ex.createMarketOrder(symbol, closeSide, remaining, undefined, { reduceOnly: true }),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Close market timeout')), 3000)),
       ]);
+      const filledPrice = (order.average as number) || limitPrice;
+      const marketFilled = (mktOrder.filled as number) || remaining;
+      const marketPrice = (mktOrder.average as number) || limitPrice;
+      const totalFilled = filledAmount + marketFilled;
+      const avgPrice = totalFilled > 0
+        ? (filledAmount * filledPrice + marketFilled * marketPrice) / totalFilled
+        : filledPrice;
+      const filledNotional = (filledAmount * cSize * filledPrice) + (marketFilled * cSize * marketPrice);
+      console.log(`[${id}] ${symbol} CLOSE ${side} complete`);
+      return {
+        orderId: (order.id as string) || (mktOrder.id as string) || '',
+        price: avgPrice,
+        amount: totalFilled * cSize,
+        filledNotional,
+        liquidity: 'taker',
+        estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+      };
     }
+    const filledPrice = (order.average as number) || limitPrice;
+    const filledNotional = filledAmount * cSize * filledPrice;
     console.log(`[${id}] ${symbol} CLOSE ${side} complete`);
+    return {
+      orderId: (order.id as string) || '',
+      price: filledPrice,
+      amount: filledAmount * cSize,
+      filledNotional,
+      liquidity: 'taker',
+      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+    };
   } catch (err) {
     console.error(`[${id}] closePosition failed, fallback to market: ${(err as Error).message}`);
-    await Promise.race([
+    const marketOrder = await Promise.race([
       ex.createMarketOrder(
         symbol,
         side === 'long' ? 'sell' : 'buy',
@@ -845,6 +932,17 @@ export async function closePosition(
       ),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Emergency close timeout')), 3000)),
     ]);
+    const filledAmount = (marketOrder.filled as number) || amount;
+    const filledPrice = (marketOrder.average as number) || 0;
+    const filledNotional = filledAmount * cSize * filledPrice;
+    return {
+      orderId: (marketOrder.id as string) || '',
+      price: filledPrice,
+      amount: filledAmount * cSize,
+      filledNotional,
+      liquidity: 'taker',
+      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+    };
   }
 }
 

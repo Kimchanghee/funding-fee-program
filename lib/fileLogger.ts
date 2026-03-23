@@ -41,11 +41,21 @@ export interface TradeEvent {
   margin?: number;
   leverage?: number;
   notional?: number;
+  pairId?: string;
   entryFee?: number;
   exitFee?: number;
   fundingAmount?: number;
   fundingRate?: number;
+  fundingCollected?: number | null;
   pnl?: number;
+  pricePnl?: number;
+  shortPrice?: number;
+  longPrice?: number;
+  exitPrice?: number;
+  shortLiquidity?: string;
+  longLiquidity?: string;
+  liquidity?: string;
+  success?: boolean;
   reason?: string;
   detail?: string;
 }
