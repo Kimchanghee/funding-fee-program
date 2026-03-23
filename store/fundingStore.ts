@@ -2429,21 +2429,27 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           // 펀딩 수령 확인은 비동기로 — 청산을 지연시키지 않음 (확인 후 텔레그램 알림)
           (async () => {
             let fundingVerified = false;
+            let verifiedFunding: number | null = null;
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
                 await get().fetchFundingHistory();
                 const { fundingHistory } = get();
-                const recentFunding = fundingHistory.find(f =>
+                const recentFundings = fundingHistory.filter(f =>
                   f.symbol.includes(asset) &&
                   (f.exchange === target.shortExchange || f.exchange === target.longExchange) &&
                   f.timestamp > Date.now() - 60_000,
                 );
-                if (recentFunding) {
+                if (recentFundings.length > 0) {
                   fundingVerified = true;
+                  const totalFunding = recentFundings.reduce((sum, funding) => sum + funding.amount, 0);
+                  verifiedFunding = totalFunding;
+                  const fundingBreakdown = recentFundings
+                    .map(funding => `${funding.exchange}:$${fmtNum(funding.amount, 4)}`)
+                    .join(' | ');
                   get().addLog('success',
                     `[스나이핑-헷징] ${asset} 펀딩 수령 확인`,
-                    recentFunding.exchange,
-                    `$${fmtNum(Math.abs(recentFunding.amount), 4)} (${fmtNum(recentFunding.rate * 100, 4)}%)`,
+                    undefined,
+                    `${recentFundings.length}건 / 합계 $${fmtNum(totalFunding, 4)}${fundingBreakdown ? ` | ${fundingBreakdown}` : ''}`,
                   );
                   break;
                 }
@@ -2454,25 +2460,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               get().addLog('warning', `[스나이핑-헷징] ${asset} 펀딩 수령 미확인 — 로그 확인 필요`);
             }
             // 텔레그램: 실거래 스나이프 완료 알림 (펀딩 검증 후 실제 데이터)
-            const { fundingHistory: fh } = get();
-            const recentFundings = fh.filter(f =>
-              f.symbol.includes(asset) &&
-              (f.exchange === target.shortExchange || f.exchange === target.longExchange) &&
-              f.timestamp > Date.now() - 120_000,
-            );
-            const totalFundingReal = recentFundings.reduce((s, f) => s + f.amount, 0);
+            const note = fundingVerified
+              ? '순손익은 거래소 체결/정산 내역 기준으로 확인 필요'
+              : '펀딩 수령 내역과 순손익은 거래소 체결/정산 내역에서 확인 필요';
             void sendTelegramMessage(formatSnipeCompleteAlert({
               baseAsset: asset,
               shortExchange: target.shortExchange,
               longExchange: target.longExchange,
-              fundingCollected: totalFundingReal,
-              pnl: totalFundingReal, // 실거래: 헷징이므로 가격PnL ≈ 0, 순손익 ≈ 펀딩 - 수수료
+              fundingCollected: verifiedFunding,
+              pnl: null,
               simulation: false,
+              note,
             }));
             queueTrade({
               timestamp: Date.now(), type: 'snipe_complete', simulation: false,
               baseAsset: asset, shortExchange: target.shortExchange, longExchange: target.longExchange,
-              detail: `fundingVerified:${fundingVerified} | mode:hedge`,
+              detail: `fundingVerified:${fundingVerified} | verifiedFunding:${verifiedFunding ?? 'pending'} | mode:hedge`,
             });
           })();
         }

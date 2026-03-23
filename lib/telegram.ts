@@ -119,16 +119,24 @@ export function formatSnipeCompleteAlert(data: {
   baseAsset: string;
   shortExchange: string;
   longExchange: string;
-  fundingCollected: number;
-  pnl: number;
+  fundingCollected?: number | null;
+  pnl?: number | null;
   simulation: boolean;
+  note?: string;
 }): string {
   const sim = data.simulation ? '[SIM] ' : '';
-  const icon = data.pnl >= 0 ? '✅' : '⚠️';
+  const icon = data.pnl == null ? 'ℹ️' : data.pnl >= 0 ? '✅' : '⚠️';
+  const fundingLine = data.fundingCollected == null
+    ? '펀딩 수익: 확인 중'
+    : `펀딩 수익: ${data.fundingCollected >= 0 ? '+' : ''}$${data.fundingCollected.toFixed(4)}`;
+  const pnlLine = data.pnl == null
+    ? '순손익: 확인 중'
+    : `순손익: ${data.pnl >= 0 ? '+' : ''}$${data.pnl.toFixed(4)}`;
   return [
     `${icon} <b>${sim}스나이프 완료: ${data.baseAsset}/USDT</b>`,
     `${data.shortExchange.toUpperCase()} ↔ ${data.longExchange.toUpperCase()}`,
-    `펀딩 수익: ${data.fundingCollected >= 0 ? '+' : ''}$${data.fundingCollected.toFixed(4)}`,
-    `순손익: ${data.pnl >= 0 ? '+' : ''}$${data.pnl.toFixed(4)}`,
+    fundingLine,
+    pnlLine,
+    ...(data.note ? [data.note] : []),
   ].join('\n');
 }
