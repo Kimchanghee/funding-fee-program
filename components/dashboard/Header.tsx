@@ -39,7 +39,7 @@ export default function Header() {
         zIndex: 50,
         background: 'rgba(10,14,23,0.95)',
         backdropFilter: 'blur(12px)',
-        borderBottom: '1px solid var(--color-border)',
+        borderBottom: `2px solid ${simulationMode ? 'rgba(167,139,250,0.4)' : 'rgba(239,68,68,0.6)'}`,
         padding: '0 24px',
         height: 56,
         display: 'flex',
@@ -155,32 +155,46 @@ export default function Header() {
         )}
       </div>
 
-      {/* Simulation toggle */}
-      <button
-        onClick={toggleSimulationMode}
-        title={simulationMode ? '시뮬레이션 모드 OFF' : `시뮬레이션 모드 ON (각 거래소 $${strategyConfig.investmentUSDT.toLocaleString()} 가상 잔고)`}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '5px 12px',
-          borderRadius: 8,
-          border: `1px solid ${simulationMode ? '#a78bfa' : 'var(--color-border)'}`,
-          background: simulationMode ? 'rgba(167,139,250,0.15)' : 'transparent',
-          color: simulationMode ? '#a78bfa' : 'var(--color-text-muted)',
-          fontSize: 12,
-          fontWeight: 700,
-          cursor: 'pointer',
-        }}
-      >
-        <FlaskConical size={13} />
-        {simulationMode ? 'SIM ON' : 'SIM'}
-      </button>
-
+      {/* Mode Switch — SIM / REAL 세그먼트 컨트롤 */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 0,
+        borderRadius: 10, overflow: 'hidden',
+        border: `2px solid ${simulationMode ? '#a78bfa' : '#ef4444'}`,
+        background: 'rgba(0,0,0,0.3)',
+      }}>
+        <button
+          onClick={() => { if (!simulationMode) toggleSimulationMode(); }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            padding: '6px 14px', border: 'none', cursor: 'pointer',
+            background: simulationMode ? '#a78bfa' : 'transparent',
+            color: simulationMode ? '#fff' : 'var(--color-text-muted)',
+            fontSize: 12, fontWeight: 800,
+            transition: 'all 0.2s ease',
+          }}
+        >
+          <FlaskConical size={13} />
+          SIM
+        </button>
+        <button
+          onClick={() => { if (simulationMode) toggleSimulationMode(); }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            padding: '6px 14px', border: 'none', cursor: 'pointer',
+            background: !simulationMode ? '#ef4444' : 'transparent',
+            color: !simulationMode ? '#fff' : 'var(--color-text-muted)',
+            fontSize: 12, fontWeight: 800,
+            transition: 'all 0.2s ease',
+          }}
+        >
+          <Zap size={13} />
+          REAL
+        </button>
+      </div>
       {simulationMode && (
         <button
           onClick={resetSimulation}
-          title={`시뮬레이션 초기화 ($${strategyConfig.investmentUSDT.toLocaleString()} 리셋)`}
+          title={`시뮬레이션 초기화 ($${(strategyConfig.investmentUSDT * 2).toLocaleString()} 리셋)`}
           style={{
             padding: '5px 10px',
             borderRadius: 8,
