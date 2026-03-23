@@ -1418,8 +1418,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     clearSimState();
     saveFundingHistory([]);
     // 서버 측 거래내역 + 로그도 초기화
-    fetch('/api/trades/clear', { method: 'POST' }).catch(() => {});
-    fetch('/api/logs/clear', { method: 'POST' }).catch(() => {});
+    fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
+    fetch('/api/logs/clear', { method: 'DELETE' }).catch(() => {});
     get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal} 리셋`);
   },
 
