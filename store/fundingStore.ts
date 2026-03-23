@@ -18,7 +18,7 @@ import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState } from '@/lib/keyStore';
 import { estimateProfit, findOpportunities } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
-import { sendTelegramMessage, formatFundingAlert, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
+import { sendTelegramMessage, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
 import { getHedgeFees, getExchangeFee } from '@/lib/types';
 
 // ─────────────────────────────────────────────
@@ -26,6 +26,7 @@ import { getHedgeFees, getExchangeFee } from '@/lib/types';
 // ─────────────────────────────────────────────
 const TAKER_FEE_FALLBACK = 0.0006; // 0.06% worst-case fallback (bitget taker)
 let _lastScheduleDiagAt = 0; // 진단 로그 스팸 방지
+let _lastBalanceWarnAt = 0;  // 텔레그램 잔고 경고 쿨다운 (30분)
 // Taker 기준 최소 왕복 수수료 (보수적): ~0.05% × 4 = 0.20%
 // 거래소별 실제 수수료는 getHedgeFees()로 정확히 계산, 여기는 최소 안전 기준
 const MIN_ROUND_TRIP_FEE_PERCENT = 0.20;
@@ -1664,7 +1665,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       ].join('\n'));
     }
 
-    // 텔레그램: 잔고 부족 경고 (평균 대비 50% 이하)
+    // 텔레그램: 잔고 부족 경고 (평균 대비 50% 이하, 30분 쿨다운)
     {
       const st = get();
       const bals = st.enabledExchanges.map(ex => ({
@@ -1672,9 +1673,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         balance: (st.simBalances[ex] ?? 0),
       }));
       const avg = bals.reduce((s, b) => s + b.balance, 0) / (bals.length || 1);
-      if (avg > 0) {
+      if (avg > 0 && Date.now() - _lastBalanceWarnAt > 30 * 60 * 1000) {
         for (const b of bals) {
           if (b.balance < avg * 0.5) {
+            _lastBalanceWarnAt = Date.now();
             void sendTelegramMessage(formatBalanceWarning({
               lowExchange: b.name,
               lowBalance: b.balance,
@@ -1682,7 +1684,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               exchanges: bals,
               simulation: st.simulationMode,
             }));
-            break; // 한 번에 하나만 경고
+            break;
           }
         }
       }
@@ -1691,6 +1693,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // 스나이핑: 펀딩 수령 완료 → 즉시 청산 → 다음 사이클 재예약
     if (snipeToClose.length > 0) {
       queueMicrotask(() => {
+        // 포지션 닫기 전에 pair 정보 캡처 (닫은 후에는 simPositions에서 사라짐)
+        const positionsSnapshot = [...get().simPositions];
+
         for (const pos of snipeToClose) {
           get().closeSimPosition(pos.simId);
         }
@@ -1701,15 +1706,29 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           `총 수령: $${fmtNum(totalCollected, 4)}`,
         );
 
-        // 텔레그램: 스나이프 완료 알림
+        // 텔레그램: 스나이프 완료 알림 (코인별 1건으로 합산)
+        const byAsset = new Map<string, { short: string; long: string; funding: number; pnl: number }>();
         for (const pos of snipeToClose) {
-          const pair = get().simPositions.find(p => p.pairId === pos.pairId && p.simId !== pos.simId);
+          const pair = positionsSnapshot.find(p => p.pairId === pos.pairId && p.simId !== pos.simId);
+          const key = pos.baseAsset;
+          const prev = byAsset.get(key) ?? { short: '?', long: '?', funding: 0, pnl: 0 };
+          if (pos.side === 'short') prev.short = pos.exchange;
+          else prev.long = pos.exchange;
+          if (pair) {
+            if (pair.side === 'short') prev.short = pair.exchange;
+            else prev.long = pair.exchange;
+          }
+          prev.funding += pos.fundingCollected;
+          prev.pnl += pos.unrealizedPnl;
+          byAsset.set(key, prev);
+        }
+        for (const [asset, info] of byAsset) {
           void sendTelegramMessage(formatSnipeCompleteAlert({
-            baseAsset: pos.baseAsset,
-            shortExchange: pos.side === 'short' ? pos.exchange : (pair?.exchange ?? '?'),
-            longExchange: pos.side === 'long' ? pos.exchange : (pair?.exchange ?? '?'),
-            fundingCollected: pos.fundingCollected,
-            pnl: pos.unrealizedPnl,
+            baseAsset: asset,
+            shortExchange: info.short,
+            longExchange: info.long,
+            fundingCollected: info.funding,
+            pnl: info.pnl,
             simulation: get().simulationMode,
           }));
         }

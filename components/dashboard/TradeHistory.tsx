@@ -348,8 +348,10 @@ export default function TradeHistory() {
   useEffect(() => { fetchTrades(); }, [fetchTrades]);
 
   const pairs = buildPairs(events);
-  const totalPnl = pairs.filter(p => p.status === 'closed').reduce((s, p) => s + p.totalPnl, 0);
-  const closedCount = pairs.filter(p => p.status === 'closed').length;
+  const closedPairs = pairs.filter(p => p.status === 'closed');
+  const totalPnl = closedPairs.reduce((s, p) => s + p.totalPnl, 0);
+  const totalFunding = closedPairs.reduce((s, p) => s + p.totalFunding, 0);
+  const closedCount = closedPairs.length;
 
   if (pairs.length === 0 && !loading) return null;
 
@@ -372,12 +374,17 @@ export default function TradeHistory() {
           {closedCount}건 완료
         </span>
         {closedCount > 0 && (
-          <span className="mono" style={{
-            fontSize: 12, fontWeight: 700,
-            color: totalPnl >= 0 ? '#10b981' : '#ef4444',
-            marginLeft: 4,
-          }}>
-            합산: {totalPnl >= 0 ? '+' : ''}${fmtNum(totalPnl, 2)}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 4 }}>
+            <span className="mono" style={{
+              fontSize: 12, fontWeight: 700,
+              color: totalPnl >= 0 ? '#10b981' : '#ef4444',
+            }}>
+              순손익: {totalPnl >= 0 ? '+' : ''}${fmtNum(totalPnl, 2)}
+            </span>
+            <span style={{ fontSize: 10, color: '#64748b' }}>
+              (펀딩: <span style={{ color: totalFunding >= 0 ? '#10b981' : '#ef4444' }}>{totalFunding >= 0 ? '+' : ''}${fmtNum(totalFunding, 2)}</span>
+              {' '}| 가격+수수료: <span style={{ color: (totalPnl - totalFunding) >= 0 ? '#10b981' : '#ef4444' }}>{(totalPnl - totalFunding) >= 0 ? '+' : ''}${fmtNum(totalPnl - totalFunding, 2)}</span>)
+            </span>
           </span>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
