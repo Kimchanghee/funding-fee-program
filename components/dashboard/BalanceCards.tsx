@@ -8,7 +8,7 @@ import { fmtNum } from '@/lib/format';
 
 /** 거래소 미니 카드 (상세 잔고 분석) */
 function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
-  const { simBalances, simInitialBalances, simPositions, fundingHistory } = useFundingStore();
+  const { simBalances, simInitialBalances, simPositions, fundingHistory, simClosedPnlPerExchange, simClosedFeesPerExchange } = useFundingStore();
   const color = EXCHANGE_COLORS[exchange];
 
   const bal = simBalances[exchange] ?? 0;
@@ -18,7 +18,12 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
   );
   const margin = exPositions.reduce((s, p) => s + p.margin, 0);
   const unrealizedPnl = exPositions.reduce((s, p) => s + p.unrealizedPnl, 0);
-  const entryFees = exPositions.reduce((s, p) => s + p.entryFee, 0);
+  const openEntryFees = exPositions.reduce((s, p) => s + p.entryFee, 0);
+
+  // 청산된 포지션의 가격 PnL 및 수수료 (슬리피지 포함)
+  const closedPnl = simClosedPnlPerExchange[exchange] ?? 0;
+  const closedFees = simClosedFeesPerExchange[exchange] ?? 0;
+  const totalFees = openEntryFees + closedFees;
 
   // 펀딩 수령 (수령 vs 지급 분리)
   const fundingEntries = fundingHistory.filter(p => p.exchange === exchange);
@@ -30,8 +35,8 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
   const totalAsset = bal + margin;
   // 잔고 변동 = 현재 총자산 - 초기자산
   const balanceChange = totalAsset - initialBal;
-  // 순입출금 (이체) = 잔고변동 - 펀딩 + 수수료 - PnL
-  const netTransfer = balanceChange - fundingNet + entryFees - unrealizedPnl;
+  // 순입출금 (이체) = 잔고변동 - 펀딩 - 청산PnL + 총수수료
+  const netTransfer = balanceChange - fundingNet - closedPnl + totalFees;
 
   return (
     <div style={{
@@ -83,8 +88,16 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span style={{ color: '#64748b' }}>거래 수수료</span>
-          <span className="mono" style={{ color: '#ef4444', fontWeight: 600 }}>-${fmtNum(entryFees, 4)}</span>
+          <span className="mono" style={{ color: '#ef4444', fontWeight: 600 }}>-${fmtNum(totalFees, 4)}</span>
         </div>
+        {Math.abs(closedPnl) > 0.01 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: '#64748b' }}>슬리피지/가격PnL</span>
+            <span className="mono" style={{ color: closedPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+              {closedPnl >= 0 ? '+' : ''}${fmtNum(closedPnl, 4)}
+            </span>
+          </div>
+        )}
         {Math.abs(netTransfer) > 0.01 && (
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span style={{ color: '#64748b' }}>{netTransfer >= 0 ? '타 거래소→입금' : '타 거래소→출금'}</span>
@@ -185,12 +198,13 @@ function SimModeColumn({
   leverage: number;
   compoundInvesting: boolean;
 }) {
+  const { simTotalClosedPnl } = useFundingStore();
   const modePositions = positions.filter(p =>
     p.positionType === 'hedge_long' || p.positionType === 'hedge_short'
   );
   const modeMargin = modePositions.reduce((s, p) => s + p.margin, 0);
   const modePnl = modePositions.reduce((s, p) => s + p.unrealizedPnl, 0);
-  const netProfit = fundingEarned - fees + modePnl;
+  const netProfit = fundingEarned - fees + modePnl + simTotalClosedPnl;
   const posCount = modePositions.filter(p => p.positionType === 'hedge_short').length;
 
   return (
@@ -239,6 +253,14 @@ function SimModeColumn({
           <span style={{ color: '#64748b' }}>수수료</span>
           <span className="mono" style={{ fontWeight: 700, color: '#ef4444' }}>-${fmtNum(fees, 4)}</span>
         </div>
+        {Math.abs(simTotalClosedPnl) > 0.01 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: '#64748b' }}>슬리피지/가격PnL</span>
+            <span className="mono" style={{ fontWeight: 700, color: simTotalClosedPnl >= 0 ? '#10b981' : '#ef4444' }}>
+              {simTotalClosedPnl >= 0 ? '+' : ''}${fmtNum(simTotalClosedPnl, 4)}
+            </span>
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span style={{ color: '#64748b' }}>PnL</span>
           <span className="mono" style={{ fontWeight: 700, color: modePnl >= 0 ? '#10b981' : '#ef4444' }}>
