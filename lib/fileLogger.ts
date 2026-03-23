@@ -1,7 +1,23 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
+function getDataDir(): string {
+  const configured = process.env.FUNDING_FEE_DATA_DIR?.trim();
+  if (configured) {
+    return path.resolve(configured);
+  }
+
+  if (process.platform === 'win32') {
+    const base = process.env.LOCALAPPDATA || process.env.APPDATA || os.homedir();
+    return path.join(base, 'funding-fee-program', 'data');
+  }
+
+  const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  return path.join(base, 'funding-fee-program', 'data');
+}
+
+const DATA_DIR = getDataDir();
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const TRADES_DIR = path.join(DATA_DIR, 'trades');
 

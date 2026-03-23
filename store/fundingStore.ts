@@ -16,7 +16,7 @@ import type {
   OrderLiquidity,
 } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
-import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState } from '@/lib/keyStore';
+import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta } from '@/lib/keyStore';
 import { estimateProfit, findOpportunities } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 import { sendTelegramMessage, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
@@ -89,6 +89,7 @@ interface FundingState {
   lastPositionsUpdate: number | null;
   ratesStatus: 'idle' | 'loading' | 'success' | 'error';
   ratesError: string | null;
+  consecutiveAllFailCount: number;  // 전 거래소 연속 실패 횟수
 
   // Exchange toggle
   enabledExchanges: ExchangeId[];
@@ -396,6 +397,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   lastPositionsUpdate: null,
   ratesStatus: 'idle',
   ratesError: null,
+  consecutiveAllFailCount: 0,
   enabledExchanges: [...SUPPORTED_EXCHANGES],
   exchangeFetchStatus: {},
   exchangeFetchErrors: {},
@@ -481,6 +483,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (valid.length >= 2) {
           set({ enabledExchanges: valid });
         }
+      }
+
+      // 저장된 모드 복원 (SIM/REAL)
+      const savedMode = loadSimMode();
+      if (savedMode !== null) {
+        set({ simulationMode: savedMode });
+      }
+
+      // 저장된 REAL 포지션 메타 복원
+      const savedRealMeta = loadRealPositionMeta();
+      if (savedRealMeta) {
+        set({ realPositionMeta: savedRealMeta as Record<string, RealPositionMeta> });
       }
 
       // 저장된 시뮬레이션 상태 복원 (잔고, 포지션, 누적 펀딩)
@@ -739,9 +753,29 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const anyOk = enabled.some(ex => get().exchangeFetchStatus[ex] === 'ok');
     console.log('[refreshRates] done — anyOk:', anyOk, 'lastUpdate:', get().lastRatesUpdate);
     if (!anyOk) {
-      set({ ratesStatus: 'error', ratesError: '모든 거래소에서 데이터 조회 실패' });
+      const failCount = get().consecutiveAllFailCount + 1;
+      set({ ratesStatus: 'error', ratesError: '모든 거래소에서 데이터 조회 실패', consecutiveAllFailCount: failCount });
+
+      // 5회 연속 전체 실패 (~40초) → 경고 로그 + 텔레그램
+      if (failCount === 5) {
+        const msg = `⚠️ API 전체 장애: 모든 거래소 데이터 조회가 ${failCount}회 연속 실패했습니다. 서버 상태를 확인하세요. (.next 캐시 손상 가능 → 서버 재시작 필요)`;
+        get().addLog('warning', msg);
+        sendTelegramMessage(msg).catch(() => {});
+      }
+      // 30회 연속 (~4분) → 스나이프 자동 중단
+      if (failCount === 30 && get().snipeActive) {
+        get().addLog('warning', `🛑 API 장애 지속 (${failCount}회 연속 실패) — 스나이프 자동 중단`);
+        get().cancelSnipe();
+        sendTelegramMessage(`🛑 API 전체 장애 ${failCount}회 연속 → 자동 투자 긴급 중단. 서버 재시작 필요.`).catch(() => {});
+      }
+
       if (!get().lastRatesUpdate) {
         setTimeout(() => get().refreshRates(), 3000);
+      }
+    } else {
+      // 성공 시 카운터 리셋
+      if (get().consecutiveAllFailCount > 0) {
+        set({ consecutiveAllFailCount: 0 });
       }
     }
     set({ isLoadingRates: false });
@@ -1416,6 +1450,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             },
           },
         }));
+        saveRealPositionMeta(get().realPositionMeta);
       }
 
       setTimeout(() => get().refreshAndStampPositions(
@@ -1508,6 +1543,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           delete nextMeta[makePositionKey(position.exchange, position.symbol, position.side)];
           return { realPositionMeta: nextMeta };
         });
+        saveRealPositionMeta(get().realPositionMeta);
         queueTrade({
           timestamp: Date.now(),
           type: 'exit',
@@ -1583,8 +1619,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Simulation ────────────────────────────────
   toggleSimulationMode() {
     const next = !get().simulationMode;
+    // 모드 전환 시 예약된 스나이프 전부 해제 (SIM 예약이 REAL로 실행되는 것 방지)
+    const { _snipeTimers, _snipeCloseTimers, snipeActive } = get();
+    if (snipeActive) {
+      for (const t of Object.values(_snipeTimers)) clearTimeout(t);
+      for (const t of Object.values(_snipeCloseTimers)) clearTimeout(t);
+      set({ snipeActive: false, snipeTargets: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
+      get().addLog('warning', `모드 전환 → 스나이핑 자동 해제 (예약 ${Object.keys(_snipeTimers).length}건 취소)`);
+    }
     set({ simulationMode: next });
-    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${get().strategyConfig.investmentUSDT * 2} 가상 잔고` : '[SIM] 시뮬레이션 모드 OFF');
+    // 모드 상태 영속화
+    saveSimMode(next);
+    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${get().strategyConfig.investmentUSDT * 2} 가상 잔고` : '[REAL] 실거래 모드 ON');
   },
 
   resetSimulation() {
@@ -1811,10 +1857,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const lines = simFundingPayments.map(p =>
         `  ${p.exchange.toUpperCase()} ${p.symbol} (${p.side}): ${p.amount >= 0 ? '+' : ''}$${p.amount.toFixed(4)}`
       );
-      const sim = get().simulationMode ? '[SIM] ' : '';
       const icon = totalNewFunding >= 0 ? '💰' : '💸';
       void sendTelegramMessage([
-        `${icon} <b>${sim}펀딩 수령: ${simFundingPayments.length}건</b>`,
+        `${icon} <b>[SIM] 펀딩 수령: ${simFundingPayments.length}건</b>`,
         ...lines,
         `\n합계: ${totalNewFunding >= 0 ? '+' : ''}$${totalNewFunding.toFixed(4)}`,
       ].join('\n'));
@@ -1837,7 +1882,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               lowBalance: b.balance,
               avgBalance: avg,
               exchanges: bals,
-              simulation: st.simulationMode,
+              simulation: true, // tickSimFunding은 항상 SIM 전용
             }));
             break;
           }
@@ -1887,7 +1932,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             longExchange: info.long,
             fundingCollected: info.funding,
             pnl: info.pnl,
-            simulation: get().simulationMode,
+            simulation: true, // tickSimFunding은 SIM 전용
           }));
         }
 

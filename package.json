@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "next build",
-    "start": "next start",
+    "build": "next build && node scripts/prepare-standalone.js",
+    "start": "node scripts/start-standalone.js",
     "lint": "next lint",
     "typecheck": "tsc -p tsconfig.check.json --noEmit"
   },

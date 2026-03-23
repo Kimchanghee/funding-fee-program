@@ -202,6 +202,40 @@ export function clearSimState(): void {
   localStorage.removeItem(SIM_STATE_KEY);
 }
 
+// ── Simulation mode persistence ──
+const SIM_MODE_KEY = 'funding_fee_sim_mode';
+
+export function saveSimMode(mode: boolean): void {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(SIM_MODE_KEY, JSON.stringify(mode)); } catch {}
+}
+
+export function loadSimMode(): boolean | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(SIM_MODE_KEY);
+    if (raw === null) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+// ── Real position meta persistence ──
+const REAL_META_KEY = 'funding_fee_real_position_meta';
+
+export function saveRealPositionMeta(meta: Record<string, unknown>): void {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(REAL_META_KEY, JSON.stringify(meta)); } catch {}
+}
+
+export function loadRealPositionMeta(): Record<string, unknown> | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(REAL_META_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
 export function clearFundingHistory(): void {
   if (typeof window === 'undefined') return;
   localStorage.removeItem(FUNDING_HISTORY_KEY);

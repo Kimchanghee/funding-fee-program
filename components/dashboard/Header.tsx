@@ -23,6 +23,7 @@ export default function Header() {
     resetSimulation,
     snipeActive,
     simPositions,
+    positions,
     simBalances,
   } = useFundingStore();
 
@@ -178,7 +179,7 @@ export default function Header() {
             <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 4px #10b981', animation: 'blink 1.5s ease-in-out infinite', flexShrink: 0 }} />
           )}
           <span style={{ fontSize: 10, fontWeight: 700, color: snipeActive ? '#10b981' : 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
-            {snipeActive ? `투자중${simPositions.length > 0 ? ` ${simPositions.length}P` : ''}` : '대기'}
+            {snipeActive ? `투자중${(() => { const count = simulationMode ? simPositions.length : positions.filter(p => p.positionType !== 'manual').length; return count > 0 ? ` ${count}P` : ''; })()}` : '대기'}
           </span>
         </div>
 

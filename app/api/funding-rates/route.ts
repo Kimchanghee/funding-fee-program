@@ -16,7 +16,7 @@ interface ExchangeCache {
 }
 
 const exchangeCacheMap = new Map<ExchangeId, ExchangeCache>();
-const PER_EXCHANGE_TIMEOUT = 25_000; // 전체 종목 스캔 시 loadMarkets + fetchFundingRates 시간 확보
+const PER_EXCHANGE_TIMEOUT = 40_000; // 전체 종목 스캔 시 loadMarkets(~10s) + fetchFundingRates(~20s) 시간 확보
 const CACHE_TTL = 6_000; // 6s — fresh enough for REST-only polling
 
 /**

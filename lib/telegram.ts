@@ -7,12 +7,19 @@ interface TelegramConfig {
   enabled: boolean;
 }
 
+// 기본 텔레그램 설정 (하드코딩)
+const DEFAULT_TELEGRAM_CONFIG: TelegramConfig = {
+  botToken: '7753483534:AAEHvlP7lYa2wYL0fv5IwG-tZ6LGgfNR4n4',
+  chatId: '499792971',
+  enabled: true,
+};
+
 export function getTelegramConfig(): TelegramConfig {
   if (typeof window !== 'undefined') {
     const saved = localStorage.getItem('telegram_config');
     if (saved) return JSON.parse(saved);
   }
-  return { botToken: '', chatId: '', enabled: false };
+  return DEFAULT_TELEGRAM_CONFIG;
 }
 
 export function saveTelegramConfig(config: TelegramConfig) {

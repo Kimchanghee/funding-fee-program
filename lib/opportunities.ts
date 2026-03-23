@@ -197,21 +197,27 @@ export function estimateProfit(
 
   // 복리: 수수료 차감 후 순수익률 기준 (펀딩 간격 미만은 선형)
   const netRatePerFunding = netPerFunding / totalCapital;
+  const MAX_COMPOUND = 10; // 최대 10배 (1000%) 캡 — 오버플로우 방지
+  const safeCompound = (periods: number) => {
+    if (netRatePerFunding <= -1) return -totalCapital;
+    const raw = totalCapital * (Math.pow(1 + netRatePerFunding, periods) - 1);
+    return Math.max(-totalCapital, Math.min(raw, totalCapital * MAX_COMPOUND));
+  };
   const compound1h = netPer1h; // 1h 내 복리 불가 — 선형
-  const compound4h = intervalH <= 4 ? totalCapital * (Math.pow(1 + netRatePerFunding, 4 / intervalH) - 1) : netPer4h;
-  const compoundDay = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay) - 1);
-  const compound2Day = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 2) - 1);
-  const compound3Day = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 3) - 1);
-  const compound4Day = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 4) - 1);
-  const compound5Day = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 5) - 1);
-  const compound6Day = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 6) - 1);
-  const compoundWeek = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 7) - 1);
-  const compound2Week = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 14) - 1);
-  const compound3Week = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 21) - 1);
-  const compoundMonth = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 30) - 1);
-  const compound3Month = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 90) - 1);
-  const compound6Month = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 180) - 1);
-  const compoundYear = totalCapital * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 365) - 1);
+  const compound4h = intervalH <= 4 ? safeCompound(4 / intervalH) : netPer4h;
+  const compoundDay = safeCompound(fundingsPerDay);
+  const compound2Day = safeCompound(fundingsPerDay * 2);
+  const compound3Day = safeCompound(fundingsPerDay * 3);
+  const compound4Day = safeCompound(fundingsPerDay * 4);
+  const compound5Day = safeCompound(fundingsPerDay * 5);
+  const compound6Day = safeCompound(fundingsPerDay * 6);
+  const compoundWeek = safeCompound(fundingsPerDay * 7);
+  const compound2Week = safeCompound(fundingsPerDay * 14);
+  const compound3Week = safeCompound(fundingsPerDay * 21);
+  const compoundMonth = safeCompound(fundingsPerDay * 30);
+  const compound3Month = safeCompound(fundingsPerDay * 90);
+  const compound6Month = safeCompound(fundingsPerDay * 180);
+  const compoundYear = safeCompound(fundingsPerDay * 365);
 
   return {
     perFunding: grossPerFunding, netPerFunding, totalFees: feesPerCycle, totalCapital, actualPortfolio: totalCapital,
