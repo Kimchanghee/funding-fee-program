@@ -331,8 +331,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
   fundingHistory: [],
   simulationMode: true,
-  simBalances: { binance: 1000, bybit: 1000, okx: 1000, bitget: 1000, gate: 1000, bingx: 1000 },
-  simInitialBalances: { binance: 1000, bybit: 1000, okx: 1000, bitget: 1000, gate: 1000, bingx: 1000 },
+  simBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
+  simInitialBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
   simPositions: [],
   simTotalFundingEarned: 0,
   simTotalTopUps: 0,
@@ -444,8 +444,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // 저장된 시뮬레이션 상태 복원 (잔고, 포지션, 누적 펀딩)
       const savedSim = loadSimState();
       if (savedSim) {
-        // 잔고가 투자금보다 낮은 거래소는 투자금 수준으로 보정 (스나이핑 가능하도록)
-        const minBal = get().strategyConfig.investmentUSDT;
+        // 잔고가 거래소당 기준(투자금×2)보다 낮으면 보정 (숏/롱 양쪽 참여 가능하도록)
+        const minBal = get().strategyConfig.investmentUSDT * 2;
         const restoredBal = savedSim.simBalances as Record<ExchangeId, number>;
         const restoredInitial = (savedSim.simInitialBalances as Record<ExchangeId, number> | undefined)
           ?? savedSim.simBalances as Record<ExchangeId, number>;
@@ -470,9 +470,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           simClosedFeesPerExchange: (savedSim.simClosedFeesPerExchange ?? {}) as Partial<Record<ExchangeId, number>>,
         });
       } else {
-        // 최초 실행: 활성 거래소 기준으로 초기 잔고 설정
+        // 최초 실행: 활성 거래소 기준으로 초기 잔고 설정 (거래소당 투자금×2 — 숏/롱 양쪽 참여 가능)
         const enabled = get().enabledExchanges;
-        const perExchange = get().strategyConfig.investmentUSDT;
+        const perExchange = get().strategyConfig.investmentUSDT * 2;
         const newBal = {} as Record<ExchangeId, number>;
         for (const ex of SUPPORTED_EXCHANGES) {
           newBal[ex] = enabled.includes(ex) ? perExchange : 0;
@@ -527,7 +527,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (s.simulationMode && s.simPositions.length === 0) {
           const newBal = {} as Record<ExchangeId, number>;
           for (const ex of SUPPORTED_EXCHANGES) {
-            newBal[ex] = s.enabledExchanges.includes(ex) ? config.investmentUSDT : 0;
+            newBal[ex] = s.enabledExchanges.includes(ex) ? config.investmentUSDT * 2 : 0;
           }
           return { strategyConfig: next, simBalances: newBal, simInitialBalances: { ...newBal } };
         }
@@ -1211,10 +1211,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const shortBal = balances[opportunity.shortExchange]?.availableUSDT ?? 0;
       const longBal = balances[opportunity.longExchange]?.availableUSDT ?? 0;
       realInvestment = Math.min(shortBal, longBal) * 0.9;
-      if (realInvestment < strategyConfig.investmentUSDT * 0.5) {
-        get().addLog('warning', `[복리] 실잔고 부족 — 최소 투자금으로 대체`, undefined,
-          `투자금: $${fmtNum(realInvestment, 0)}`);
-        realInvestment = strategyConfig.investmentUSDT;
+      if (realInvestment < strategyConfig.investmentUSDT) {
+        // 잔고 부족 시 진입 스킵 (폴백 없음 — 잔고 재분배로 해결해야 함)
+        get().addLog('warning', `[복리] 실잔고 부족 — 진입 스킵`,
+          undefined,
+          `숏(${opportunity.shortExchange.toUpperCase()}): $${fmtNum(shortBal, 0)} | 롱(${opportunity.longExchange.toUpperCase()}): $${fmtNum(longBal, 0)} | 필요: $${fmtNum(strategyConfig.investmentUSDT, 0)}`);
+        return { success: false, error: '실잔고 부족 — 거래소 간 잔고 재분배 필요' };
       }
     }
 
@@ -1393,15 +1395,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   toggleSimulationMode() {
     const next = !get().simulationMode;
     set({ simulationMode: next });
-    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${get().strategyConfig.investmentUSDT} 가상 잔고` : '[SIM] 시뮬레이션 모드 OFF');
+    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${get().strategyConfig.investmentUSDT * 2} 가상 잔고` : '[SIM] 시뮬레이션 모드 OFF');
   },
 
   resetSimulation() {
-    const bal = get().strategyConfig.investmentUSDT;
+    const perExchange = get().strategyConfig.investmentUSDT * 2; // 거래소당 투자금×2 (숏/롱 양쪽)
     const enabled = get().enabledExchanges;
     const newBal = {} as Record<ExchangeId, number>;
     for (const ex of SUPPORTED_EXCHANGES) {
-      newBal[ex] = enabled.includes(ex) ? bal : 0;
+      newBal[ex] = enabled.includes(ex) ? perExchange : 0;
     }
     set({
       simPositions: [],
@@ -1420,7 +1422,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // 서버 측 거래내역 + 로그도 초기화
     fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
     fetch('/api/logs/clear', { method: 'DELETE' }).catch(() => {});
-    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${bal} 리셋`);
+    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${perExchange} 리셋`);
   },
 
   clearSimFundingHistory() {
