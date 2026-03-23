@@ -518,8 +518,8 @@ export default function OpportunityCard() {
               // 투자금 $1 미만이면 거래 불가 — 후보는 숨김 (예약/활성은 표시)
               if (item.status === 'opportunity' && itemPerSide < 1) return null;
               const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage);
-              // 마이너스 순수익은 대기(opportunity) 상태만 숨김 — 예약/활성은 항상 표시
-              if (item.status === 'opportunity' && profit.netPerFunding <= 0) return null;
+              // 마이너스 순수익: 후보는 숨김, 예약은 곧 재검증에서 취소되므로 숨김
+              if (profit.netPerFunding <= 0 && item.status !== 'active') return null;
 
               visibleIdx++;
 
@@ -613,46 +613,27 @@ export default function OpportunityCard() {
                       );
                     })()}
 
-                    {/* Net Profit — 음수면 취소 예정 경고 */}
+                    {/* Net Profit */}
                     <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
-                      {profit.netPerFunding < 0 && item.status === 'scheduled' ? (
-                        <>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b' }}>
-                            취소 예정
-                          </span>
-                          <div style={{ fontSize: 9, color: '#f59e0b', marginTop: 1 }}>
-                            스프레드 역전
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <span className="mono" style={{
-                            fontSize: 13, fontWeight: 700,
-                            color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444',
-                          }}>
-                            {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
-                          </span>
-                          <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
-                            수수료 -${fmtNum(profit.totalFees)}
-                          </div>
-                        </>
-                      )}
+                      <span className="mono" style={{
+                        fontSize: 13, fontWeight: 700,
+                        color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444',
+                      }}>
+                        {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
+                      </span>
+                      <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
+                        수수료 -${fmtNum(profit.totalFees)}
+                      </div>
                     </div>
 
                     {/* ROI % */}
                     <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
-                      {profit.netPerFunding < 0 && item.status === 'scheduled' ? (
-                        <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b' }}>
-                          —
-                        </span>
-                      ) : (
-                        <span className="mono" style={{
-                          fontSize: 13, fontWeight: 700,
-                          color: profit.roiPerFunding >= 0 ? '#10b981' : '#ef4444',
-                        }}>
-                          {profit.roiPerFunding >= 0 ? '+' : ''}{fmtNum(profit.roiPerFunding, 3)}%
-                        </span>
-                      )}
+                      <span className="mono" style={{
+                        fontSize: 13, fontWeight: 700,
+                        color: profit.roiPerFunding >= 0 ? '#10b981' : '#ef4444',
+                      }}>
+                        {profit.roiPerFunding >= 0 ? '+' : ''}{fmtNum(profit.roiPerFunding, 3)}%
+                      </span>
                     </div>
 
                     {/* Countdown + 주기 뱃지 — 후보는 dimmed 표시 */}

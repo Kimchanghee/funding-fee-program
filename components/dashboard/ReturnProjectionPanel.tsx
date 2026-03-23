@@ -61,17 +61,23 @@ export default function ReturnProjectionPanel() {
       '6month': netPerFunding * fundingsPerDay * 180,
     };
 
-    // 복리: 순수익률 기준 복리 계산
+    // 복리: 순수익률 기준 복리 계산 (오버플로우 방지: 최대 10배 캡)
     const netRatePerFunding = netPerFunding / portfolio;
+    const MAX_MULTIPLIER = 10; // 최대 10배 (1000%)
+    const compoundCalc = (periods: number) => {
+      if (netRatePerFunding <= -1) return -portfolio; // 전액 손실 캡
+      const raw = portfolio * (Math.pow(1 + netRatePerFunding, periods) - 1);
+      return Math.max(-portfolio, Math.min(raw, portfolio * MAX_MULTIPLIER));
+    };
     const compound: Record<PeriodKey, number> = {
-      '1h': portfolio * (Math.pow(1 + netRatePerFunding, 1 / intervalH) - 1),
-      '4h': portfolio * (Math.pow(1 + netRatePerFunding, 4 / intervalH) - 1),
-      '8h': portfolio * (Math.pow(1 + netRatePerFunding, 8 / intervalH) - 1),
-      day: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay) - 1),
-      week: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 7) - 1),
-      month: portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 30) - 1),
-      '3month': portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 90) - 1),
-      '6month': portfolio * (Math.pow(1 + netRatePerFunding, fundingsPerDay * 180) - 1),
+      '1h': compoundCalc(1 / intervalH),
+      '4h': compoundCalc(4 / intervalH),
+      '8h': compoundCalc(8 / intervalH),
+      day: compoundCalc(fundingsPerDay),
+      week: compoundCalc(fundingsPerDay * 7),
+      month: compoundCalc(fundingsPerDay * 30),
+      '3month': compoundCalc(fundingsPerDay * 90),
+      '6month': compoundCalc(fundingsPerDay * 180),
     };
 
     const displaySpreadPercent = hasRealSpread ? rs.effectiveSpread : best.spreadPercent;
