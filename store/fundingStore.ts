@@ -629,11 +629,44 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             }));
           }
         } catch (err) {
-          console.error(`[refreshRates] ${exchangeId} fetch 실패:`, (err as Error).message);
-          set(s => ({
-            exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'error' },
-            exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: (err as Error).message },
-          }));
+          // 1회 자동 재시도 (5초 후, 타임아웃 단축)
+          console.warn(`[refreshRates] ${exchangeId} 1차 실패 — 5초 후 재시도:`, (err as Error).message);
+          try {
+            await new Promise(r => setTimeout(r, 5000));
+            const retryRes = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, {
+              signal: AbortSignal.timeout(30000),
+            });
+            const retryJson = await retryRes.json() as {
+              success: boolean;
+              error?: string;
+              data: { rates: FundingRate[]; errors: { exchange: ExchangeId; error: string }[] };
+              timestamp: number;
+            };
+            if (retryJson.success && retryJson.data.rates.length > 0) {
+              console.log(`[refreshRates] ${exchangeId} 재시도 성공: ${retryJson.data.rates.length}개`);
+              set(s => {
+                const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
+                const merged = [...otherRates, ...retryJson.data.rates];
+                const { investmentUSDT, leverage } = s.strategyConfig;
+                const opportunities = findOpportunities(merged, s.snipeActive ? 50 : 20, investmentUSDT, leverage);
+                return {
+                  fundingRates: merged, opportunities,
+                  lastRatesUpdate: retryJson.timestamp || Date.now(),
+                  ratesStatus: 'success', ratesError: null,
+                  exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'ok' },
+                  exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: undefined },
+                };
+              });
+            } else {
+              throw new Error(retryJson.error || '재시도 데이터 없음');
+            }
+          } catch (retryErr) {
+            console.warn(`[refreshRates] ${exchangeId} 재시도도 실패:`, (retryErr as Error).message);
+            set(s => ({
+              exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'error' },
+              exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: (retryErr as Error).message },
+            }));
+          }
         }
       }),
     );
