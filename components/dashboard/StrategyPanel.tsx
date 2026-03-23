@@ -1,9 +1,11 @@
 'use client';
 
-import { X, DollarSign, TrendingUp, Info } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, DollarSign, TrendingUp, Info, Send } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { estimateProfit } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
+import { getTelegramConfig, saveTelegramConfig, sendTelegramMessage } from '@/lib/telegram';
 
 export default function StrategyPanel() {
   const { strategyConfig, setStrategyConfig, setShowStrategyPanel, opportunities } = useFundingStore();
@@ -138,6 +140,9 @@ export default function StrategyPanel() {
             </div>
           </div>
 
+          {/* Telegram Settings */}
+          <TelegramSettings />
+
           {/* Profit preview */}
           {profit && best && (
             <div style={{ padding: 16, borderRadius: 10, background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)' }}>
@@ -182,6 +187,95 @@ export default function StrategyPanel() {
             저장 완료
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** 텔레그램 알림 설정 서브 컴포넌트 */
+function TelegramSettings() {
+  const [config, setConfig] = useState({ botToken: '', chatId: '', enabled: false });
+  const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'ok' | 'fail'>('idle');
+
+  useEffect(() => {
+    setConfig(getTelegramConfig());
+  }, []);
+
+  const handleSave = (patch: Partial<typeof config>) => {
+    const next = { ...config, ...patch };
+    setConfig(next);
+    saveTelegramConfig(next);
+  };
+
+  const handleTest = async () => {
+    setTestStatus('sending');
+    const ok = await sendTelegramMessage('✅ 펀딩피 아비트라지 알림이 연결되었습니다!');
+    setTestStatus(ok ? 'ok' : 'fail');
+    setTimeout(() => setTestStatus('idle'), 3000);
+  };
+
+  return (
+    <div style={{ padding: 16, borderRadius: 10, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.2)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#3b82f6', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Send size={12} /> 텔레그램 알림
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11 }}>
+          <input
+            type="checkbox"
+            checked={config.enabled}
+            onChange={e => handleSave({ enabled: e.target.checked })}
+            style={{ accentColor: '#3b82f6' }}
+          />
+          <span style={{ color: config.enabled ? '#3b82f6' : 'var(--color-text-muted)' }}>
+            {config.enabled ? '활성' : '비활성'}
+          </span>
+        </label>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div>
+          <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 4 }}>Bot Token</label>
+          <input
+            type="password"
+            placeholder="123456789:ABCdefGHI..."
+            value={config.botToken}
+            onChange={e => handleSave({ botToken: e.target.value })}
+            style={{
+              width: '100%', padding: '6px 10px', borderRadius: 6, fontSize: 12,
+              background: 'var(--bg-accent)', border: '1px solid var(--border-primary)',
+              color: 'var(--color-text)',
+            }}
+          />
+        </div>
+        <div>
+          <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 4 }}>Chat ID</label>
+          <input
+            type="text"
+            placeholder="-1001234567890"
+            value={config.chatId}
+            onChange={e => handleSave({ chatId: e.target.value })}
+            style={{
+              width: '100%', padding: '6px 10px', borderRadius: 6, fontSize: 12,
+              background: 'var(--bg-accent)', border: '1px solid var(--border-primary)',
+              color: 'var(--color-text)',
+            }}
+          />
+        </div>
+        <button
+          onClick={handleTest}
+          disabled={!config.enabled || !config.botToken || !config.chatId || testStatus === 'sending'}
+          style={{
+            padding: '6px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+            background: testStatus === 'ok' ? '#10b981' : testStatus === 'fail' ? '#ef4444' : '#3b82f6',
+            color: '#fff', border: 'none', cursor: 'pointer',
+            opacity: (!config.enabled || !config.botToken || !config.chatId) ? 0.4 : 1,
+          }}
+        >
+          {testStatus === 'sending' ? '전송 중...' : testStatus === 'ok' ? '연결 성공!' : testStatus === 'fail' ? '실패' : '테스트 메시지 전송'}
+        </button>
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 8 }}>
+        펀딩 수익 수령, 스나이프 완료, 거래소 잔고 부족(평균 50% 이하) 시 알림
       </div>
     </div>
   );

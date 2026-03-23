@@ -18,6 +18,7 @@ import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState } from '@/lib/keyStore';
 import { estimateProfit, findOpportunities } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
+import { sendTelegramMessage, formatFundingAlert, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
 import { getHedgeFees, getExchangeFee } from '@/lib/types';
 
 // ─────────────────────────────────────────────
@@ -1649,6 +1650,44 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       get().addLog(log.level, log.message, log.exchange, log.detail);
     }
 
+    // 텔레그램: 펀딩 수익 알림 (합산 메시지)
+    if (simFundingPayments.length > 0 && totalNewFunding !== 0) {
+      const lines = simFundingPayments.map(p =>
+        `  ${p.exchange.toUpperCase()} ${p.symbol} (${p.side}): ${p.amount >= 0 ? '+' : ''}$${p.amount.toFixed(4)}`
+      );
+      const sim = get().simulationMode ? '[SIM] ' : '';
+      const icon = totalNewFunding >= 0 ? '💰' : '💸';
+      void sendTelegramMessage([
+        `${icon} <b>${sim}펀딩 수령: ${simFundingPayments.length}건</b>`,
+        ...lines,
+        `\n합계: ${totalNewFunding >= 0 ? '+' : ''}$${totalNewFunding.toFixed(4)}`,
+      ].join('\n'));
+    }
+
+    // 텔레그램: 잔고 부족 경고 (평균 대비 50% 이하)
+    {
+      const st = get();
+      const bals = st.enabledExchanges.map(ex => ({
+        name: ex,
+        balance: (st.simBalances[ex] ?? 0),
+      }));
+      const avg = bals.reduce((s, b) => s + b.balance, 0) / (bals.length || 1);
+      if (avg > 0) {
+        for (const b of bals) {
+          if (b.balance < avg * 0.5) {
+            void sendTelegramMessage(formatBalanceWarning({
+              lowExchange: b.name,
+              lowBalance: b.balance,
+              avgBalance: avg,
+              exchanges: bals,
+              simulation: st.simulationMode,
+            }));
+            break; // 한 번에 하나만 경고
+          }
+        }
+      }
+    }
+
     // 스나이핑: 펀딩 수령 완료 → 즉시 청산 → 다음 사이클 재예약
     if (snipeToClose.length > 0) {
       queueMicrotask(() => {
@@ -1661,6 +1700,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           undefined,
           `총 수령: $${fmtNum(totalCollected, 4)}`,
         );
+
+        // 텔레그램: 스나이프 완료 알림
+        for (const pos of snipeToClose) {
+          const pair = get().simPositions.find(p => p.pairId === pos.pairId && p.simId !== pos.simId);
+          void sendTelegramMessage(formatSnipeCompleteAlert({
+            baseAsset: pos.baseAsset,
+            shortExchange: pos.side === 'short' ? pos.exchange : (pair?.exchange ?? '?'),
+            longExchange: pos.side === 'long' ? pos.exchange : (pair?.exchange ?? '?'),
+            fundingCollected: pos.fundingCollected,
+            pnl: pos.unrealizedPnl,
+            simulation: get().simulationMode,
+          }));
+        }
 
         // 청산된 코인들 타이머 정리 + 다음 사이클 자동 재예약
         const closedKeys = [...new Set(snipeToClose.map(p => p.baseAsset))];

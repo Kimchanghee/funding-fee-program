@@ -432,7 +432,9 @@ export default function OpportunityCard() {
                 border: '1px solid rgba(245,158,11,0.18)',
                 fontSize: 11, color: '#fbbf24',
               }}>
-                아래 `후보` 행은 실제 예약이 아니라 현재 상위 기회입니다. 실제 예약은 상단 `예약` 수치에만 반영됩니다.
+                <strong>예약됨</strong> = 펀딩 시간에 자동 진입 예정 (7초 전 스나이프) &nbsp;|&nbsp;
+                <strong>실행 중</strong> = 현재 포지션 보유 중 &nbsp;|&nbsp;
+                <strong>후보</strong> = 수익성 높은 기회 목록 (자동 투자 ON 시 다음 사이클에 예약 가능)
               </div>
             )}
             {/* Table Header */}
