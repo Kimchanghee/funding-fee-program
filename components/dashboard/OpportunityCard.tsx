@@ -120,7 +120,7 @@ export default function OpportunityCard() {
     snipeTargets, scheduleAllSnipes, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
-    simBalances, balances, enabledExchanges, fundingRates,
+    simBalances, balances, enabledExchanges,
   } = useFundingStore();
 
   const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
@@ -298,20 +298,17 @@ export default function OpportunityCard() {
   const activeCount = simulationMode ? simPositions.length : positions.length;
   const candidateCount = scheduledCoins.filter(c => c.status === 'opportunity').length;
 
-  // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 전체 코인 수
+  // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 기회(opportunities) 수
   const intervalStats = useMemo(() => {
     const buckets: Record<string, { scheduled: number; total: number; assets: string[] }> = {
       '1h': { scheduled: 0, total: 0, assets: [] },
       '4h': { scheduled: 0, total: 0, assets: [] },
       '8h': { scheduled: 0, total: 0, assets: [] },
     };
-    // 전체 코인 수 (fundingRates에서 고유 baseAsset 기준)
-    const seenByInterval = new Set<string>();
-    for (const rate of fundingRates) {
-      const key2 = `${rate.baseAsset}:${rate.intervalHours <= 1 ? '1h' : rate.intervalHours <= 4 ? '4h' : '8h'}`;
-      if (seenByInterval.has(key2)) continue;
-      seenByInterval.add(key2);
-      const iKey = rate.intervalHours <= 1 ? '1h' : rate.intervalHours <= 4 ? '4h' : '8h';
+    // 전체 기회 수 (opportunities에서 주기별 카운트)
+    for (const opp of opportunities) {
+      const h = opp.fundingIntervalMs ? Math.round(opp.fundingIntervalMs / 3600000) : 8;
+      const iKey = h <= 1 ? '1h' : h <= 4 ? '4h' : '8h';
       buckets[iKey].total++;
     }
     // 예약 + 활성 카운트
@@ -323,7 +320,7 @@ export default function OpportunityCard() {
       buckets[key].assets.push(item.asset);
     }
     return buckets;
-  }, [scheduledCoins, fundingRates]);
+  }, [scheduledCoins, opportunities]);
 
   return (
     <>
@@ -684,11 +681,18 @@ export default function OpportunityCard() {
                     {/* Status Badge */}
                     <StatusBadge status={item.status} />
 
-                    {/* Coin + Mobile Exchange Badges */}
+                    {/* Coin + Interval Badge + Mobile Exchange Badges */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--color-text)' }}>
                           {item.asset}
+                        </span>
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                          color: intervalH <= 1 ? '#06b6d4' : intervalH <= 4 ? '#8b5cf6' : '#64748b',
+                          background: intervalH <= 1 ? 'rgba(6,182,212,0.15)' : intervalH <= 4 ? 'rgba(139,92,246,0.15)' : 'rgba(100,116,139,0.12)',
+                        }}>
+                          {intervalH <= 1 ? '1h' : intervalH <= 4 ? '4h' : '8h'}
                         </span>
                         <span className="opp-hide-mobile" style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>/USDT</span>
                         {isExpanded ? <ChevronUp size={12} color="var(--color-text-muted)" /> : <ChevronDown size={12} color="var(--color-text-muted)" />}
