@@ -572,9 +572,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const next = { ...prev, [exchange]: config };
     set({ apiConfigs: next });
     saveApiConfigs(next);
+    // 서버 측 암호화 저장소에도 저장
+    fetch('/api/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exchange, config }),
+    }).catch(() => {});
     const connected = Object.keys(next) as ExchangeId[];
     set({ connectedExchanges: connected });
-    get().addLog('success', `${exchange.toUpperCase()} API 키 저장됨`, exchange);
+    get().addLog('success', `${exchange.toUpperCase()} API 키 저장됨 (서버 암호화)`, exchange);
   },
 
   removeApiConfig(exchange) {
@@ -583,6 +589,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     delete next[exchange];
     set({ apiConfigs: next });
     saveApiConfigs(next);
+    // 서버 측에서도 삭제
+    fetch('/api/keys', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exchange }),
+    }).catch(() => {});
     const connected = Object.keys(next) as ExchangeId[];
     set({ connectedExchanges: connected });
     get().addLog('warning', `${exchange.toUpperCase()} API 키 삭제됨`, exchange);
@@ -1438,10 +1450,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           opportunity,
           investmentUSDT: realInvestment,
           leverage: strategyConfig.leverage,
-          apiConfigs: {
-            [opportunity.shortExchange]: apiConfigs[opportunity.shortExchange],
-            [opportunity.longExchange]: apiConfigs[opportunity.longExchange],
-          },
+          // apiConfigs는 서버 측 암호화 저장소에서 로드 (클라이언트 전송 X)
         }),
       });
 
