@@ -8,11 +8,16 @@ import { fmtNum } from '@/lib/format';
 import { getTelegramConfig, saveTelegramConfig, sendTelegramMessage } from '@/lib/telegram';
 
 export default function StrategyPanel() {
-  const { strategyConfig, setStrategyConfig, setShowStrategyPanel, opportunities } = useFundingStore();
+  const { strategyConfig, setStrategyConfig, setShowStrategyPanel, opportunities, realSpreads } = useFundingStore();
   const best = opportunities[0];
+  const realSpread = best ? realSpreads[best.baseAsset] : null;
+  const hasRealSpread = !!(realSpread && Date.now() - realSpread.updatedAt < 30_000);
+  const effectiveBest = best && hasRealSpread && realSpread
+    ? { ...best, spread: realSpread.effectiveSpread / 100, spreadPercent: realSpread.effectiveSpread }
+    : best;
 
-  const profit = best
-    ? estimateProfit(best, strategyConfig.investmentUSDT, strategyConfig.leverage)
+  const profit = effectiveBest
+    ? estimateProfit(effectiveBest, strategyConfig.investmentUSDT, strategyConfig.leverage, hasRealSpread)
     : null;
 
   return (
@@ -173,7 +178,7 @@ export default function StrategyPanel() {
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 8 }}>
-                스프레드: <strong style={{ color: '#10b981' }}>+{fmtNum(best.spreadPercent, 4)}%</strong> •
+                스프레드: <strong style={{ color: '#10b981' }}>+{fmtNum(effectiveBest?.spreadPercent ?? best.spreadPercent, 4)}%</strong>{hasRealSpread ? ' (실측)' : ''} •
                 연환산: <strong style={{ color: '#10b981' }}>{fmtNum(profit.roiPerYear, 1)}%</strong>
               </div>
             </div>

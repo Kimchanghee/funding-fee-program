@@ -120,7 +120,7 @@ export default function OpportunityCard() {
     snipeTargets, scheduleAllSnipes, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
-    simBalances, balances, enabledExchanges,
+    simBalances, balances, enabledExchanges, fundingRates,
   } = useFundingStore();
 
   const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
@@ -267,22 +267,32 @@ export default function OpportunityCard() {
   const activeCount = simulationMode ? simPositions.length : positions.length;
   const candidateCount = scheduledCoins.filter(c => c.status === 'opportunity').length;
 
-  // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약 + 활성만 카운트
+  // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 전체 코인 수
   const intervalStats = useMemo(() => {
-    const buckets: Record<string, { count: number; assets: string[] }> = {
-      '1h': { count: 0, assets: [] },
-      '4h': { count: 0, assets: [] },
-      '8h': { count: 0, assets: [] },
+    const buckets: Record<string, { scheduled: number; total: number; assets: string[] }> = {
+      '1h': { scheduled: 0, total: 0, assets: [] },
+      '4h': { scheduled: 0, total: 0, assets: [] },
+      '8h': { scheduled: 0, total: 0, assets: [] },
     };
+    // 전체 코인 수 (fundingRates에서 고유 baseAsset 기준)
+    const seenByInterval = new Set<string>();
+    for (const rate of fundingRates) {
+      const key2 = `${rate.baseAsset}:${rate.intervalHours <= 1 ? '1h' : rate.intervalHours <= 4 ? '4h' : '8h'}`;
+      if (seenByInterval.has(key2)) continue;
+      seenByInterval.add(key2);
+      const iKey = rate.intervalHours <= 1 ? '1h' : rate.intervalHours <= 4 ? '4h' : '8h';
+      buckets[iKey].total++;
+    }
+    // 예약 + 활성 카운트
     for (const item of scheduledCoins) {
       if (item.status === 'opportunity') continue;
       const h = item.opp.fundingIntervalMs ? Math.round(item.opp.fundingIntervalMs / 3600000) : 8;
       const key = h <= 1 ? '1h' : h <= 4 ? '4h' : '8h';
-      buckets[key].count++;
+      buckets[key].scheduled++;
       buckets[key].assets.push(item.asset);
     }
     return buckets;
-  }, [scheduledCoins]);
+  }, [scheduledCoins, fundingRates]);
 
   return (
     <>
@@ -452,7 +462,7 @@ export default function OpportunityCard() {
           }}>
             {(['1h', '4h', '8h'] as const).map(interval => {
               const stat = intervalStats[interval];
-              const hasItems = stat.count > 0;
+              const hasItems = stat.scheduled > 0;
               const colorMap = { '1h': '#06b6d4', '4h': '#8b5cf6', '8h': '#64748b' };
               const color = colorMap[interval];
               return (
@@ -471,10 +481,10 @@ export default function OpportunityCard() {
                       {interval}
                     </span>
                     <span style={{
-                      fontSize: 18, fontWeight: 900, color: hasItems ? color : 'var(--color-text-muted)',
-                      lineHeight: 1,
+                      fontSize: 18, fontWeight: 900, lineHeight: 1,
+                      color: hasItems ? color : 'var(--color-text-muted)',
                     }}>
-                      {stat.count}
+                      {stat.scheduled} <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.5 }}>/</span> <span style={{ fontSize: 13, fontWeight: 700, opacity: 0.6 }}>{stat.total}</span>
                     </span>
                   </div>
                   {hasItems ? (
@@ -483,7 +493,7 @@ export default function OpportunityCard() {
                     </div>
                   ) : (
                     <div style={{ fontSize: 10, color: 'var(--color-text-muted)', opacity: 0.5 }}>
-                      해당 주기 포지션 없음
+                      {stat.total > 0 ? `${stat.total}개 기회 중 예약 없음` : '해당 주기 기회 없음'}
                     </div>
                   )}
                 </div>

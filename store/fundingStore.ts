@@ -55,6 +55,12 @@ function getEffectiveNotional(
   return Math.max(perSide, 0) * config.leverage;
 }
 
+function getScheduleAheadWindowMs(opportunity: Pick<ArbitrageOpportunity, 'fundingIntervalMs'>): number {
+  const DEFAULT_AHEAD_MS = 5 * 60 * 60 * 1000;
+  const fundingWindowMs = opportunity.fundingIntervalMs ?? 8 * 60 * 60 * 1000;
+  return Math.max(DEFAULT_AHEAD_MS, fundingWindowMs);
+}
+
 function makePositionKey(
   exchange: ExchangeId,
   symbol: string,
@@ -1431,11 +1437,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }
 
-    const profit = estimateProfit(opportunity, realInvestment, strategyConfig.leverage);
+    const previewProfit = estimateProfit(opportunity, realInvestment, strategyConfig.leverage);
     get().addLog('info',
       `전략 실행 시작: ${opportunity.baseAsset} | 숏:${opportunity.shortExchange.toUpperCase()} 롱:${opportunity.longExchange.toUpperCase()}`,
       undefined,
-      `투자금: $${fmtNum(realInvestment, 0)} | 예상 8h순수익: $${fmtNum(profit.netPerFunding)} (수수료: -$${fmtNum(profit.totalFees)})`,
+      `투자금: $${fmtNum(realInvestment, 0)} | 예상 8h순수익: $${fmtNum(previewProfit.netPerFunding)} (수수료: -$${fmtNum(previewProfit.totalFees)})`,
     );
 
     const pairId = `pair-${Date.now()}-${opportunity.baseAsset}`;
@@ -1517,16 +1523,30 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       setTimeout(() => get().refreshAndStampPositions(
         opportunity.baseAsset, [opportunity.shortExchange, opportunity.longExchange],
       ), 2000);
+      const expectedPerFunding = shortData && longData
+        ? shortData.filledNotional * opportunity.shortRate - longData.filledNotional * opportunity.longRate
+        : previewProfit.perFunding;
+      const expectedTotalRoundTripFees = shortData && longData
+        ? shortData.estimatedFee
+          + longData.estimatedFee
+          + shortData.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker')
+          + longData.filledNotional * getExchangeFee(opportunity.longExchange, 'taker')
+        : previewProfit.totalFees;
+      const expectedNetProfit = expectedPerFunding - expectedTotalRoundTripFees;
+      const executedNotional = shortData && longData
+        ? Math.min(shortData.filledNotional, longData.filledNotional)
+        : result.short?.data?.filledNotional ?? result.long?.data?.filledNotional ?? (realInvestment * strategyConfig.leverage);
+
       queueTrade({
         timestamp: Date.now(), type: 'entry', simulation: false,
         baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
         spread: opportunity.spread, spreadPercent: opportunity.spreadPercent,
         margin: realInvestment, leverage: strategyConfig.leverage,
-        notional: result.short?.data?.filledNotional ?? result.long?.data?.filledNotional ?? (realInvestment * strategyConfig.leverage),
+        notional: executedNotional,
         entryFee: (result.short?.data?.estimatedFee ?? 0) + (result.long?.data?.estimatedFee ?? 0),
-        netProfit: profit.netPerFunding,
-        perFunding: profit.perFunding,
-        totalRoundTripFees: profit.totalFees,
+        netProfit: expectedNetProfit,
+        perFunding: expectedPerFunding,
+        totalRoundTripFees: expectedTotalRoundTripFees,
         shortPrice: result.short?.data?.price,
         longPrice: result.long?.data?.price,
         shortLiquidity: result.short?.data?.liquidity,
@@ -2222,8 +2242,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       ...(isSim ? simPositions : positions).map(p => p.baseAsset),
     ]);
 
-    const MAX_SCHEDULE_AHEAD_MS = 5 * 60 * 60 * 1000;
-
     const { realSpreads: preFilterRealSpreads } = get();
 
     const filterReasons = { active: 0, exchangeDisabled: 0, tooFarAhead: 0, pastFunding: 0, lowSpread: 0, noProfit: 0 };
@@ -2231,7 +2249,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const filtered = opportunities.filter(o => {
       if (activeKeys.has(o.baseAsset)) { filterReasons.active++; return false; }
       if (!currentEnabled.includes(o.shortExchange) || !currentEnabled.includes(o.longExchange)) { filterReasons.exchangeDisabled++; return false; }
-      if (o.nextFundingTime - now > MAX_SCHEDULE_AHEAD_MS) { filterReasons.tooFarAhead++; return false; }
+      if (o.nextFundingTime - now > getScheduleAheadWindowMs(o)) { filterReasons.tooFarAhead++; return false; }
       // 과거 펀딩 시간만 차단 (normalizeFr에서 이미 보정하지만 안전장치)
       if (o.nextFundingTime < now) { filterReasons.pastFunding++; return false; }
       // 예약 단계: realSpread 있으면 실측, 없으면 이론값 사용 (실행 시점에서 realSpread 필수 재검증)
