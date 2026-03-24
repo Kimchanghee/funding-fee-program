@@ -120,7 +120,7 @@ export default function OpportunityCard() {
     snipeTargets, scheduleAllSnipes, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
-    simBalances, balances, enabledExchanges,
+    simBalances, balances, enabledExchanges, fundingRates,
   } = useFundingStore();
 
   const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
@@ -298,17 +298,20 @@ export default function OpportunityCard() {
   const activeCount = simulationMode ? simPositions.length : positions.length;
   const candidateCount = scheduledCoins.filter(c => c.status === 'opportunity').length;
 
-  // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 기회(opportunities) 수
+  // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 전체 펀딩 가능 코인 수
   const intervalStats = useMemo(() => {
     const buckets: Record<string, { scheduled: number; total: number; assets: string[] }> = {
       '1h': { scheduled: 0, total: 0, assets: [] },
       '4h': { scheduled: 0, total: 0, assets: [] },
       '8h': { scheduled: 0, total: 0, assets: [] },
     };
-    // 전체 기회 수 (opportunities에서 주기별 카운트)
-    for (const opp of opportunities) {
-      const h = opp.fundingIntervalMs ? Math.round(opp.fundingIntervalMs / 3600000) : 8;
-      const iKey = h <= 1 ? '1h' : h <= 4 ? '4h' : '8h';
+    // 전체 코인 수 (fundingRates에서 고유 baseAsset 기준)
+    const seenByInterval = new Set<string>();
+    for (const rate of fundingRates) {
+      const key2 = `${rate.baseAsset}:${rate.intervalHours <= 1 ? '1h' : rate.intervalHours <= 4 ? '4h' : '8h'}`;
+      if (seenByInterval.has(key2)) continue;
+      seenByInterval.add(key2);
+      const iKey = rate.intervalHours <= 1 ? '1h' : rate.intervalHours <= 4 ? '4h' : '8h';
       buckets[iKey].total++;
     }
     // 예약 + 활성 카운트
@@ -320,7 +323,7 @@ export default function OpportunityCard() {
       buckets[key].assets.push(item.asset);
     }
     return buckets;
-  }, [scheduledCoins, opportunities]);
+  }, [scheduledCoins, fundingRates]);
 
   return (
     <>
