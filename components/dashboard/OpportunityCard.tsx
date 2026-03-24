@@ -733,10 +733,13 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
 
     for (const c of activeCoins) {
       const rs = realSpreads?.[c.asset];
+      // realSpread에 슬리피지+베이시스+수수료 모두 반영됨 → 수수료 0인 더미 거래소로 이중차감 방지
       const opp = rs
-        ? { ...c.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
+        ? { ...c.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread, shortExchange: c.opp.shortExchange, longExchange: c.opp.longExchange }
         : c.opp;
-      const profit = estimateProfit(opp, investmentUSDT, leverage);
+      const profit = rs
+        ? estimateProfit({ ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }, investmentUSDT, leverage, true)
+        : estimateProfit(opp, investmentUSDT, leverage);
       perDay += profit.perDay; per2Day += profit.per2Day; per3Day += profit.per3Day;
       per4Day += profit.per4Day; per5Day += profit.per5Day; per6Day += profit.per6Day;
       perWeek += profit.perWeek; per2Week += profit.per2Week; per3Week += profit.per3Week; perMonth += profit.perMonth;

@@ -156,6 +156,7 @@ export function estimateProfit(
   opportunity: ArbitrageOpportunity,
   investmentUSDT: number,
   leverage: number,
+  skipFees = false, // true면 spread에 이미 수수료 포함 (realSpread 사용 시)
 ): ProfitEstimate {
   const totalCapital = investmentUSDT * 2;
   const notional = investmentUSDT * leverage;
@@ -164,8 +165,8 @@ export function estimateProfit(
 
   const grossPerFunding = notional * opportunity.spread;
 
-  // 거래소별 실제 수수료 (taker 기준 — 보수적 추정, maker 성공 시 실제 비용은 더 낮음)
-  const roundTripFee = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker');
+  // skipFees=true면 spread에 이미 수수료+슬리피지 반영됨 → 이중 차감 방지
+  const roundTripFee = skipFees ? 0 : getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker');
   const feesPerCycle = notional * roundTripFee;
 
   // 순수익 = 펀딩 수익 - 해당 사이클 수수료
