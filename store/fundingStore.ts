@@ -1260,11 +1260,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // ── 진입 갭 계산 및 롱 노셔널 조정 ──
       const entryGapPercent = ((shortFillPrice - longFillPrice) / ((shortFillPrice + longFillPrice) / 2)) * 100;
       get().addLog('info', `[SIM] ${opportunity.baseAsset} 진입 갭: ${entryGapPercent.toFixed(4)}% (숏:$${fmtNum(shortFillPrice, 2)} 롱:$${fmtNum(longFillPrice, 2)})`);
-      // Gap > 0.1% → adjust long notional to equalize USD exposure
+      // Gap > 0.1% → 롱 노셔널 조정으로 양쪽 수량(계약 수) 일치 → 델타 중립
       let adjustedLongNotional = notional;
       if (Math.abs(entryGapPercent) > 0.1) {
-        adjustedLongNotional = notional * (shortFillPrice / longFillPrice);
-        get().addLog('info', `[SIM] ${opportunity.baseAsset} 롱 노셔널 조정: $${fmtNum(notional, 2)} → $${fmtNum(adjustedLongNotional, 2)} (갭 보정)`);
+        adjustedLongNotional = notional * (longFillPrice / shortFillPrice);
+        get().addLog('info', `[SIM] ${opportunity.baseAsset} 롱 노셔널 조정: $${fmtNum(notional, 2)} → $${fmtNum(adjustedLongNotional, 2)} (수량 균등화)`);
       }
 
       // ── 양쪽 별도 수수료/마진/비용 계산 ──
