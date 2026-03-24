@@ -327,11 +327,11 @@ export default function OpportunityCard() {
 
           {/* Quick Stats */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8, minWidth: 180 }}>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              <StatPill label="예약" value={`${scheduledCount}개`} color="#3b82f6" active={scheduledCount > 0} />
-              <StatPill label="활성 포지션" value={`${activeCount}개`} color="#f59e0b" active={activeCount > 0} />
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+              <StatPill label="예약/기회" value={`${scheduledCount + activeCount} / ${opportunities.length}`} color="#3b82f6" active={scheduledCount + activeCount > 0} />
+              <StatPill label="활성" value={`${activeCount}개`} color="#f59e0b" active={activeCount > 0} />
+              <StatPill label="예약" value={`${scheduledCount}개`} color="#10b981" active={scheduledCount > 0} />
               <StatPill label="후보" value={`${candidateCount}개`} color="#64748b" active={candidateCount > 0} />
-              <StatPill label="기회" value={`${opportunities.length}개`} color="#8b5cf6" active={opportunities.length > 0} />
             </div>
             {/* Config summary */}
             <div style={{ display: 'flex', gap: 10, fontSize: 11, color: 'var(--color-text-muted)', flexWrap: 'wrap', alignItems: 'center' }}>
