@@ -87,6 +87,14 @@ function normalizeFr(id: ExchangeId, sym: string, fr: any): FundingRate | null {
 
   // Prefer nextFundingDatetime/Timestamp (unambiguously the NEXT settlement)
   // fundingDatetime can be a past timestamp on some exchanges (e.g. Bybit)
+  // Parse interval first (needed for stale time correction)
+  let _intervalH = 8;
+  if (fr.interval) {
+    const m = String(fr.interval).match(/(\d+)h/i);
+    if (m) _intervalH = parseInt(m[1], 10);
+  }
+  const _intervalMs = _intervalH * 3600000;
+
   let nextFundingTime: number;
   if (fr.nextFundingTimestamp) {
     nextFundingTime = fr.nextFundingTimestamp as number;
@@ -97,14 +105,12 @@ function normalizeFr(id: ExchangeId, sym: string, fr: any): FundingRate | null {
   } else if (fr.fundingDatetime && new Date(fr.fundingDatetime as string).getTime() > Date.now()) {
     nextFundingTime = new Date(fr.fundingDatetime as string).getTime();
   } else {
-    nextFundingTime = Date.now() + 8 * 3600000;
+    nextFundingTime = Date.now() + _intervalMs;
   }
 
-  // Parse actual funding interval from CCXT (e.g. "8h", "4h", "1h")
-  let intervalHours = 8;
-  if (fr.interval) {
-    const match = String(fr.interval).match(/(\d+)h/i);
-    if (match) intervalHours = parseInt(match[1], 10);
+  // ★ 과거 시간 보정: 거래소가 stale nextFundingTime을 반환하면 다음 주기로 보정
+  while (nextFundingTime < Date.now() - 30_000) {
+    nextFundingTime += _intervalMs;
   }
 
   return normalizeFundingRate(
@@ -113,7 +119,7 @@ function normalizeFr(id: ExchangeId, sym: string, fr: any): FundingRate | null {
     sym,
     (fr.markPrice as number) || 0,
     nextFundingTime,
-    intervalHours,
+    _intervalH,
   );
 }
 
