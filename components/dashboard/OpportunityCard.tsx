@@ -159,9 +159,19 @@ export default function OpportunityCard() {
     setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
   }, [isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, snipeActive, cancelSnipe, positions, closeRealPosition]);
 
-  const handleSnipe = useCallback(() => {
+  const handleSnipe = useCallback(async () => {
     if (snipeActive) {
       cancelSnipe(simulationMode ? 'sim' : 'real');
+      // REAL 모드: 서버 스케줄러도 정지
+      if (!simulationMode) {
+        try {
+          await fetch('/api/scheduler', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'stop' }),
+          });
+        } catch { /* 서버 스케줄러 정지 실패는 무시 */ }
+      }
       setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} 자동 투자 중지됨`, type: 'success' });
     } else {
       const state = useFundingStore.getState();
@@ -170,8 +180,29 @@ export default function OpportunityCard() {
       const capitalKey = simulationMode ? 'simSnipeStartCapital' : 'realSnipeStartCapital';
       useFundingStore.setState({ [modeKey]: true, [capitalKey]: totalCapital });
       scheduleAllSnipes();
+
+      // REAL 모드: 서버 스케줄러도 시작 (브라우저 닫아도 계속 실행)
+      if (!simulationMode) {
+        try {
+          await fetch('/api/scheduler', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'start',
+              config: {
+                investmentUSDT: state.strategyConfig.investmentUSDT,
+                leverage: state.strategyConfig.leverage,
+                minSpreadPercent: state.strategyConfig.minSpreadPercent,
+                enabledExchanges: state.enabledExchanges,
+                maxConcurrentPairs: 5,
+              },
+            }),
+          });
+        } catch { /* 서버 스케줄러 시작 실패 시 클라이언트만으로 동작 */ }
+      }
+
       const count = Object.keys(useFundingStore.getState().snipeTargets).length;
-      setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} 스나이핑 시작! ${count}개 코인 예약`, type: 'success' });
+      setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} 스나이핑 시작! ${count}개 코인 예약${!simulationMode ? ' (서버 백그라운드 ON)' : ''}`, type: 'success' });
     }
   }, [snipeActive, simulationMode, scheduleAllSnipes, cancelSnipe]);
 

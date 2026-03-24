@@ -30,6 +30,9 @@ export default function ReturnProjectionPanel() {
   // 자동투자 ON 상태면 ON 시점 자본 기준, 아니면 현재 설정 기준
   const portfolio = (snipeActive && snipeStartCapital > 0) ? snipeStartCapital : totalCapital;
 
+  // 1쌍 기준 투입 자본 (롱+숏 양쪽 마진)
+  const pairCapital = strategyConfig.investmentUSDT * 2;
+
   const projection = useMemo(() => {
     const best = opportunities[0];
     if (!best) return null;
@@ -49,42 +52,58 @@ export default function ReturnProjectionPanel() {
 
     const intervalMs = best.fundingIntervalMs ?? 8 * 3600000;
     const intervalH = intervalMs / 3600000;
-    const fundingsPerDay = 24 / intervalH;
-
-    // 단리: 매 사이클마다 수수료 차감된 순수익 기준
+    // 단리: 매 사이클마다 수수료 차감된 순수익 × 기간 내 펀딩 횟수
+    const simpleCalc = (hours: number) => netPerFunding * (hours / intervalH);
     const simple: Record<PeriodKey, number> = {
-      '1h': netPerFunding / intervalH,
-      '4h': netPerFunding * (4 / intervalH),
-      '8h': netPerFunding * (8 / intervalH),
-      day: netPerFunding * fundingsPerDay,
-      week: netPerFunding * fundingsPerDay * 7,
-      month: netPerFunding * fundingsPerDay * 30,
-      '3month': netPerFunding * fundingsPerDay * 90,
-      '6month': netPerFunding * fundingsPerDay * 180,
+      '1h': simpleCalc(1),
+      '4h': simpleCalc(4),
+      '8h': simpleCalc(8),
+      day: simpleCalc(24),
+      week: simpleCalc(24 * 7),
+      month: simpleCalc(24 * 30),
+      '3month': simpleCalc(24 * 90),
+      '6month': simpleCalc(24 * 180),
     };
 
-    // 복리: 순수익률 기준 복리 계산
-    const netRatePerFunding = netPerFunding / portfolio;
-    const compoundCalc = (periods: number) => {
-      if (netRatePerFunding <= -1) return -portfolio; // 전액 손실 캡
-      const raw = portfolio * (Math.pow(1 + netRatePerFunding, periods) - 1);
-      if (!isFinite(raw)) return portfolio * 1e6; // overflow 방지
-      return Math.max(-portfolio, raw);
+    // 복리: 1쌍 투입자본 기준 이산 복리 (펀딩 주기 단위로만 복리 적용)
+    // — 1회 펀딩 수익률 = netPerFunding / pairCapital
+    // — n회 복리 수익 = pairCapital × ((1 + r)^n - 1)
+    // — 펀딩 주기 미만 시간은 단리로 프로레이트 (부분 복리 불가)
+    const netRatePerFunding = netPerFunding / pairCapital;
+    const compoundCalc = (hours: number) => {
+      const totalFundings = hours / intervalH;
+      const wholeFundings = Math.floor(totalFundings);
+      const remainder = totalFundings - wholeFundings;
+
+      if (wholeFundings === 0) {
+        // 1회 펀딩 미만 → 단리 프로레이트
+        return netPerFunding * remainder;
+      }
+
+      if (netRatePerFunding <= -1) return -pairCapital;
+      const compoundPart = pairCapital * (Math.pow(1 + netRatePerFunding, wholeFundings) - 1);
+      // 나머지 시간은 복리 후 자본 기준 단리
+      const grownCapital = pairCapital + compoundPart;
+      const remainderPart = remainder > 0 ? grownCapital * netRatePerFunding * remainder : 0;
+      const raw = compoundPart + remainderPart;
+
+      if (!isFinite(raw)) return pairCapital * 1e6;
+      return Math.max(-pairCapital, raw);
     };
     const compound: Record<PeriodKey, number> = {
-      '1h': compoundCalc(1 / intervalH),
-      '4h': compoundCalc(4 / intervalH),
-      '8h': compoundCalc(8 / intervalH),
-      day: compoundCalc(fundingsPerDay),
-      week: compoundCalc(fundingsPerDay * 7),
-      month: compoundCalc(fundingsPerDay * 30),
-      '3month': compoundCalc(fundingsPerDay * 90),
-      '6month': compoundCalc(fundingsPerDay * 180),
+      '1h': compoundCalc(1),
+      '4h': compoundCalc(4),
+      '8h': compoundCalc(8),
+      day: compoundCalc(24),
+      week: compoundCalc(24 * 7),
+      month: compoundCalc(24 * 30),
+      '3month': compoundCalc(24 * 90),
+      '6month': compoundCalc(24 * 180),
     };
 
     const displaySpreadPercent = hasRealSpread ? rs.effectiveSpread : best.spreadPercent;
     return { best, simple, compound, perFunding, totalFees: feesPerCycle, intervalH, displaySpreadPercent, hasRealSpread };
-  }, [opportunities, strategyConfig.investmentUSDT, strategyConfig.leverage, portfolio, realSpreads]);
+  }, [opportunities, strategyConfig.investmentUSDT, strategyConfig.leverage, pairCapital, realSpreads]);
 
   if (!projection) return null;
 
@@ -111,7 +130,7 @@ export default function ReturnProjectionPanel() {
           <span>{best.shortExchange.toUpperCase()} ⇄ {best.longExchange.toUpperCase()}</span>
           <span className="mono" style={{ fontWeight: 800, color: '#10b981' }}>+{fmtNum(displaySpreadPercent, 4)}%{hasRealSpread ? ' (실측)' : ''}</span>
           <span>({intervalH}h 주기)</span>
-          <span>• 총 투입 ${portfolio.toLocaleString()} ({enabledExchanges.length}개 거래소)</span>
+          <span>• 1쌍 투입 ${pairCapital.toLocaleString()} (총 ${portfolio.toLocaleString()})</span>
         </div>
 
         <div style={{ flex: 1 }} />
@@ -142,7 +161,7 @@ export default function ReturnProjectionPanel() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 8 }}>
           {TIME_PERIODS.map(({ key: periodKey, label }) => {
             const value = data[periodKey];
-            const roi = (value / portfolio) * 100;
+            const roi = (value / pairCapital) * 100;
             const isNeg = value < 0;
             const profitColor = isNeg ? '#ef4444' : (compoundMode ? '#a78bfa' : '#10b981');
             const roiColor = isNeg ? '#fca5a5' : (compoundMode ? '#c4b5fd' : '#6ee7b7');
