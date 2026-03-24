@@ -267,6 +267,23 @@ export default function OpportunityCard() {
   const activeCount = simulationMode ? simPositions.length : positions.length;
   const candidateCount = scheduledCoins.filter(c => c.status === 'opportunity').length;
 
+  // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약 + 활성만 카운트
+  const intervalStats = useMemo(() => {
+    const buckets: Record<string, { count: number; assets: string[] }> = {
+      '1h': { count: 0, assets: [] },
+      '4h': { count: 0, assets: [] },
+      '8h': { count: 0, assets: [] },
+    };
+    for (const item of scheduledCoins) {
+      if (item.status === 'opportunity') continue;
+      const h = item.opp.fundingIntervalMs ? Math.round(item.opp.fundingIntervalMs / 3600000) : 8;
+      const key = h <= 1 ? '1h' : h <= 4 ? '4h' : '8h';
+      buckets[key].count++;
+      buckets[key].assets.push(item.asset);
+    }
+    return buckets;
+  }, [scheduledCoins]);
+
   return (
     <>
       {/* Toast */}
@@ -425,6 +442,53 @@ export default function OpportunityCard() {
             <span style={{ fontSize: 12, color: ratesStatus === 'error' && !lastRatesUpdate ? '#ef4444' : 'var(--color-text-muted)' }}>
               {statusMsg}
             </span>
+          </div>
+        )}
+
+        {/* ═══ Funding Interval Dashboard ═══ */}
+        {snipeActive && (
+          <div style={{
+            display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap',
+          }}>
+            {(['1h', '4h', '8h'] as const).map(interval => {
+              const stat = intervalStats[interval];
+              const hasItems = stat.count > 0;
+              const colorMap = { '1h': '#06b6d4', '4h': '#8b5cf6', '8h': '#64748b' };
+              const color = colorMap[interval];
+              return (
+                <div key={interval} style={{
+                  flex: 1, minWidth: 120, padding: '8px 12px', borderRadius: 10,
+                  background: hasItems ? `${color}0d` : 'rgba(100,116,139,0.04)',
+                  border: `1px solid ${hasItems ? `${color}33` : 'rgba(100,116,139,0.12)'}`,
+                  display: 'flex', flexDirection: 'column', gap: 4,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 800, color,
+                      padding: '1px 6px', borderRadius: 4,
+                      background: `${color}1a`,
+                    }}>
+                      {interval}
+                    </span>
+                    <span style={{
+                      fontSize: 18, fontWeight: 900, color: hasItems ? color : 'var(--color-text-muted)',
+                      lineHeight: 1,
+                    }}>
+                      {stat.count}
+                    </span>
+                  </div>
+                  {hasItems ? (
+                    <div style={{ fontSize: 10, color, opacity: 0.8, lineHeight: 1.4 }}>
+                      {stat.assets.join(', ')}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: 'var(--color-text-muted)', opacity: 0.5 }}>
+                      해당 주기 포지션 없음
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
