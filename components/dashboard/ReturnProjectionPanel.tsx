@@ -20,7 +20,9 @@ const TIME_PERIODS = [
 type PeriodKey = typeof TIME_PERIODS[number]['key'];
 
 export default function ReturnProjectionPanel() {
-  const { opportunities, strategyConfig, enabledExchanges, snipeActive, snipeStartCapital, realSpreads } = useFundingStore();
+  const { opportunities, strategyConfig, enabledExchanges, simulationMode, simSnipeActive, realSnipeActive, simSnipeStartCapital, realSnipeStartCapital, realSpreads } = useFundingStore();
+  const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
+  const snipeStartCapital = simulationMode ? simSnipeStartCapital : realSnipeStartCapital;
   const [compoundMode, setCompoundMode] = useState(false);
 
   // 총 투입 자본 = 거래소 수 × 포지션당 투자금 × 2 (롱+숏)

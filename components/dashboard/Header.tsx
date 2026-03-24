@@ -21,11 +21,14 @@ export default function Header() {
     simulationMode,
     toggleSimulationMode,
     resetSimulation,
-    snipeActive,
+    simSnipeActive,
+    realSnipeActive,
     simPositions,
     positions,
     simBalances,
   } = useFundingStore();
+
+  const anySnipeActive = simSnipeActive || realSnipeActive;
 
   const handleRefresh = async () => {
     await Promise.all([refreshRates(), refreshPositions(), refreshBalances()]);
@@ -168,18 +171,29 @@ export default function Header() {
           </button>
         </div>
 
-        {/* Snipe status — 컴팩트 */}
+        {/* Snipe status — 컴팩트 (양쪽 모드 표시) */}
         <div style={{
           display: 'flex', alignItems: 'center', gap: 4,
           padding: '4px 8px', borderRadius: 6, flexShrink: 0,
-          background: snipeActive ? 'rgba(16,185,129,0.12)' : 'transparent',
-          border: `1px solid ${snipeActive ? 'rgba(16,185,129,0.3)' : 'var(--color-border)'}`,
+          background: anySnipeActive ? 'rgba(16,185,129,0.12)' : 'transparent',
+          border: `1px solid ${anySnipeActive ? 'rgba(16,185,129,0.3)' : 'var(--color-border)'}`,
         }}>
-          {snipeActive && (
+          {anySnipeActive && (
             <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 4px #10b981', animation: 'blink 1.5s ease-in-out infinite', flexShrink: 0 }} />
           )}
-          <span style={{ fontSize: 10, fontWeight: 700, color: snipeActive ? '#10b981' : 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
-            {snipeActive ? `투자중${(() => { const count = simulationMode ? simPositions.length : positions.filter(p => p.positionType !== 'manual').length; return count > 0 ? ` ${count}P` : ''; })()}` : '대기'}
+          <span style={{ fontSize: 10, fontWeight: 700, color: anySnipeActive ? '#10b981' : 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+            {anySnipeActive ? (() => {
+              const parts: string[] = [];
+              if (simSnipeActive) {
+                const simCount = simPositions.length;
+                parts.push(`SIM${simCount > 0 ? ` ${simCount}P` : ''}`);
+              }
+              if (realSnipeActive) {
+                const realCount = positions.filter(p => p.positionType !== 'manual').length;
+                parts.push(`REAL${realCount > 0 ? ` ${realCount}P` : ''}`);
+              }
+              return `투자중 ${parts.join(' | ')}`;
+            })() : '대기'}
           </span>
         </div>
 

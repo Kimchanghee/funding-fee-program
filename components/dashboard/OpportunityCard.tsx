@@ -116,11 +116,14 @@ export default function OpportunityCard() {
   const {
     opportunities, strategyConfig, setShowStrategyPanel,
     apiConfigs, simulationMode, simPositions,
-    snipeActive, snipeTargets, scheduleAllSnipes, cancelSnipe,
+    simSnipeActive, realSnipeActive,
+    snipeTargets, scheduleAllSnipes, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
     simBalances, balances, enabledExchanges,
   } = useFundingStore();
+
+  const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
 
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' | 'error' } | null>(null);
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
@@ -152,23 +155,25 @@ export default function OpportunityCard() {
         return;
       }
     }
-    if (snipeActive) cancelSnipe();
+    if (snipeActive) cancelSnipe(simulationMode ? 'sim' : 'real');
     setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
   }, [isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, snipeActive, cancelSnipe, positions, closeRealPosition]);
 
   const handleSnipe = useCallback(() => {
     if (snipeActive) {
-      cancelSnipe();
-      setToastMsg({ text: '자동 투자 중지됨', type: 'success' });
+      cancelSnipe(simulationMode ? 'sim' : 'real');
+      setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} 자동 투자 중지됨`, type: 'success' });
     } else {
       const state = useFundingStore.getState();
       const totalCapital = state.strategyConfig.investmentUSDT * 2 * state.enabledExchanges.length;
-      useFundingStore.setState({ snipeActive: true, snipeStartCapital: totalCapital });
+      const modeKey = simulationMode ? 'simSnipeActive' : 'realSnipeActive';
+      const capitalKey = simulationMode ? 'simSnipeStartCapital' : 'realSnipeStartCapital';
+      useFundingStore.setState({ [modeKey]: true, [capitalKey]: totalCapital });
       scheduleAllSnipes();
       const count = Object.keys(useFundingStore.getState().snipeTargets).length;
-      setToastMsg({ text: `스나이핑 시작! ${count}개 코인 예약`, type: 'success' });
+      setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} 스나이핑 시작! ${count}개 코인 예약`, type: 'success' });
     }
-  }, [snipeActive, scheduleAllSnipes, cancelSnipe]);
+  }, [snipeActive, simulationMode, scheduleAllSnipes, cancelSnipe]);
 
   // ── Portfolio ──
 
@@ -190,9 +195,10 @@ export default function OpportunityCard() {
     // Track by baseAsset only (for deduplication)
     const seenAssets = new Set<string>();
 
-    // 1) Snipe targets (scheduled) — key is baseAsset
+    // 1) Snipe targets (scheduled) — key is "sim:ASSET" or "real:ASSET"
     for (const [snipeKey, time] of Object.entries(snipeTargets)) {
-      const baseAsset = snipeKey.split(':')[0];
+      const colonIdx = snipeKey.indexOf(':');
+      const baseAsset = colonIdx >= 0 ? snipeKey.slice(colonIdx + 1) : snipeKey;
       if (seenAssets.has(baseAsset)) continue;
       const opp = opportunities.find(o => o.baseAsset === baseAsset);
       if (!opp) continue;

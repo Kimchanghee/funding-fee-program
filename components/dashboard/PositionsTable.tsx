@@ -101,7 +101,8 @@ function CloseModal({ position, onClose }: { position: Position; onClose: () => 
 }
 
 export default function PositionsTable() {
-  const { positions, isLoadingPositions, refreshPositions, simulationMode, simPositions, closeSimPosition, snipeActive, fundingRates } = useFundingStore();
+  const { positions, isLoadingPositions, refreshPositions, simulationMode, simPositions, closeSimPosition, simSnipeActive, realSnipeActive, fundingRates } = useFundingStore();
+  const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
   const [closeTarget, setCloseTarget] = useState<Position | null>(null);
   const [sideFilter, setSideFilter] = useState<'all' | 'long' | 'short'>('all');
 
