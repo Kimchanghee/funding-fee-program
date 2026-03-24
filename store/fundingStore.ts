@@ -945,10 +945,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (!opp) return;
 
         try {
-          // 양쪽 모드 중 보수적(작은) notional 사용 — realSpread는 모드 공통 데이터
+          // 양쪽 모드 중 큰 notional 사용 — 슬리피지는 주문 크기에 비례하므로 보수적 추정
           const simNotional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, true);
           const realNotional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, false);
-          const notional = Math.min(simNotional, realNotional) || Math.max(simNotional, realNotional);
+          const notional = Math.max(simNotional, realNotional) || Math.min(simNotional, realNotional);
           if (notional <= 0) return;
           const [shortRes, longRes] = await Promise.all([
             fetch(`/api/exchanges/${opp.shortExchange}/orderbook?symbol=${encodeURIComponent(opp.shortSymbol)}&side=sell&notional=${notional}`),
@@ -2166,9 +2166,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const oppNotional = getEffectiveNotional(currentOpp, strategyConfig, simBalances, realBalances, isSim);
       // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
       const revalFees = hasRealSpreadData ? 0 : oppNotional * getHedgeFees(currentOpp.shortExchange, currentOpp.longExchange, 'taker');
-      const liveNetProfit = oppNotional * effectiveSpread - revalFees;
+      const liveNetProfit = oppNotional * effectiveSpread - revalFees - oppNotional * SAFETY_MARGIN;
 
-      // 순수익 ≤ 0 시 해제 (minSpreadPercent는 이론 스프레드에만 적용, 실효 스프레드는 순수익 기준)
+      // 순수익 ≤ 0 시 해제 — 진입 기준(3bps)과 동일한 안전마진 적용
       if (liveNetProfit <= 0) {
         get().addLog('warning',
           `[재검증] ${asset} 순수익 기준 미달 — 예약 해제`,
@@ -2252,11 +2252,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (o.nextFundingTime - now > getScheduleAheadWindowMs(o)) { filterReasons.tooFarAhead++; return false; }
       // 과거 펀딩 시간만 차단 (normalizeFr에서 이미 보정하지만 안전장치)
       if (o.nextFundingTime < now) { filterReasons.pastFunding++; return false; }
-      // 예약 단계: realSpread 있으면 실측, 없으면 이론값 사용 (실행 시점에서 realSpread 필수 재검증)
+      // 예약 단계: realSpread 있으면 수익성은 getLiveNetProfit(3bps 포함)에서 검증 → minSpread는 이론값에만 적용
+      // effectiveSpread는 이미 수수료/슬리피지 차감 완료값이므로 minSpread(수수료 포함)와 비교하면 이중 필터
       const rs = preFilterRealSpreads[o.baseAsset];
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
-      const effSpreadPct = hasRS ? rs.effectiveSpread : o.spreadPercent;
-      if (effSpreadPct < effectiveMinPercent) { filterReasons.lowSpread++; return false; }
+      if (!hasRS && o.spreadPercent < effectiveMinPercent) { filterReasons.lowSpread++; return false; }
       if (o.netProfit <= 0) { filterReasons.noProfit++; return false; }
       return true;
     });
@@ -2281,13 +2281,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
 
     const { realSpreads: currentRealSpreads, simBalances, balances: realBalances } = get();
+    const SAFETY_MARGIN = 0.0003; // 3bps — 진입 기준과 동일
     const getLiveNetProfit = (o: ArbitrageOpportunity): number => {
       const n = getEffectiveNotional(o, strategyConfig, simBalances, realBalances, isSim);
       const rs = currentRealSpreads[o.baseAsset];
       const hasRealSpread = rs && Date.now() - rs.updatedAt < 30_000;
       const spread = hasRealSpread ? rs.effectiveSpread / 100 : o.spread;
       const fees = hasRealSpread ? 0 : n * getHedgeFees(o.shortExchange, o.longExchange, 'taker');
-      return n * spread - fees;
+      return n * spread - fees - n * SAFETY_MARGIN;
     };
     const profitable = filtered.filter(o => getLiveNetProfit(o) > 0);
 
@@ -2347,12 +2348,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         ? (latestSimBalances[ex] ?? 0)
         : (latestRealBalances[ex]?.availableUSDT ?? 0);
       // 이미 예약된 코인이 사용할 마진 차감 (같은 모드만)
+      // 복리 모드: 실제 진입은 min(shortBal, longBal) * 0.9 사용 → 예약 차감도 동일 기준
       const reservedMargin = Object.keys(snipeTargets).reduce((sum, tKey) => {
         const parsed = parseSnipeKey(tKey);
         if (parsed.isSim !== isSim) return sum;
         const opp = opportunities.find(o => o.baseAsset === parsed.asset);
         if (!opp) return sum;
         if (opp.shortExchange === ex || opp.longExchange === ex) {
+          if (strategyConfig.compoundInvesting) {
+            // 복리: 해당 opp가 사용할 실제 마진 추정 (진입 시점 기준과 동일한 로직)
+            const sBal = isSim ? (latestSimBalances[opp.shortExchange] ?? 0) : (latestRealBalances[opp.shortExchange]?.availableUSDT ?? 0);
+            const lBal = isSim ? (latestSimBalances[opp.longExchange] ?? 0) : (latestRealBalances[opp.longExchange]?.availableUSDT ?? 0);
+            return sum + Math.min(sBal, lBal) * 0.9;
+          }
           return sum + strategyConfig.investmentUSDT;
         }
         return sum;
@@ -2368,10 +2376,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     for (const opp of sorted) {
       const shortAvail = availableBalance[opp.shortExchange] ?? 0;
       const longAvail = availableBalance[opp.longExchange] ?? 0;
-      if (shortAvail < perSideInvestment || longAvail < perSideInvestment) { balanceSkips++; continue; }
+      // 복리 모드: 실제 투입금은 가용잔고의 90%
+      const requiredPerSide = strategyConfig.compoundInvesting
+        ? Math.min(shortAvail, longAvail) * 0.9
+        : perSideInvestment;
+      if (requiredPerSide < perSideInvestment && !strategyConfig.compoundInvesting) { balanceSkips++; continue; }
+      if (strategyConfig.compoundInvesting && requiredPerSide < perSideInvestment) { balanceSkips++; continue; }
       result.push(opp);
-      availableBalance[opp.shortExchange] = (availableBalance[opp.shortExchange] ?? 0) - perSideInvestment;
-      availableBalance[opp.longExchange] = (availableBalance[opp.longExchange] ?? 0) - perSideInvestment;
+      availableBalance[opp.shortExchange] = (availableBalance[opp.shortExchange] ?? 0) - requiredPerSide;
+      availableBalance[opp.longExchange] = (availableBalance[opp.longExchange] ?? 0) - requiredPerSide;
     }
 
     if (result.length === 0 && profitable.length > 0) {

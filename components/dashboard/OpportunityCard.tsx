@@ -631,7 +631,9 @@ export default function OpportunityCard() {
               }
               // 투자금 $1 미만이면 거래 불가 — 후보는 숨김 (예약/활성은 표시)
               if (item.status === 'opportunity' && itemPerSide < 1) return null;
-              const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage);
+              // realSpread는 슬리피지+수수료 이미 반영 → skipFees=true로 이중차감 방지
+              const hasRealSpread = !!realSpread;
+              const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage, hasRealSpread);
               // 마이너스 순수익: 후보는 숨김, 예약은 곧 재검증에서 취소되므로 숨김
               if (profit.netPerFunding <= 0 && item.status !== 'active') return null;
 
