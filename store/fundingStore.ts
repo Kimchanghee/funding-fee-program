@@ -528,8 +528,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           if (savedReal) updates.realSnipeActive = true;
           set(updates);
           get().addLog('info', `[복원] 자동투자 상태 복원 — ${savedSim ? 'SIM ' : ''}${savedReal ? 'REAL' : ''}`.trim());
-          // 스케줄링 재시작 (rates 로드 완료 후 실행되도록 약간 지연)
-          setTimeout(() => get().scheduleAllSnipes(), 3_000);
+          // 스케줄링 재시작: opportunities 로드 완료 대기 (최대 30초)
+          let attempts = 0;
+          const waitAndSchedule = () => {
+            if (get().opportunities.length > 0) {
+              get().scheduleAllSnipes();
+            } else if (attempts++ < 15) {
+              setTimeout(waitAndSchedule, 2_000);
+            }
+          };
+          setTimeout(waitAndSchedule, 2_000);
         }
       }).catch(() => { /* silent */ });
 
@@ -2362,28 +2370,27 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const bal = isSim
         ? (latestSimBalances[ex] ?? 0)
         : (latestRealBalances[ex]?.availableUSDT ?? 0);
-      // 이미 예약된 코인이 사용할 마진 차감 (같은 모드만)
-      // 복리 모드: 실제 진입은 min(shortBal, longBal) * 0.9 사용 → 예약 차감도 동일 기준
-      const reservedMargin = Object.keys(snipeTargets).reduce((sum, tKey) => {
-        const parsed = parseSnipeKey(tKey);
-        if (parsed.isSim !== isSim) return sum;
-        const opp = opportunities.find(o => o.baseAsset === parsed.asset);
-        if (!opp) return sum;
-        if (opp.shortExchange === ex || opp.longExchange === ex) {
-          if (strategyConfig.compoundInvesting) {
-            // 복리: 해당 opp가 사용할 실제 마진 추정 (진입 시점 기준과 동일한 로직)
-            const sBal = isSim ? (latestSimBalances[opp.shortExchange] ?? 0) : (latestRealBalances[opp.shortExchange]?.availableUSDT ?? 0);
-            const lBal = isSim ? (latestSimBalances[opp.longExchange] ?? 0) : (latestRealBalances[opp.longExchange]?.availableUSDT ?? 0);
-            return sum + Math.min(sBal, lBal) * 0.9;
-          }
-          return sum + strategyConfig.investmentUSDT;
-        }
-        return sum;
-      }, 0);
-      availableBalance[ex] = Math.max(0, bal - reservedMargin);
+      availableBalance[ex] = bal;
     }
-    const perSideInvestment = strategyConfig.investmentUSDT;
 
+    // 이미 예약된 코인의 마진을 순차 차감 (복리: 이전 예약이 줄인 잔고 반영)
+    const reservedKeys = Object.keys(snipeTargets).filter(k => parseSnipeKey(k).isSim === isSim);
+    for (const tKey of reservedKeys) {
+      const opp = opportunities.find(o => o.baseAsset === parseSnipeKey(tKey).asset);
+      if (!opp) continue;
+      if (strategyConfig.compoundInvesting) {
+        const shortAvail = availableBalance[opp.shortExchange] ?? 0;
+        const longAvail = availableBalance[opp.longExchange] ?? 0;
+        const reservePerSide = Math.min(shortAvail, longAvail) * 0.9;
+        availableBalance[opp.shortExchange] = Math.max(0, shortAvail - reservePerSide);
+        availableBalance[opp.longExchange] = Math.max(0, longAvail - reservePerSide);
+      } else {
+        availableBalance[opp.shortExchange] = Math.max(0, (availableBalance[opp.shortExchange] ?? 0) - strategyConfig.investmentUSDT);
+        availableBalance[opp.longExchange] = Math.max(0, (availableBalance[opp.longExchange] ?? 0) - strategyConfig.investmentUSDT);
+      }
+    }
+
+    const perSideInvestment = strategyConfig.investmentUSDT;
     let balanceSkips = 0;
     const conflictSkips = 0;
 
@@ -2391,15 +2398,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     for (const opp of sorted) {
       const shortAvail = availableBalance[opp.shortExchange] ?? 0;
       const longAvail = availableBalance[opp.longExchange] ?? 0;
-      // 복리 모드: 실제 투입금은 가용잔고의 90%
+      // 복리: 가용잔고의 90%, 단리: 고정 투자금
       const requiredPerSide = strategyConfig.compoundInvesting
         ? Math.min(shortAvail, longAvail) * 0.9
         : perSideInvestment;
-      if (requiredPerSide < perSideInvestment && !strategyConfig.compoundInvesting) { balanceSkips++; continue; }
-      if (strategyConfig.compoundInvesting && requiredPerSide < perSideInvestment) { balanceSkips++; continue; }
+      // 최소 투자금 미달 시 스킵
+      if (requiredPerSide < perSideInvestment) { balanceSkips++; continue; }
       result.push(opp);
-      availableBalance[opp.shortExchange] = (availableBalance[opp.shortExchange] ?? 0) - requiredPerSide;
-      availableBalance[opp.longExchange] = (availableBalance[opp.longExchange] ?? 0) - requiredPerSide;
+      availableBalance[opp.shortExchange] = Math.max(0, shortAvail - requiredPerSide);
+      availableBalance[opp.longExchange] = Math.max(0, longAvail - requiredPerSide);
     }
 
     if (result.length === 0 && profitable.length > 0) {

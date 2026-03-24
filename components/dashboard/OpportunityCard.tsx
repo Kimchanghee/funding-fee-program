@@ -155,7 +155,17 @@ export default function OpportunityCard() {
         return;
       }
     }
-    if (snipeActive) cancelSnipe(simulationMode ? 'sim' : 'real');
+    if (snipeActive) {
+      cancelSnipe(simulationMode ? 'sim' : 'real');
+      // 서버에 비활성 상태 저장 (모든 기기 동기화)
+      try {
+        await fetch('/api/snipe-state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(simulationMode ? { simSnipeActive: false } : { realSnipeActive: false }),
+        });
+      } catch { /* silent */ }
+    }
     setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
   }, [isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, snipeActive, cancelSnipe, positions, closeRealPosition]);
 
