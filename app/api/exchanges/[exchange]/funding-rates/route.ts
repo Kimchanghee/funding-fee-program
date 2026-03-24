@@ -2,13 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId } from '@/lib/types';
 import { fetchFundingRates } from '@/lib/exchanges';
 import { SUPPORTED_EXCHANGES, TRACKED_SYMBOLS } from '@/lib/types';
-
-function getApiConfig(req: NextRequest) {
-  const apiKey = req.headers.get('x-api-key') || '';
-  const secret = req.headers.get('x-api-secret') || '';
-  const passphrase = req.headers.get('x-api-passphrase') || undefined;
-  return apiKey && secret ? { apiKey, secret, passphrase } : undefined;
-}
+import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
 
 export async function GET(
   req: NextRequest,
@@ -19,7 +13,7 @@ export async function GET(
     return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
   }
   const id = exchange as ExchangeId;
-  const config = getApiConfig(req);
+  const config = getApiConfigFromRequest(req, id);
 
   // Build symbol list for this exchange
   const symbols = TRACKED_SYMBOLS.map((base) => {

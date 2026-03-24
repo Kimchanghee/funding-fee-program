@@ -2,14 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { fetchFundingHistory } from '@/lib/exchanges';
-
-function getApiConfig(req: NextRequest) {
-  return {
-    apiKey: req.headers.get('x-api-key') || '',
-    secret: req.headers.get('x-api-secret') || '',
-    passphrase: req.headers.get('x-api-passphrase') || undefined,
-  };
-}
+import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
 
 export async function GET(
   req: NextRequest,
@@ -20,7 +13,7 @@ export async function GET(
     return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
   }
   const id = exchange as ExchangeId;
-  const config = getApiConfig(req);
+  const config = getApiConfigFromRequest(req, id);
 
   if (!config.apiKey || !config.secret) {
     return NextResponse.json({ success: false, error: 'API credentials required' }, { status: 401 });

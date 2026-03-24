@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity } from '@/lib/types';
-import { SUPPORTED_EXCHANGES } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, getHedgeFees } from '@/lib/types';
 import { openPositionExact, fetchMarketFillPrice, closePosition } from '@/lib/exchanges';
+import { loadAllServerApiConfigs } from '@/lib/serverKeyStore';
 
 function isValidApiConfig(config: unknown): config is ApiConfig {
   if (!config || typeof config !== 'object') return false;
@@ -35,8 +36,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid leverage' }, { status: 400 });
     }
 
-    const shortConfig = apiConfigs?.[opportunity.shortExchange];
-    const longConfig = apiConfigs?.[opportunity.longExchange];
+    // 서버 측 암호화 키 저장소 우선, fallback으로 클라이언트 전송 키 사용
+    const serverConfigs = loadAllServerApiConfigs();
+    const shortConfig = serverConfigs[opportunity.shortExchange] ?? apiConfigs?.[opportunity.shortExchange];
+    const longConfig = serverConfigs[opportunity.longExchange] ?? apiConfigs?.[opportunity.longExchange];
 
     if (!isValidApiConfig(shortConfig) || !isValidApiConfig(longConfig)) {
       return NextResponse.json(
@@ -54,7 +57,33 @@ export async function POST(req: NextRequest) {
       fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
     ]);
 
-    // 2. Calculate precise quantities for equal USD exposure
+    // 2. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증
+    const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
+    const hedgeFeePct = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker') * 100;
+    const SAFETY_MARGIN = 0.03; // 3bps
+    const realNetSpread = opportunity.spreadPercent - entryGapPct * 1.5 - hedgeFeePct - SAFETY_MARGIN;
+
+    if (realNetSpread <= 0) {
+      console.log(
+        `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 실시간 수익성 미달: ` +
+        `스프레드=${opportunity.spreadPercent.toFixed(4)}% 진입갭=${entryGapPct.toFixed(4)}% ` +
+        `수수료=${hedgeFeePct.toFixed(3)}% → 순수익=${realNetSpread.toFixed(4)}%`,
+      );
+      return NextResponse.json({
+        success: false,
+        error: `실시간 수익성 미달: 순스프레드 ${realNetSpread.toFixed(4)}% ≤ 0 (진입갭 ${entryGapPct.toFixed(4)}%, 수수료 ${hedgeFeePct.toFixed(3)}%)`,
+        entryGapPct,
+        hedgeFeePct,
+        realNetSpread,
+      });
+    }
+
+    console.log(
+      `[EXECUTE] ${opportunity.baseAsset} profitability OK: ` +
+      `순스프레드=${realNetSpread.toFixed(4)}% (진입갭=${entryGapPct.toFixed(4)}%)`,
+    );
+
+    // 3. Calculate precise quantities for equal USD exposure
     const shortQty = targetNotional / shortFill.fillPrice;
     const longQty = targetNotional / longFill.fillPrice;
 

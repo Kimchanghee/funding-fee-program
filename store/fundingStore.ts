@@ -906,7 +906,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // Collect from snipeTargets + top opportunities (스케줄링 전 슬리피지 사전 조회)
     const uniqueAssets = new Set<string>();
     for (const key of Object.keys(snipeTargets)) {
-      uniqueAssets.add(key);
+      uniqueAssets.add(parseSnipeKey(key).asset);
     }
     // 5시간 이내 펀딩 기회 사전 조회 (스케줄링 시 이론값 fallback 방지)
     const LOOKAHEAD_MS = 5 * 60 * 60 * 1000;
@@ -927,7 +927,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (!opp) return;
 
         try {
-          const notional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, simulationMode);
+          // 양쪽 모드 중 보수적(작은) notional 사용 — realSpread는 모드 공통 데이터
+          const simNotional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, true);
+          const realNotional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, false);
+          const notional = Math.min(simNotional, realNotional) || Math.max(simNotional, realNotional);
           if (notional <= 0) return;
           const [shortRes, longRes] = await Promise.all([
             fetch(`/api/exchanges/${opp.shortExchange}/orderbook?symbol=${encodeURIComponent(opp.shortSymbol)}&side=sell&notional=${notional}`),
