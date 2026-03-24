@@ -518,6 +518,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         set({ realPositionMeta: savedRealMeta as Record<string, RealPositionMeta> });
       }
 
+      // 서버에 저장된 자동투자 상태 복원 (PC↔모바일 동기화)
+      fetch('/api/snipe-state').then(r => r.json()).then((res: { success: boolean; data?: { simSnipeActive: boolean; realSnipeActive: boolean } }) => {
+        if (!res.success || !res.data) return;
+        const { simSnipeActive: savedSim, realSnipeActive: savedReal } = res.data;
+        if (savedSim || savedReal) {
+          const updates: Partial<FundingState> = {};
+          if (savedSim) updates.simSnipeActive = true;
+          if (savedReal) updates.realSnipeActive = true;
+          set(updates);
+          get().addLog('info', `[복원] 자동투자 상태 복원 — ${savedSim ? 'SIM ' : ''}${savedReal ? 'REAL' : ''}`.trim());
+          // 스케줄링 재시작 (rates 로드 완료 후 실행되도록 약간 지연)
+          setTimeout(() => get().scheduleAllSnipes(), 3_000);
+        }
+      }).catch(() => { /* silent */ });
+
       // 저장된 시뮬레이션 상태 복원 (잔고, 포지션, 누적 펀딩)
       const savedSim = loadSimState();
       if (savedSim) {
@@ -2805,6 +2820,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const newTargets = { ...currentTargets };
       for (const k of realTimerKeys) { delete newTimers[k]; delete newTargets[k]; }
       set({ realSnipeActive: false, snipeTargets: newTargets, _snipeTimers: newTimers });
+      // 서버에 비활성 상태 저장 (모든 기기 동기화)
+      void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ realSnipeActive: false }) }).catch(() => {});
       get().addLog('error',
         `[스나이핑-헷징][${modeLabel}] 청산 실패로 자동화 일시정지 — 진입 예약 해제 (기존 청산 타이머 유지), 잔여 포지션 확인 후 수동 재개 필요`,
       );
@@ -2841,6 +2858,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       for (const t of Object.values(_snipeTimers)) clearTimeout(t);
       for (const t of Object.values(_snipeCloseTimers)) clearTimeout(t);
       set({ simSnipeActive: false, realSnipeActive: false, snipeTargets: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
+      // 서버에 비활성 상태 저장 (모든 기기 동기화)
+      void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simSnipeActive: false, realSnipeActive: false }) }).catch(() => {});
       get().addLog('info', '[스나이핑] 전체 중지됨');
     } else {
       const prefix = mode === 'sim' ? 'sim:' : 'real:';

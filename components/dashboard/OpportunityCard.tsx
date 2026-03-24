@@ -162,6 +162,14 @@ export default function OpportunityCard() {
   const handleSnipe = useCallback(async () => {
     if (snipeActive) {
       cancelSnipe(simulationMode ? 'sim' : 'real');
+      // 서버에 비활성 상태 저장 (모든 기기 동기화)
+      try {
+        await fetch('/api/snipe-state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(simulationMode ? { simSnipeActive: false } : { realSnipeActive: false }),
+        });
+      } catch { /* silent */ }
       // REAL 모드: 서버 스케줄러도 정지
       if (!simulationMode) {
         try {
@@ -180,6 +188,14 @@ export default function OpportunityCard() {
       const capitalKey = simulationMode ? 'simSnipeStartCapital' : 'realSnipeStartCapital';
       useFundingStore.setState({ [modeKey]: true, [capitalKey]: totalCapital });
       scheduleAllSnipes();
+      // 서버에 활성 상태 저장 (모든 기기 동기화)
+      try {
+        await fetch('/api/snipe-state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(simulationMode ? { simSnipeActive: true } : { realSnipeActive: true }),
+        });
+      } catch { /* silent */ }
 
       // REAL 모드: 서버 스케줄러도 시작 (브라우저 닫아도 계속 실행)
       if (!simulationMode) {
