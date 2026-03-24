@@ -27,6 +27,23 @@ import { getHedgeFees, getExchangeFee } from '@/lib/types';
 // ─────────────────────────────────────────────
 const TAKER_FEE_FALLBACK = 0.0006; // 0.06% worst-case fallback (bitget taker)
 let _lastScheduleDiagAt = 0; // 진단 로그 스팸 방지
+
+/** 서버 스케줄러 정지 — 재시도 2회, 실패 시 경고 로그 */
+async function stopServerScheduler(addLog?: (level: LogLevel, msg: string, exchange?: ExchangeId, detail?: string) => void): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch('/api/scheduler', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' }),
+      });
+      if (res.ok) return true;
+    } catch { /* retry */ }
+    if (attempt < 2) await new Promise(r => setTimeout(r, 1_000));
+  }
+  addLog?.('error', '[스케줄러] 서버 스케줄러 정지 실패 (3회 재시도) — 수동 확인 필요');
+  return false;
+}
 let _lastBalanceWarnAt = 0;  // 텔레그램 잔고 경고 쿨다운 (30분)
 // Taker 기준 최소 왕복 수수료 (보수적): ~0.05% × 4 = 0.20%
 // 거래소별 실제 수수료는 getHedgeFees()로 정확히 계산, 여기는 최소 안전 기준
@@ -519,16 +536,34 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
 
       // 서버에 저장된 자동투자 상태 복원 (PC↔모바일 동기화)
-      fetch('/api/snipe-state').then(r => r.json()).then((res: { success: boolean; data?: { simSnipeActive: boolean; realSnipeActive: boolean } }) => {
+      fetch('/api/snipe-state').then(r => r.json()).then(async (res: { success: boolean; data?: { simSnipeActive: boolean; realSnipeActive: boolean } }) => {
         if (!res.success || !res.data) return;
         const { simSnipeActive: savedSim, realSnipeActive: savedReal } = res.data;
-        if (savedSim || savedReal) {
+
+        // REAL: 서버 스케줄러가 실제로 돌고 있는지 확인 후에만 UI 상태를 ON으로
+        let realConfirmed = false;
+        if (savedReal) {
+          try {
+            const schedulerRes = await fetch('/api/scheduler');
+            if (schedulerRes.ok) {
+              const schedulerData = await schedulerRes.json() as { active?: boolean };
+              realConfirmed = !!schedulerData.active;
+            }
+          } catch { /* 확인 불가 → OFF 유지 */ }
+          if (!realConfirmed) {
+            // 서버 스케줄러가 안 돌고 있으면 snipe-state도 정정
+            void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ realSnipeActive: false }) }).catch(() => {});
+            get().addLog('warning', '[복원] REAL 자동투자 상태 OFF — 서버 스케줄러 미실행');
+          }
+        }
+
+        if (savedSim || realConfirmed) {
           const updates: Partial<FundingState> = {};
           if (savedSim) updates.simSnipeActive = true;
-          if (savedReal) updates.realSnipeActive = true;
+          if (realConfirmed) updates.realSnipeActive = true;
           set(updates);
-          get().addLog('info', `[복원] 자동투자 상태 복원 — ${savedSim ? 'SIM ' : ''}${savedReal ? 'REAL' : ''}`.trim());
-          // SIM 모드만 클라이언트 타이머로 스케줄링 (REAL은 서버 스케줄러가 담당 → 중복 진입 방지)
+          get().addLog('info', `[복원] 자동투자 상태 복원 — ${savedSim ? 'SIM ' : ''}${realConfirmed ? 'REAL' : ''}`.trim());
+          // SIM 모드만 클라이언트 타이머로 스케줄링 (REAL은 서버 스케줄러가 담당)
           if (savedSim) {
             let attempts = 0;
             const waitAndSchedule = () => {
@@ -2829,9 +2864,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const newTargets = { ...currentTargets };
       for (const k of realTimerKeys) { delete newTimers[k]; delete newTargets[k]; }
       set({ realSnipeActive: false, snipeTargets: newTargets, _snipeTimers: newTimers });
-      // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (모든 기기 동기화)
+      // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (재시도 포함)
       void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ realSnipeActive: false }) }).catch(() => {});
-      void fetch('/api/scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
+      void stopServerScheduler(get().addLog);
       get().addLog('error',
         `[스나이핑-헷징][${modeLabel}] 청산 실패로 자동화 일시정지 — 진입 예약 해제 (기존 청산 타이머 유지), 잔여 포지션 확인 후 수동 재개 필요`,
       );
@@ -2868,9 +2903,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       for (const t of Object.values(_snipeTimers)) clearTimeout(t);
       for (const t of Object.values(_snipeCloseTimers)) clearTimeout(t);
       set({ simSnipeActive: false, realSnipeActive: false, snipeTargets: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
-      // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (모든 기기 동기화)
+      // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (재시도 포함)
       void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simSnipeActive: false, realSnipeActive: false }) }).catch(() => {});
-      void fetch('/api/scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
+      void stopServerScheduler(get().addLog);
       get().addLog('info', '[스나이핑] 전체 중지됨');
     } else {
       const prefix = mode === 'sim' ? 'sim:' : 'real:';
@@ -2890,9 +2925,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (mode === 'sim') updates.simSnipeActive = false;
       else updates.realSnipeActive = false;
       set(updates);
-      // REAL 모드 정지 시 서버 스케줄러도 함께 정지
+      // REAL 모드 정지 시 서버 스케줄러도 함께 정지 (재시도 포함)
       if (mode === 'real') {
-        void fetch('/api/scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
+        void stopServerScheduler(get().addLog);
       }
       get().addLog('info', `[스나이핑] ${mode.toUpperCase()} 모드 중지됨`);
     }
