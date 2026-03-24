@@ -2223,15 +2223,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     ]);
 
     const MAX_SCHEDULE_AHEAD_MS = 5 * 60 * 60 * 1000;
+    const MIN_SCHEDULE_AHEAD_MS = 60_000; // 최소 1분 이상 남아야 예약 (과거/임박 방지)
 
     const { realSpreads: preFilterRealSpreads } = get();
 
-    const filterReasons = { active: 0, exchangeDisabled: 0, tooFarAhead: 0, lowSpread: 0, noProfit: 0 };
+    const filterReasons = { active: 0, exchangeDisabled: 0, tooFarAhead: 0, tooClose: 0, lowSpread: 0, noProfit: 0 };
 
     const filtered = opportunities.filter(o => {
       if (activeKeys.has(o.baseAsset)) { filterReasons.active++; return false; }
       if (!currentEnabled.includes(o.shortExchange) || !currentEnabled.includes(o.longExchange)) { filterReasons.exchangeDisabled++; return false; }
       if (o.nextFundingTime - now > MAX_SCHEDULE_AHEAD_MS) { filterReasons.tooFarAhead++; return false; }
+      // ★ 과거 또는 1분 미만 임박 → 즉시 실행 방지
+      if (o.nextFundingTime - now < MIN_SCHEDULE_AHEAD_MS) { filterReasons.tooClose++; return false; }
       // 예약 단계: realSpread 있으면 실측, 없으면 이론값 사용 (실행 시점에서 realSpread 필수 재검증)
       const rs = preFilterRealSpreads[o.baseAsset];
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
@@ -2248,6 +2251,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (filterReasons.active > 0) parts.push(`이미활성:${filterReasons.active}`);
         if (filterReasons.exchangeDisabled > 0) parts.push(`거래소비활성:${filterReasons.exchangeDisabled}`);
         if (filterReasons.tooFarAhead > 0) parts.push(`시간초과:${filterReasons.tooFarAhead}`);
+        if (filterReasons.tooClose > 0) parts.push(`임박/과거:${filterReasons.tooClose}`);
         if (filterReasons.lowSpread > 0) parts.push(`스프레드미달:${filterReasons.lowSpread}`);
         if (filterReasons.noProfit > 0) parts.push(`수익없음:${filterReasons.noProfit}`);
         get().addLog('warning',
@@ -2436,6 +2440,20 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const asset = opportunity.baseAsset;
     const snipeKey = mkSnipeKey(isSim, asset);
+
+    // ★ 실행 직전 시간 검증 — 펀딩 시간이 이미 지났거나 너무 일찍이면 차단
+    const secsUntilFunding = (targetFundingTime - Date.now()) / 1000;
+    if (secsUntilFunding < -10) {
+      get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${asset} 진입 차단 — 펀딩 시간이 ${Math.abs(secsUntilFunding).toFixed(0)}초 전에 이미 지남`);
+      get().cancelSnipeForAsset(snipeKey);
+      return;
+    }
+    if (secsUntilFunding > 30) {
+      get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${asset} 진입 차단 — 펀딩까지 ${secsUntilFunding.toFixed(0)}초 남음 (너무 이름)`);
+      get().cancelSnipeForAsset(snipeKey);
+      return;
+    }
+
     const { enabledExchanges: currentEnabled } = get();
 
     // 진입 시점에 해당 코인의 최신 기회 확인 (순수익 + 최소스프레드 기준)
