@@ -198,11 +198,11 @@ export function estimateProfit(
 
   // 복리: 수수료 차감 후 순수익률 기준 (펀딩 간격 미만은 선형)
   const netRatePerFunding = netPerFunding / totalCapital;
-  const MAX_COMPOUND = 10; // 최대 10배 (1000%) 캡 — 오버플로우 방지
   const safeCompound = (periods: number) => {
     if (netRatePerFunding <= -1) return -totalCapital;
     const raw = totalCapital * (Math.pow(1 + netRatePerFunding, periods) - 1);
-    return Math.max(-totalCapital, Math.min(raw, totalCapital * MAX_COMPOUND));
+    if (!isFinite(raw)) return totalCapital * 1e6; // overflow 방지
+    return Math.max(-totalCapital, raw);
   };
   const compound1h = netPer1h; // 1h 내 복리 불가 — 선형
   const compound4h = intervalH <= 4 ? safeCompound(4 / intervalH) : netPer4h;

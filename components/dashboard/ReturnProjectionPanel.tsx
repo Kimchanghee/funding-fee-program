@@ -63,13 +63,13 @@ export default function ReturnProjectionPanel() {
       '6month': netPerFunding * fundingsPerDay * 180,
     };
 
-    // 복리: 순수익률 기준 복리 계산 (오버플로우 방지: 최대 10배 캡)
+    // 복리: 순수익률 기준 복리 계산
     const netRatePerFunding = netPerFunding / portfolio;
-    const MAX_MULTIPLIER = 10; // 최대 10배 (1000%)
     const compoundCalc = (periods: number) => {
       if (netRatePerFunding <= -1) return -portfolio; // 전액 손실 캡
       const raw = portfolio * (Math.pow(1 + netRatePerFunding, periods) - 1);
-      return Math.max(-portfolio, Math.min(raw, portfolio * MAX_MULTIPLIER));
+      if (!isFinite(raw)) return portfolio * 1e6; // overflow 방지
+      return Math.max(-portfolio, raw);
     };
     const compound: Record<PeriodKey, number> = {
       '1h': compoundCalc(1 / intervalH),
