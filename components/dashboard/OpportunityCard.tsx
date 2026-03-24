@@ -976,10 +976,10 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
             }}>
               <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>{lb}</div>
               <div className="mono" style={{ fontSize: 14, fontWeight: 800, color: value >= 0 ? color : negColor }}>
-                {value >= 0 ? '+' : ''}${fmtNum(value)}
+                {value >= 1_000_000_000 ? '+$∞' : `${value >= 0 ? '+' : ''}$${fmtNum(value)}`}
               </div>
               <div className="mono" style={{ fontSize: 10, color: roi >= 0 ? (compoundMode ? '#c4b5fd' : '#6ee7b7') : '#fca5a5', marginTop: 2 }}>
-                {roi >= 0 ? '+' : ''}{fmtNum(roi, 2)}%
+                {roi >= 100_000_000 ? '+∞%' : `${roi >= 0 ? '+' : ''}${fmtNum(roi, 2)}%`}
               </div>
             </div>
           );
@@ -1006,10 +1006,10 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
             }}>
               <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>{lb}</div>
               <div className="mono" style={{ fontSize: 14, fontWeight: 800, color: value >= 0 ? color : negColor }}>
-                {value >= 0 ? '+' : ''}${fmtNum(value)}
+                {value >= 1_000_000_000 ? '+$∞' : `${value >= 0 ? '+' : ''}$${fmtNum(value)}`}
               </div>
               <div className="mono" style={{ fontSize: 10, color: roi >= 0 ? (compoundMode ? '#c4b5fd' : '#6ee7b7') : '#fca5a5', marginTop: 2 }}>
-                {roi >= 0 ? '+' : ''}{fmtNum(roi, 2)}%
+                {roi >= 100_000_000 ? '+∞%' : `${roi >= 0 ? '+' : ''}${fmtNum(roi, 2)}%`}
               </div>
             </div>
           );
