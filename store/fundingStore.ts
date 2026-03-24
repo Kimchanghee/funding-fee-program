@@ -528,16 +528,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           if (savedReal) updates.realSnipeActive = true;
           set(updates);
           get().addLog('info', `[복원] 자동투자 상태 복원 — ${savedSim ? 'SIM ' : ''}${savedReal ? 'REAL' : ''}`.trim());
-          // 스케줄링 재시작: opportunities 로드 완료 대기 (최대 30초)
-          let attempts = 0;
-          const waitAndSchedule = () => {
-            if (get().opportunities.length > 0) {
-              get().scheduleAllSnipes();
-            } else if (attempts++ < 15) {
-              setTimeout(waitAndSchedule, 2_000);
-            }
-          };
-          setTimeout(waitAndSchedule, 2_000);
+          // SIM 모드만 클라이언트 타이머로 스케줄링 (REAL은 서버 스케줄러가 담당 → 중복 진입 방지)
+          if (savedSim) {
+            let attempts = 0;
+            const waitAndSchedule = () => {
+              if (get().opportunities.length > 0) {
+                get().scheduleAllSnipes();
+              } else if (attempts++ < 15) {
+                setTimeout(waitAndSchedule, 2_000);
+              }
+            };
+            setTimeout(waitAndSchedule, 2_000);
+          }
         }
       }).catch(() => { /* silent */ });
 
@@ -2240,13 +2242,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // 펀딩 주기별(1h/4h/8h) 버킷 라운드로빈 → 짧은 주기 우선 보장
   // 각 활성 모드(sim/real)에 대해 독립적으로 스케줄링
   scheduleAllSnipes() {
-    const activeModes: boolean[] = [];
-    if (get().simSnipeActive) activeModes.push(true);
-    if (get().realSnipeActive) activeModes.push(false);
-    if (activeModes.length === 0) return;
-
-    for (const isSim of activeModes) {
-      get()._scheduleSnipesForMode(isSim);
+    // SIM: 클라이언트 타이머로 스케줄링
+    // REAL: 서버 스케줄러가 전담 → 클라이언트에서 중복 타이머 생성하지 않음
+    if (get().simSnipeActive) {
+      get()._scheduleSnipesForMode(true);
     }
   },
 
@@ -2374,7 +2373,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
 
     // 이미 예약된 코인의 마진을 순차 차감 (복리: 이전 예약이 줄인 잔고 반영)
-    const reservedKeys = Object.keys(snipeTargets).filter(k => parseSnipeKey(k).isSim === isSim);
+    // 펀딩 시각 순 정렬 — 이른 펀딩이 먼저 자금을 사용하므로 순서가 중요
+    const reservedKeys = Object.keys(snipeTargets)
+      .filter(k => parseSnipeKey(k).isSim === isSim)
+      .sort((a, b) => (snipeTargets[a] ?? 0) - (snipeTargets[b] ?? 0));
     for (const tKey of reservedKeys) {
       const opp = opportunities.find(o => o.baseAsset === parseSnipeKey(tKey).asset);
       if (!opp) continue;
@@ -2827,8 +2829,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const newTargets = { ...currentTargets };
       for (const k of realTimerKeys) { delete newTimers[k]; delete newTargets[k]; }
       set({ realSnipeActive: false, snipeTargets: newTargets, _snipeTimers: newTimers });
-      // 서버에 비활성 상태 저장 (모든 기기 동기화)
+      // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (모든 기기 동기화)
       void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ realSnipeActive: false }) }).catch(() => {});
+      void fetch('/api/scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
       get().addLog('error',
         `[스나이핑-헷징][${modeLabel}] 청산 실패로 자동화 일시정지 — 진입 예약 해제 (기존 청산 타이머 유지), 잔여 포지션 확인 후 수동 재개 필요`,
       );
@@ -2865,8 +2868,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       for (const t of Object.values(_snipeTimers)) clearTimeout(t);
       for (const t of Object.values(_snipeCloseTimers)) clearTimeout(t);
       set({ simSnipeActive: false, realSnipeActive: false, snipeTargets: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
-      // 서버에 비활성 상태 저장 (모든 기기 동기화)
+      // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (모든 기기 동기화)
       void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simSnipeActive: false, realSnipeActive: false }) }).catch(() => {});
+      void fetch('/api/scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
       get().addLog('info', '[스나이핑] 전체 중지됨');
     } else {
       const prefix = mode === 'sim' ? 'sim:' : 'real:';
@@ -2886,6 +2890,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (mode === 'sim') updates.simSnipeActive = false;
       else updates.realSnipeActive = false;
       set(updates);
+      // REAL 모드 정지 시 서버 스케줄러도 함께 정지
+      if (mode === 'real') {
+        void fetch('/api/scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
+      }
       get().addLog('info', `[스나이핑] ${mode.toUpperCase()} 모드 중지됨`);
     }
   },
