@@ -13,6 +13,43 @@ export interface ExecutedOrderSummary {
   estimatedFee: number;
 }
 
+const MIN_EXECUTION_FILL_RATIO = 0.9;
+
+export class OrderExecutionError extends Error {
+  partialExecution?: ExecutedOrderSummary;
+
+  constructor(message: string, partialExecution?: ExecutedOrderSummary) {
+    super(message);
+    this.name = 'OrderExecutionError';
+    this.partialExecution = partialExecution;
+  }
+}
+
+export function getPartialExecution(error: unknown): ExecutedOrderSummary | null {
+  if (!error || typeof error !== 'object') return null;
+  const partial = (error as { partialExecution?: ExecutedOrderSummary }).partialExecution;
+  if (!partial || typeof partial.amount !== 'number' || partial.amount <= 0) return null;
+  return partial;
+}
+
+function buildExecutionSummary(
+  orderId: string,
+  price: number,
+  amount: number,
+  filledNotional: number,
+  liquidity: OrderLiquidity,
+  estimatedFee: number,
+): ExecutedOrderSummary {
+  return {
+    orderId,
+    price,
+    amount,
+    filledNotional,
+    liquidity,
+    estimatedFee,
+  };
+}
+
 // ── Exchange instance cache ──
 const publicExchangeCache = new Map<ExchangeId, any>();
 const MAX_PRIVATE_CACHE = 20;
@@ -608,6 +645,7 @@ export async function openPositionExact(
 
     const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
     const orderSide = side === 'long' ? 'buy' : 'sell';
+    const minFilledQty = qty * MIN_EXECUTION_FILL_RATIO;
 
     // 1. Try Post-Only maker at the provided limit price (best bid/ask from caller)
     try {
@@ -621,8 +659,8 @@ export async function openPositionExact(
       ]);
 
       const makerPrice = side === 'long'
-        ? (ob.bids?.[0]?.[0] || limitPrice * 0.999)
-        : (ob.asks?.[0]?.[0] || limitPrice * 1.001);
+        ? Math.min(ob.bids?.[0]?.[0] || limitPrice * 0.999, limitPrice)
+        : Math.max(ob.asks?.[0]?.[0] || limitPrice * 1.001, limitPrice);
 
       console.log(
         `[${id}] ${symbol} ${side} EXACT POST-ONLY: price=${makerPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
@@ -640,24 +678,24 @@ export async function openPositionExact(
       const filledAmount = (makerOrder.filled as number) || 0;
       const filledPrice = (makerOrder.average as number) || makerPrice;
 
-      if (filledAmount >= qty * 0.90) {
+      if (filledAmount >= minFilledQty) {
         const filledNotional = filledAmount * cSize * filledPrice;
         console.log(
           `[${id}] ${symbol} ${side} EXACT MAKER FILLED: price=${filledPrice.toFixed(4)}, ` +
           `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}`,
         );
-        return {
-          orderId: (makerOrder.id as string) || '',
-          price: filledPrice,
-          amount: filledAmount * cSize,
+        return buildExecutionSummary(
+          (makerOrder.id as string) || '',
+          filledPrice,
+          filledAmount * cSize,
           filledNotional,
-          liquidity: 'maker',
-          estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }]),
-        };
+          'maker',
+          estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }]),
+        );
       }
 
       // Partial or zero fill — cancel resting maker order before IOC fallback
-      if (filledAmount < qty * 0.90) {
+      if (filledAmount < minFilledQty) {
         if (makerOrder.id) {
           try {
             await ex.cancelOrder(makerOrder.id, symbol);
@@ -684,21 +722,34 @@ export async function openPositionExact(
           const avgPrice = totalFilled > 0
             ? (filledAmount * filledPrice + iocFilled * iocPrice) / totalFilled
             : filledPrice;
-          return {
-            orderId: (makerOrder.id as string) || (iocOrder.id as string) || '',
-            price: avgPrice,
-            amount: totalFilled * cSize,
-            filledNotional: totalFilled * cSize * avgPrice,
-            liquidity: 'mixed',
-            estimatedFee: estimateExecutionFee(id, [
-              { notional: filledAmount * cSize * filledPrice, liquidity: 'maker' },
-              { notional: iocFilled * cSize * iocPrice, liquidity: 'taker' },
-            ]),
-          };
+          const partialExecution = totalFilled > 0
+            ? buildExecutionSummary(
+                (makerOrder.id as string) || (iocOrder.id as string) || '',
+                avgPrice,
+                totalFilled * cSize,
+                totalFilled * cSize * avgPrice,
+                iocFilled > 0 ? 'mixed' : 'maker',
+                estimateExecutionFee(id, [
+                  { notional: filledAmount * cSize * filledPrice, liquidity: 'maker' },
+                  { notional: iocFilled * cSize * iocPrice, liquidity: 'taker' },
+                ]),
+              )
+            : undefined;
+
+          if (totalFilled < minFilledQty) {
+            throw new OrderExecutionError(
+              `[${id}] ${symbol} ${side} insufficient fill within limit price: ` +
+              `${((totalFilled / qty) * 100).toFixed(1)}% filled`,
+              partialExecution,
+            );
+          }
+
+          return partialExecution!;
         }
         // filledAmount === 0 → cancelled, fall through to IOC
       }
     } catch (makerErr) {
+      if (makerErr instanceof OrderExecutionError) throw makerErr;
       console.log(
         `[${id}] ${symbol} ${side} EXACT Post-Only failed: ${(makerErr as Error).message} — IOC fallback`,
       );
@@ -721,7 +772,7 @@ export async function openPositionExact(
     const filledAmount = (order.filled as number) || 0;
     const filledPrice = (order.average as number) || limitPrice;
 
-    if (filledAmount < qty * 0.90) {
+    if (filledAmount < minFilledQty) {
       const remaining = qty - filledAmount;
       // 슬리피지 제한: market order 대신 limitPrice 기준 limit IOC로 재시도
       // limitPrice는 사전 오더북 스캔의 worst level + 0.05% 버퍼 — 이 가격 이상 체결 방지
@@ -745,26 +796,37 @@ export async function openPositionExact(
         ? (filledAmount * filledPrice + retryFilled * retryPrice) / totalFilled
         : filledPrice;
 
-      return {
-        orderId: (order.id as string) || (retryOrder.id as string) || '',
-        price: avgPrice,
-        amount: totalFilled * cSize,
-        filledNotional: totalFilled * cSize * avgPrice,
-        liquidity: 'taker',
-        estimatedFee: estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }]),
-      };
+      const partialExecution = buildExecutionSummary(
+        (order.id as string) || (retryOrder.id as string) || '',
+        avgPrice,
+        totalFilled * cSize,
+        totalFilled * cSize * avgPrice,
+        'taker',
+        estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }]),
+      );
+
+      if (totalFilled < minFilledQty) {
+        throw new OrderExecutionError(
+          `[${id}] ${symbol} ${side} insufficient fill within limit price: ` +
+          `${((totalFilled / qty) * 100).toFixed(1)}% filled`,
+          partialExecution,
+        );
+      }
+
+      return partialExecution;
     }
 
     const filledNotional = filledAmount * cSize * filledPrice;
-    return {
-      orderId: (order.id as string) || '',
-      price: filledPrice,
-      amount: filledAmount * cSize,
+    return buildExecutionSummary(
+      (order.id as string) || '',
+      filledPrice,
+      filledAmount * cSize,
       filledNotional,
-      liquidity: 'taker',
-      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
-    };
+      'taker',
+      estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+    );
   } catch (err) {
+    if (err instanceof OrderExecutionError) throw err;
     throw new Error(`[${id}] openPositionExact failed: ${(err as Error).message}`);
   }
 }

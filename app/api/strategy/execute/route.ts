@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity } from '@/lib/types';
 import { SUPPORTED_EXCHANGES, getHedgeFees } from '@/lib/types';
-import { openPositionExact, fetchMarketFillPrice, closePosition } from '@/lib/exchanges';
+import {
+  openPositionExact,
+  fetchMarketFillPrice,
+  closePosition,
+  getPartialExecution,
+  type ExecutedOrderSummary,
+} from '@/lib/exchanges';
 import { loadAllServerApiConfigs } from '@/lib/serverKeyStore';
 import { makeServerPositionKey, upsertServerPositionMeta } from '@/lib/serverPositionMeta';
 
@@ -10,6 +16,42 @@ function isValidApiConfig(config: unknown): config is ApiConfig {
   const c = config as Record<string, unknown>;
   return typeof c.apiKey === 'string' && c.apiKey.length > 0
     && typeof c.secret === 'string' && c.secret.length > 0;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'unknown';
+}
+
+async function rollbackExecutedLegs(legs: Array<{
+  label: string;
+  exchange: ExchangeId;
+  config: ApiConfig;
+  symbol: string;
+  side: 'long' | 'short';
+  execution: ExecutedOrderSummary;
+  failureReason: string;
+}>): Promise<string | undefined> {
+  if (legs.length === 0) return undefined;
+
+  const results = await Promise.allSettled(legs.map(async (leg) => {
+    await closePosition(
+      leg.exchange,
+      leg.config,
+      leg.symbol,
+      leg.side,
+      leg.execution.amount,
+    );
+    return `${leg.label} rollback ok (${leg.failureReason})`;
+  }));
+
+  return results.map((result, index) => {
+    const leg = legs[index];
+    return result.status === 'fulfilled'
+      ? result.value
+      : `${leg.label} rollback failed (${leg.failureReason}): ${getErrorMessage(result.reason)}`;
+  }).join(' | ');
 }
 
 export async function POST(req: NextRequest) {
@@ -150,6 +192,52 @@ export async function POST(req: NextRequest) {
 
     const shortOk = shortResult.status === 'fulfilled';
     const longOk = longResult.status === 'fulfilled';
+    const shortFailure = shortResult.status === 'rejected' ? shortResult.reason : undefined;
+    const longFailure = longResult.status === 'rejected' ? longResult.reason : undefined;
+    const shortPartial = shortFailure ? getPartialExecution(shortFailure) : null;
+    const longPartial = longFailure ? getPartialExecution(longFailure) : null;
+
+    let rollbackError: string | undefined;
+    if (!shortOk || !longOk) {
+      rollbackError = await rollbackExecutedLegs([
+        ...(shortOk ? [{
+          label: 'short',
+          exchange: opportunity.shortExchange,
+          config: shortConfig,
+          symbol: opportunity.shortSymbol,
+          side: 'short' as const,
+          execution: shortResult.value,
+          failureReason: `paired leg failed: ${getErrorMessage(longFailure)}`,
+        }] : []),
+        ...(!shortOk && shortPartial ? [{
+          label: 'short_partial',
+          exchange: opportunity.shortExchange,
+          config: shortConfig,
+          symbol: opportunity.shortSymbol,
+          side: 'short' as const,
+          execution: shortPartial,
+          failureReason: getErrorMessage(shortFailure),
+        }] : []),
+        ...(longOk ? [{
+          label: 'long',
+          exchange: opportunity.longExchange,
+          config: longConfig,
+          symbol: opportunity.longSymbol,
+          side: 'long' as const,
+          execution: longResult.value,
+          failureReason: `paired leg failed: ${getErrorMessage(shortFailure)}`,
+        }] : []),
+        ...(!longOk && longPartial ? [{
+          label: 'long_partial',
+          exchange: opportunity.longExchange,
+          config: longConfig,
+          symbol: opportunity.longSymbol,
+          side: 'long' as const,
+          execution: longPartial,
+          failureReason: getErrorMessage(longFailure),
+        }] : []),
+      ]);
+    }
 
     // Hedge balance check — trim excess side if notional diff > 2%
     let hedgeTrimNote: string | undefined;
@@ -194,38 +282,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Rollback: if one side succeeded but the other failed, close the successful side
-    let rollbackError: string | undefined;
-    if (shortOk && !longOk) {
-      try {
-        const shortData = shortResult.value;
-        await closePosition(
-          opportunity.shortExchange,
-          shortConfig,
-          opportunity.shortSymbol,
-          'short',
-          shortData.amount,
-        );
-        rollbackError = `롱 진입 실패 → 숏 포지션 롤백(청산) 완료`;
-      } catch (rbErr) {
-        rollbackError = `롱 진입 실패 + 숏 롤백 실패: ${(rbErr as Error).message} — 수동 청산 필요!`;
-      }
-    } else if (!shortOk && longOk) {
-      try {
-        const longData = longResult.value;
-        await closePosition(
-          opportunity.longExchange,
-          longConfig,
-          opportunity.longSymbol,
-          'long',
-          longData.amount,
-        );
-        rollbackError = `숏 진입 실패 → 롱 포지션 롤백(청산) 완료`;
-      } catch (rbErr) {
-        rollbackError = `숏 진입 실패 + 롱 롤백 실패: ${(rbErr as Error).message} — 수동 청산 필요!`;
-      }
-    }
-
     if (shortOk && longOk) {
       upsertServerPositionMeta([
         {
@@ -257,10 +313,10 @@ export async function POST(req: NextRequest) {
       success: shortOk && longOk,
       short: shortOk
         ? { success: true, data: shortResult.value }
-        : { success: false, error: (shortResult.reason as Error).message },
+        : { success: false, error: getErrorMessage(shortFailure) },
       long: longOk
         ? { success: true, data: longResult.value }
-        : { success: false, error: (longResult.reason as Error).message },
+        : { success: false, error: getErrorMessage(longFailure) },
       rollback: rollbackError,
       hedgeTrim: hedgeTrimNote,
       pairId,

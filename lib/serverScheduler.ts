@@ -5,6 +5,7 @@ import {
   fetchFundingHistory as fetchFundingHistoryFromExchange,
   fetchFundingRates,
   fetchMarketFillPrice,
+  getPartialExecution,
   openPositionExact,
   type ExecutedOrderSummary,
 } from './exchanges';
@@ -41,6 +42,12 @@ const CLOSE_RETRY_DELAY_MS = 30_000;
 const FUNDING_VERIFY_RETRY_MS = 5_000;
 const FUNDING_VERIFY_ATTEMPTS = 3;
 const FUNDING_MATCH_WINDOW_MS = 10 * 60 * 1000;
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'unknown';
+}
 
 export interface SchedulerConfig {
   investmentUSDT: number;
@@ -553,42 +560,65 @@ class ServerScheduler {
 
       const shortOk = shortResult.status === 'fulfilled';
       const longOk = longResult.status === 'fulfilled';
+      const shortFailure = shortResult.status === 'rejected' ? shortResult.reason : undefined;
+      const longFailure = longResult.status === 'rejected' ? longResult.reason : undefined;
+      const shortPartial = shortFailure ? getPartialExecution(shortFailure) : null;
+      const longPartial = longFailure ? getPartialExecution(longFailure) : null;
 
-      if (shortOk && !longOk) {
-        await this.rollbackSingleEntry(
-          opportunity.shortExchange,
-          shortConfig,
-          opportunity.shortSymbol,
-          'short',
-          shortResult.value.amount,
-          asset,
-          `long leg failed: ${(longResult as PromiseRejectedResult).reason?.message || 'unknown'}`,
-        );
-        this.stats.errors++;
-        this.saveState();
-        return;
-      }
+      if (!shortOk || !longOk) {
+        const rollbackTargets = [
+          ...(shortOk ? [{
+            exchange: opportunity.shortExchange,
+            config: shortConfig,
+            symbol: opportunity.shortSymbol,
+            side: 'short' as const,
+            execution: shortResult.value,
+            failureReason: `paired leg failed: ${getErrorMessage(longFailure)}`,
+          }] : []),
+          ...(!shortOk && shortPartial ? [{
+            exchange: opportunity.shortExchange,
+            config: shortConfig,
+            symbol: opportunity.shortSymbol,
+            side: 'short' as const,
+            execution: shortPartial,
+            failureReason: getErrorMessage(shortFailure),
+          }] : []),
+          ...(longOk ? [{
+            exchange: opportunity.longExchange,
+            config: longConfig,
+            symbol: opportunity.longSymbol,
+            side: 'long' as const,
+            execution: longResult.value,
+            failureReason: `paired leg failed: ${getErrorMessage(shortFailure)}`,
+          }] : []),
+          ...(!longOk && longPartial ? [{
+            exchange: opportunity.longExchange,
+            config: longConfig,
+            symbol: opportunity.longSymbol,
+            side: 'long' as const,
+            execution: longPartial,
+            failureReason: getErrorMessage(longFailure),
+          }] : []),
+        ];
 
-      if (!shortOk && longOk) {
-        await this.rollbackSingleEntry(
-          opportunity.longExchange,
-          longConfig,
-          opportunity.longSymbol,
-          'long',
-          longResult.value.amount,
-          asset,
-          `short leg failed: ${(shortResult as PromiseRejectedResult).reason?.message || 'unknown'}`,
-        );
-        this.stats.errors++;
-        this.saveState();
-        return;
-      }
+        for (const rollback of rollbackTargets) {
+          await this.rollbackSingleEntry(
+            rollback.exchange,
+            rollback.config,
+            rollback.symbol,
+            rollback.side,
+            rollback.execution.amount,
+            asset,
+            rollback.failureReason,
+          );
+        }
 
-      if (!shortOk && !longOk) {
         this.stats.errors++;
         this.log(
           'error',
-          `entry failed on both legs | asset=${asset} short=${(shortResult as PromiseRejectedResult).reason?.message || 'unknown'} long=${(longResult as PromiseRejectedResult).reason?.message || 'unknown'}`,
+          `entry failed | asset=${asset} short=${shortOk ? 'rolled_back' : getErrorMessage(shortFailure)} ` +
+          `long=${longOk ? 'rolled_back' : getErrorMessage(longFailure)} ` +
+          `rollbackLegs=${rollbackTargets.length}`,
         );
         this.recordTrades([{
           timestamp: Date.now(),
@@ -597,8 +627,8 @@ class ServerScheduler {
           baseAsset: asset,
           shortExchange: opportunity.shortExchange,
           longExchange: opportunity.longExchange,
-          reason: 'both entry legs failed',
-          detail: `short:${(shortResult as PromiseRejectedResult).reason?.message || 'unknown'} long:${(longResult as PromiseRejectedResult).reason?.message || 'unknown'}`,
+          reason: 'entry_execution_failed',
+          detail: `short:${shortOk ? 'rolled_back' : getErrorMessage(shortFailure)} long:${longOk ? 'rolled_back' : getErrorMessage(longFailure)} rollbackLegs:${rollbackTargets.length}`,
         }]);
         this.saveState();
         return;

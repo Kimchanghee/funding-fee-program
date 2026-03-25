@@ -98,6 +98,17 @@ function makePositionKey(
   return `${exchange}:${symbol}:${side}`;
 }
 
+function getPositionLegKeys(position: {
+  exchange: ExchangeId;
+  symbol: string;
+  side: 'long' | 'short';
+}): string[] {
+  return [
+    makePositionKey(position.exchange, position.symbol, position.side),
+    `${position.exchange}:${position.symbol}`,
+  ];
+}
+
 type RealSpreadSnapshot = {
   effectiveSpread: number;
   shortSlippage: number;
@@ -463,6 +474,13 @@ interface ExecuteStrategyResult {
   rollback?: string;
   hedgeTrim?: string;
   error?: string;
+  reason?: string;
+  shortSlippage?: number;
+  longSlippage?: number;
+  maxSlippage?: number;
+  entryGapPct?: number;
+  hedgeFeePct?: number;
+  realNetSpread?: number;
   pairId?: string;
 }
 
@@ -1516,7 +1534,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     if (simulationMode) {
       const opportunityLegs = new Set(getOpportunityLegKeys(opportunity));
       const existingPair = get().simPositions.find((position) =>
-        opportunityLegs.has(makePositionKey(position.exchange, position.symbol, position.side)),
+        getPositionLegKeys(position).some((legKey) => opportunityLegs.has(legKey)),
       );
       if (existingPair) {
         get().addLog('warning',
@@ -1804,19 +1822,41 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       // Guard 차단 응답 처리 (슬리피지 초과, 수익성 미달 등)
       if (!result.success && !result.short && !result.long) {
-        const rawJson = json as unknown as { reason?: string; error?: string };
-        const reason = rawJson.reason;
-        const errorMsg = rawJson.error;
+        const { reason, error: errorMsg } = result;
+        const detailParts: string[] = [];
+        if (
+          typeof result.shortSlippage === 'number'
+          || typeof result.longSlippage === 'number'
+          || typeof result.maxSlippage === 'number'
+        ) {
+          detailParts.push(
+            `shortSlippage:${result.shortSlippage?.toFixed(4) ?? 'n/a'} ` +
+            `longSlippage:${result.longSlippage?.toFixed(4) ?? 'n/a'} ` +
+            `maxSlippage:${result.maxSlippage?.toFixed(4) ?? 'n/a'}`,
+          );
+        }
+        if (
+          typeof result.realNetSpread === 'number'
+          || typeof result.entryGapPct === 'number'
+          || typeof result.hedgeFeePct === 'number'
+        ) {
+          detailParts.push(
+            `realNetSpread:${result.realNetSpread?.toFixed(4) ?? 'n/a'} ` +
+            `entryGapPct:${result.entryGapPct?.toFixed(4) ?? 'n/a'} ` +
+            `hedgeFeePct:${result.hedgeFeePct?.toFixed(4) ?? 'n/a'}`,
+          );
+        }
         get().addLog('warning',
           `${opportunity.baseAsset} 진입 차단: ${errorMsg || '사전 검증 실패'}`,
           undefined,
-          `reason: ${reason || 'unknown'}`,
+          `reason: ${reason || 'unknown'}${detailParts.length > 0 ? ` | ${detailParts.join(' | ')}` : ''}`,
         );
         queueTrade({
           timestamp: Date.now(), type: 'guard_block', simulation: false,
           baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
           spread: opportunity.spread, spreadPercent: opportunity.spreadPercent,
           reason: errorMsg || reason || 'pre_execution_guard',
+          detail: detailParts.join(' | ') || undefined,
         });
         set({ strategyRunning: false });
         return result;
@@ -2530,7 +2570,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const activePositions = isSim ? simPositions : positions;
       for (const position of activePositions) {
         if (position.positionType === 'manual') continue;
-        occupiedLegs.add(makePositionKey(position.exchange, position.symbol, position.side));
+        getPositionLegKeys(position).forEach((legKey) => occupiedLegs.add(legKey));
       }
 
       for (const [otherKey] of Object.entries(snipeTargets)) {
@@ -2656,7 +2696,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
     for (const position of (isSim ? simPositions : positions)) {
       if (position.positionType === 'manual') continue;
-      occupiedLegs.add(makePositionKey(position.exchange, position.symbol, position.side));
+      getPositionLegKeys(position).forEach((legKey) => occupiedLegs.add(legKey));
     }
 
     const { realSpreads: preFilterRealSpreads } = get();
