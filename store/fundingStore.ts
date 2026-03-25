@@ -14,6 +14,7 @@ import type {
   ExchangeId,
   FundingPayment,
   OrderLiquidity,
+  SimStateSnapshot,
 } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta } from '@/lib/keyStore';
@@ -203,6 +204,116 @@ async function syncServerSchedulerConfig(
       (error as Error).message,
     );
   }
+}
+
+function buildServerSimSchedulerConfig(
+  strategyConfig: StrategyConfig,
+  enabledExchanges: ExchangeId[],
+) {
+  return {
+    investmentUSDT: strategyConfig.investmentUSDT,
+    leverage: strategyConfig.leverage,
+    minSpreadPercent: strategyConfig.minSpreadPercent,
+    compoundInvesting: strategyConfig.compoundInvesting,
+    enabledExchanges,
+    feeOverrides: strategyConfig.feeOverrides,
+    timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
+  };
+}
+
+async function syncServerSimSchedulerConfig(
+  strategyConfig: StrategyConfig,
+  enabledExchanges: ExchangeId[],
+  addLog: (level: LogLevel, message: string, exchange?: ExchangeId, detail?: string) => void,
+) {
+  try {
+    const response = await fetch('/api/sim-scheduler', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'update',
+        config: buildServerSimSchedulerConfig(strategyConfig, enabledExchanges),
+      }),
+    });
+
+    const payload = await response.json().catch(() => null) as { success?: boolean; error?: string } | null;
+    if (!response.ok || !payload?.success) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+  } catch (error) {
+    addLog(
+      'error',
+      '[SIM Scheduler] 설정 동기화 실패',
+      undefined,
+      (error as Error).message,
+    );
+  }
+}
+
+function buildEmptySimState(): SimStateSnapshot {
+  const simBalances = {} as Record<ExchangeId, number>;
+  const simInitialBalances = {} as Record<ExchangeId, number>;
+  for (const exchange of SUPPORTED_EXCHANGES) {
+    simBalances[exchange] = 0;
+    simInitialBalances[exchange] = 0;
+  }
+  return {
+    simBalances,
+    simInitialBalances,
+    simPositions: [],
+    simTotalFundingEarned: 0,
+    simTotalTopUps: 0,
+    simTotalFees: 0,
+    simTotalClosedPnl: 0,
+    simClosedPnlPerExchange: {},
+    simClosedFeesPerExchange: {},
+    fundingHistory: [],
+    updatedAt: Date.now(),
+  };
+}
+
+function applyServerSimStateSnapshot(
+  setState: (partial: Partial<FundingState>) => void,
+  snapshot?: SimStateSnapshot | null,
+) {
+  const state = snapshot ?? buildEmptySimState();
+  setState({
+    simBalances: state.simBalances,
+    simInitialBalances: state.simInitialBalances,
+    simPositions: state.simPositions,
+    simTotalFundingEarned: state.simTotalFundingEarned,
+    simTotalTopUps: state.simTotalTopUps,
+    simTotalFees: state.simTotalFees,
+    simTotalClosedPnl: state.simTotalClosedPnl,
+    simClosedPnlPerExchange: state.simClosedPnlPerExchange as Partial<Record<ExchangeId, number>>,
+    simClosedFeesPerExchange: state.simClosedFeesPerExchange as Partial<Record<ExchangeId, number>>,
+    fundingHistory: state.fundingHistory,
+  });
+}
+
+async function fetchServerSimStateSnapshot() {
+  const response = await fetch('/api/sim-state');
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const payload = await response.json() as { success?: boolean; data?: SimStateSnapshot; error?: string };
+  if (!payload.success || !payload.data) {
+    throw new Error(payload.error || 'failed to load sim state');
+  }
+  return payload.data;
+}
+
+async function fetchServerSimSchedulerStatus() {
+  const response = await fetch('/api/sim-scheduler');
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return response.json() as Promise<{
+    active?: boolean;
+    snipeTargets?: Record<string, number>;
+    snipeAllocations?: Record<string, number>;
+    state?: SimStateSnapshot;
+  }>;
 }
 
 /** 복리/단리에 따른 실제 notional 계산 */
@@ -981,7 +1092,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // 서버에 저장된 자동투자 상태 복원 (PC↔모바일 동기화)
       fetch('/api/snipe-state').then(r => r.json()).then(async (res: { success: boolean; data?: { simSnipeActive: boolean; realSnipeActive: boolean } }) => {
         if (!res.success || !res.data) return;
-        const { simSnipeActive: savedSim, realSnipeActive: savedReal } = res.data;
+        const { realSnipeActive: savedReal } = res.data;
 
         // REAL: 서버 스케줄러가 실제로 돌고 있는지 확인 후에만 UI 상태를 ON으로
         let realConfirmed = false;
@@ -1000,9 +1111,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           }
         }
 
-        if (savedSim || realConfirmed) {
+        if (realConfirmed) {
           const updates: Partial<FundingState> = {};
-          if (savedSim) updates.simSnipeActive = true;
           if (realConfirmed) updates.realSnipeActive = true;
           set(updates);
           if (realConfirmed) {
@@ -1012,19 +1122,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               get().addLog,
             );
           }
-          get().addLog('info', `[복원] 자동투자 상태 복원 — ${savedSim ? 'SIM ' : ''}${realConfirmed ? 'REAL' : ''}`.trim());
-          // SIM 모드만 클라이언트 타이머로 스케줄링 (REAL은 서버 스케줄러가 담당)
-          if (savedSim) {
-            let attempts = 0;
-            const waitAndSchedule = () => {
-              if (get().opportunities.length > 0) {
-                get().scheduleAllSnipes();
-              } else if (attempts++ < 15) {
-                setTimeout(waitAndSchedule, 2_000);
-              }
-            };
-            setTimeout(waitAndSchedule, 2_000);
-          }
+          get().addLog('info', '[복원] 자동투자 상태 복원 — REAL');
         }
       }).catch(() => { /* silent */ });
 
@@ -1066,6 +1164,54 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }
         set({ simBalances: newBal, simInitialBalances: { ...newBal } });
       }
+
+      void fetchServerSimSchedulerStatus()
+        .then((simScheduler) => {
+          applyServerSimStateSnapshot(set, simScheduler.state);
+          set({
+            simSnipeActive: !!simScheduler.active,
+            snipeTargets: simScheduler.snipeTargets ?? {},
+            snipeAllocations: simScheduler.snipeAllocations ?? {},
+          });
+        })
+        .catch(() => {
+          const savedSim = loadSimState();
+          if (!savedSim) return;
+          void fetch('/api/sim-state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'replace',
+              state: {
+                ...buildEmptySimState(),
+                ...savedSim,
+                fundingHistory: loadFundingHistory() ?? [],
+                updatedAt: Date.now(),
+              },
+            }),
+          })
+            .then(r => r.json())
+            .then((migrated: { success?: boolean; data?: SimStateSnapshot }) => {
+              if (migrated.success && migrated.data) {
+                applyServerSimStateSnapshot(set, migrated.data);
+                return;
+              }
+              applyServerSimStateSnapshot(set, {
+                ...buildEmptySimState(),
+                ...savedSim,
+                fundingHistory: loadFundingHistory() ?? [],
+                updatedAt: Date.now(),
+              });
+            })
+            .catch(() => {
+              applyServerSimStateSnapshot(set, {
+                ...buildEmptySimState(),
+                ...savedSim,
+                fundingHistory: loadFundingHistory() ?? [],
+                updatedAt: Date.now(),
+              });
+            });
+        });
 
       const enabled = get().enabledExchanges;
       get().addLog('info', '펀딩피 프로그램 초기화 완료', undefined,
@@ -1183,39 +1329,31 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       };
     });
 
-    if (previousState.simSnipeActive) {
-      if (timingChanged) {
-        set((s) => {
-          const nextTimers = { ...s._snipeTimers };
-          const nextTargets = { ...s.snipeTargets };
-
-          for (const key of Object.keys(nextTimers)) {
-            if (key.startsWith('sim:')) {
-              clearTimeout(nextTimers[key]);
-              delete nextTimers[key];
-            }
-          }
-          for (const key of Object.keys(nextTargets)) {
-            if (key.startsWith('sim:')) {
-              delete nextTargets[key];
-            }
-          }
-
-          return {
-            _snipeTimers: nextTimers,
-            snipeTargets: nextTargets,
-          };
-        });
-      }
-
-      get().revalidateScheduledSnipes();
-      get().scheduleAllSnipes();
-    } else if (previousState.realSnipeActive) {
+    if (previousState.realSnipeActive) {
       get().revalidateScheduledSnipes();
     }
 
     if (investmentChanged || leverageChanged || feeChanged) {
       void get().refreshRealSpreads();
+    }
+
+    if (investmentChanged && previousState.simPositions.length === 0) {
+      void fetch('/api/sim-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'reconfigure',
+          enabledExchanges: get().enabledExchanges,
+          investmentUSDT: next.investmentUSDT,
+        }),
+      })
+        .then(r => r.json())
+        .then((res: { success?: boolean; data?: SimStateSnapshot }) => {
+          if (res.success && res.data) {
+            applyServerSimStateSnapshot(set, res.data);
+          }
+        })
+        .catch(() => {});
     }
 
     if (previousState.realSnipeActive && schedulerRelevantChanged) {
@@ -1224,6 +1362,23 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         get().enabledExchanges,
         get().addLog,
       );
+    }
+    if (previousState.simSnipeActive && schedulerRelevantChanged) {
+      void syncServerSimSchedulerConfig(
+        get().strategyConfig,
+        get().enabledExchanges,
+        get().addLog,
+      );
+      void fetchServerSimSchedulerStatus()
+        .then((status) => {
+          applyServerSimStateSnapshot(set, status.state);
+          set({
+            simSnipeActive: !!status.active,
+            snipeTargets: status.snipeTargets ?? {},
+            snipeAllocations: status.snipeAllocations ?? {},
+          });
+        })
+        .catch(() => {});
     }
   },
 
@@ -1700,9 +1855,31 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)
     const snipeCheckInterval = setInterval(() => {
-      if (get().simSnipeActive || get().realSnipeActive) {
+      if (get().realSnipeActive) {
         get().revalidateScheduledSnipes();
         get().scheduleAllSnipes();
+      }
+      if (get().simSnipeActive || get().simulationMode) {
+        void fetchServerSimSchedulerStatus()
+          .then((status) => {
+            applyServerSimStateSnapshot(set, status.state);
+            set({
+              simSnipeActive: !!status.active,
+              snipeTargets: {
+                ...Object.fromEntries(
+                  Object.entries(get().snipeTargets).filter(([key]) => !key.startsWith('sim:')),
+                ),
+                ...(status.snipeTargets ?? {}),
+              },
+              snipeAllocations: {
+                ...Object.fromEntries(
+                  Object.entries(get().snipeAllocations).filter(([key]) => !key.startsWith('sim:')),
+                ),
+                ...(status.snipeAllocations ?? {}),
+              },
+            });
+          })
+          .catch(() => {});
       }
     }, 1_000);
 
@@ -1710,9 +1887,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       get().refreshPositions();
       get().refreshBalances();
       get().fetchFundingHistory();
-      get().tickSimFunding();
+      if (get().simulationMode || get().simSnipeActive) {
+        void fetchServerSimStateSnapshot()
+          .then((snapshot) => applyServerSimStateSnapshot(set, snapshot))
+          .catch(() => {});
+      } else {
+        get().tickSimFunding();
+      }
       // 잔고 재분배: 잔고 부족 거래소에 여유 거래소에서 균등 분배
-      if (get().simulationMode) {
+      if (get().simulationMode && !get().simSnipeActive) {
         get().redistributeBalances();
       }
     }, 15_000);
@@ -1833,6 +2016,34 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // ── Simulation branch ──────────────────────
     if (simulationMode) {
+      try {
+        const response = await fetch('/api/sim-execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            opportunity,
+            investmentUSDT: plannedInvestmentUSDT,
+          }),
+        });
+        const payload = await response.json().catch(() => null) as {
+          success?: boolean;
+          error?: string;
+          state?: SimStateSnapshot;
+        } | null;
+        if (!response.ok || !payload?.success) {
+          const errorMessage = payload?.error || `HTTP ${response.status}`;
+          get().addLog('warning', `[SIM] ${opportunity.baseAsset} 서버 시뮬 진입 실패`, undefined, errorMessage);
+          return { success: false, error: errorMessage };
+        }
+
+        applyServerSimStateSnapshot(set, payload.state);
+        return { success: true };
+      } catch (error) {
+        const errorMessage = (error as Error).message;
+        get().addLog('error', `[SIM] ${opportunity.baseAsset} 서버 시뮬 진입 오류`, undefined, errorMessage);
+        return { success: false, error: errorMessage };
+      }
+
       const margin = strategyConfig.compoundInvesting && investmentOverrideUSDT == null
         ? Math.min(
             (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
@@ -2417,6 +2628,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     });
     clearSimState();
     saveFundingHistory([]);
+    void fetch('/api/sim-state', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabledExchanges: enabled,
+        investmentUSDT: get().strategyConfig.investmentUSDT,
+      }),
+    }).then(r => r.json()).then((res: { success?: boolean; data?: SimStateSnapshot }) => {
+      if (res.success && res.data) {
+        applyServerSimStateSnapshot(set, res.data);
+      }
+    }).catch(() => {});
     // 서버 측 거래내역 + 로그도 초기화
     fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
     fetch('/api/logs/clear', { method: 'DELETE' }).catch(() => {});
@@ -2426,10 +2649,35 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   clearSimFundingHistory() {
     set({ fundingHistory: [] });
     saveFundingHistory([]);
+    void fetch('/api/sim-state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'clearFundingHistory' }),
+    }).catch(() => {});
     get().addLog('info', '[SIM] 펀딩 수령 내역 초기화 완료');
   },
 
   async closeSimPosition(simId) {
+    try {
+      const response = await fetch('/api/sim-close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simId }),
+      });
+      const payload = await response.json().catch(() => null) as {
+        success?: boolean;
+        result?: { netPnl: number; funding: number } | null;
+        state?: SimStateSnapshot;
+        error?: string;
+      } | null;
+      if (response.ok && payload?.success) {
+        applyServerSimStateSnapshot(set, payload.state);
+        return payload.result ?? null;
+      }
+    } catch {
+      // fall back to legacy local simulation close path
+    }
+
     const pos = get().simPositions.find(p => p.simId === simId);
     if (!pos) return null;
 
@@ -2808,9 +3056,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     if (get().realSnipeActive) {
       void syncServerSchedulerConfig(get().strategyConfig, next, get().addLog);
     }
+    void fetch('/api/sim-state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'reconfigure',
+        enabledExchanges: next,
+        investmentUSDT: get().strategyConfig.investmentUSDT,
+      }),
+    }).then(r => r.json()).then((res: { success?: boolean; data?: SimStateSnapshot }) => {
+      if (res.success && res.data) {
+        applyServerSimStateSnapshot(set, res.data);
+      }
+    }).catch(() => {});
     if (get().simSnipeActive) {
-      get().revalidateScheduledSnipes();
-      get().scheduleAllSnipes();
+      void syncServerSimSchedulerConfig(get().strategyConfig, next, get().addLog);
     }
     get().refreshRates();
   },
@@ -2977,7 +3237,26 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // SIM: 클라이언트 타이머로 스케줄링
     // REAL: 서버 스케줄러가 전담 → 클라이언트에서 중복 타이머 생성하지 않음
     if (get().simSnipeActive) {
-      get()._scheduleSnipesForMode(true);
+      void fetchServerSimSchedulerStatus()
+        .then((status) => {
+          applyServerSimStateSnapshot(set, status.state);
+          set({
+            simSnipeActive: !!status.active,
+            snipeTargets: {
+              ...Object.fromEntries(
+                Object.entries(get().snipeTargets).filter(([key]) => !key.startsWith('sim:')),
+              ),
+              ...(status.snipeTargets ?? {}),
+            },
+            snipeAllocations: {
+              ...Object.fromEntries(
+                Object.entries(get().snipeAllocations).filter(([key]) => !key.startsWith('sim:')),
+              ),
+              ...(status.snipeAllocations ?? {}),
+            },
+          });
+        })
+        .catch(() => {});
     }
   },
 
@@ -3653,6 +3932,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       set({ simSnipeActive: false, realSnipeActive: false, snipeTargets: {}, snipeAllocations: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
       // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (재시도 포함)
       void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simSnipeActive: false, realSnipeActive: false }) }).catch(() => {});
+      void fetch('/api/sim-scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
       void stopServerScheduler(get().addLog);
       get().addLog('info', '[스나이핑] 전체 중지됨');
     } else {
@@ -3685,6 +3965,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // REAL 모드 정지 시 서버 스케줄러도 함께 정지 (재시도 포함)
       if (mode === 'real') {
         void stopServerScheduler(get().addLog);
+      } else {
+        void fetch('/api/sim-scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
       }
       get().addLog('info', `[스나이핑] ${mode.toUpperCase()} 모드 중지됨`);
     }

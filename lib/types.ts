@@ -150,6 +150,20 @@ export interface SimPosition extends Position {
   entryGapPercent?: number; // 숏/롱 체결가 갭 (%) — orderbook 기반
 }
 
+export interface SimStateSnapshot {
+  simBalances: Record<ExchangeId, number>;
+  simInitialBalances: Record<ExchangeId, number>;
+  simPositions: SimPosition[];
+  simTotalFundingEarned: number;
+  simTotalTopUps: number;
+  simTotalFees: number;
+  simTotalClosedPnl: number;
+  simClosedPnlPerExchange: Partial<Record<ExchangeId, number>>;
+  simClosedFeesPerExchange: Partial<Record<ExchangeId, number>>;
+  fundingHistory: FundingPayment[];
+  updatedAt: number;
+}
+
 export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx'];
 
 // ── Per-exchange fee matrix (VIP0 / basic tier, USDT-M futures) ──
