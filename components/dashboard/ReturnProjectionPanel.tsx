@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { TrendingUp } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
-import { getHedgeFees } from '@/lib/types';
+import { estimateProfit } from '@/lib/opportunities';
 import { buildManagedOpportunityItems } from '@/lib/managedOpportunities';
 
 const TIME_PERIODS = [
@@ -44,16 +44,19 @@ export default function ReturnProjectionPanel() {
       .map((item) => {
         const rs = realSpreads[item.id] ?? realSpreads[item.asset];
         const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
-        const spread = hasRS ? rs.effectiveSpread / 100 : item.opp.spread;
-        const fee = hasRS ? 0 : getHedgeFees(item.opp.shortExchange, item.opp.longExchange, 'taker');
         const investmentUSDT = item.investmentUSDT ?? strategyConfig.investmentUSDT;
-        const notional = investmentUSDT * strategyConfig.leverage;
-        const net = notional * spread - notional * fee;
         const intervalH = (item.opp.fundingIntervalMs ?? 8 * 3600000) / 3600000;
-        return { ...item, investmentUSDT, intervalH, netPerFunding: net };
+        const effectiveOpp = hasRS
+          ? { ...item.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
+          : item.opp;
+        const profit = estimateProfit(effectiveOpp, investmentUSDT, strategyConfig.leverage, {
+          skipFees: !!hasRS,
+          feeOverrides: strategyConfig.feeOverrides,
+        });
+        return { ...item, investmentUSDT, intervalH, netPerFunding: profit.netPerFunding };
       })
       .filter((item) => item.netPerFunding > 0);
-  }, [opportunities, positions, realSpreads, simulationMode, simPositions, snipeAllocations, snipeTargets, strategyConfig.investmentUSDT, strategyConfig.leverage]);
+  }, [opportunities, positions, realSpreads, simulationMode, simPositions, snipeAllocations, snipeTargets, strategyConfig.feeOverrides, strategyConfig.investmentUSDT, strategyConfig.leverage]);
   useMemo(() => {
     const modePrefix = simulationMode ? 'sim' : 'real';
     const activePositions = simulationMode ? simPositions : positions;
@@ -71,17 +74,20 @@ export default function ReturnProjectionPanel() {
     for (const asset of assets) {
       const opp = opportunities.find(o => o.baseAsset === asset);
       if (!opp) continue;
-      const rs = realSpreads[asset];
+      const rs = realSpreads[opp.id ?? ''] ?? realSpreads[asset];
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
-      const spread = hasRS ? rs.effectiveSpread / 100 : opp.spread;
-      const fee = hasRS ? 0 : getHedgeFees(opp.shortExchange, opp.longExchange, 'taker');
-      const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
-      const net = notional * spread - notional * fee;
       const intervalH = (opp.fundingIntervalMs ?? 8 * 3600000) / 3600000;
-      if (net > 0) result.push({ opp, intervalH, netPerFunding: net });
+      const effectiveOpp = hasRS
+        ? { ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
+        : opp;
+      const profit = estimateProfit(effectiveOpp, strategyConfig.investmentUSDT, strategyConfig.leverage, {
+        skipFees: !!hasRS,
+        feeOverrides: strategyConfig.feeOverrides,
+      });
+      if (profit.netPerFunding > 0) result.push({ opp, intervalH, netPerFunding: profit.netPerFunding });
     }
     return result;
-  }, [opportunities, snipeTargets, simPositions, positions, simulationMode, realSpreads, strategyConfig.investmentUSDT, strategyConfig.leverage]);
+  }, [opportunities, snipeTargets, simPositions, positions, simulationMode, realSpreads, strategyConfig.feeOverrides, strategyConfig.investmentUSDT, strategyConfig.leverage]);
 
   // 예약된 쌍이 있으면 합산 기준, 없으면 best 1개 기준
   const activePairs = scheduledOpps.length > 0 ? scheduledOpps : (() => {
@@ -89,13 +95,16 @@ export default function ReturnProjectionPanel() {
     if (!best) return [];
     const rs = realSpreads[best.id ?? ''] ?? realSpreads[best.baseAsset];
     const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
-    const spread = hasRS ? rs.effectiveSpread / 100 : best.spread;
-    const fee = hasRS ? 0 : getHedgeFees(best.shortExchange, best.longExchange, 'taker');
     const investmentUSDT = strategyConfig.investmentUSDT;
-    const notional = investmentUSDT * strategyConfig.leverage;
-    const net = notional * spread - notional * fee;
     const intervalH = (best.fundingIntervalMs ?? 8 * 3600000) / 3600000;
-    return [{ id: best.id, asset: best.baseAsset, opp: best, intervalH, netPerFunding: net, investmentUSDT }];
+    const effectiveBest = hasRS
+      ? { ...best, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
+      : best;
+    const profit = estimateProfit(effectiveBest, investmentUSDT, strategyConfig.leverage, {
+      skipFees: !!hasRS,
+      feeOverrides: strategyConfig.feeOverrides,
+    });
+    return [{ id: best.id, asset: best.baseAsset, opp: best, intervalH, netPerFunding: profit.netPerFunding, investmentUSDT }];
   })();
 
   const projection = useMemo(() => {

@@ -1,5 +1,5 @@
-import type { FundingRate, ArbitrageOpportunity, ExchangeId } from './types';
-import { getHedgeFees, calcNetSpreadPercent } from './types';
+import type { FundingRate, ArbitrageOpportunity, ExchangeId, FeeOverrides } from './types';
+import { getHedgeFeesWithOverrides, calcNetSpreadPercent } from './types';
 import { calcAnnualReturn, getMinutesToFunding } from './exchanges/utils';
 
 const FUNDING_ALIGNMENT_TOLERANCE_MS = 120_000;
@@ -59,6 +59,7 @@ export function findOpportunities(
   topN = 20,
   investmentUSDT = 1000,
   leverage = 5,
+  feeOverrides?: FeeOverrides,
 ): ArbitrageOpportunity[] {
   const byAsset = new Map<string, FundingRate[]>();
   for (const rate of rates) {
@@ -95,7 +96,12 @@ export function findOpportunities(
         const nextFundingTime = Math.max(shortFundingTime, longFundingTime);
 
         const notional = investmentUSDT * leverage;
-        const roundTripFeePct = getHedgeFees(shortCandidate.exchange, longCandidate.exchange, 'taker') * 100;
+        const roundTripFeePct = getHedgeFeesWithOverrides(
+          shortCandidate.exchange,
+          longCandidate.exchange,
+          'taker',
+          feeOverrides,
+        ) * 100;
         // ★ 통합 계산식: 수수료 + 안전마진(3bps) 반영 (entryGap은 탐색 단계에서 0)
         const netSpreadPct = calcNetSpreadPercent(spread * 100, 0, roundTripFeePct);
         const netProfit = notional * (netSpreadPct / 100);
@@ -206,6 +212,11 @@ export interface ProfitEstimate {
   };
 }
 
+export interface EstimateProfitOptions {
+  skipFees?: boolean;
+  feeOverrides?: FeeOverrides;
+}
+
 /**
  * Estimate hedge profits for a funding arbitrage cycle.
  */
@@ -213,18 +224,29 @@ export function estimateProfit(
   opportunity: ArbitrageOpportunity,
   investmentUSDT: number,
   leverage: number,
-  skipFees = false,
+  options: boolean | EstimateProfitOptions = false,
 ): ProfitEstimate {
+  const { skipFees, feeOverrides } = typeof options === 'boolean'
+    ? { skipFees: options, feeOverrides: undefined }
+    : { skipFees: options.skipFees ?? false, feeOverrides: options.feeOverrides };
   const totalCapital = investmentUSDT * 2;
   const notional = investmentUSDT * leverage;
   const intervalH = getOpportunityIntervalHours(opportunity);
   const fundingsPerDay = 24 / intervalH;
 
   const grossPerFunding = notional * opportunity.spread;
-  const roundTripFee = skipFees ? 0 : getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker');
-  const feesPerCycle = notional * roundTripFee;
-
-  const netPerFunding = grossPerFunding - feesPerCycle;
+  const roundTripFeePct = skipFees
+    ? 0
+    : getHedgeFeesWithOverrides(
+      opportunity.shortExchange,
+      opportunity.longExchange,
+      'taker',
+      feeOverrides,
+    ) * 100;
+  const feesPerCycle = notional * (roundTripFeePct / 100);
+  const netPerFunding = skipFees
+    ? grossPerFunding
+    : notional * (calcNetSpreadPercent(opportunity.spreadPercent, 0, roundTripFeePct) / 100);
   const netPer1h = netPerFunding / intervalH;
   const netPer4h = netPer1h * 4;
   const netPerDay = netPerFunding * fundingsPerDay;

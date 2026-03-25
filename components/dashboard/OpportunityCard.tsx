@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Zap, Crosshair, Check, Clock, TrendingDown, TrendingUp, ChevronDown, ChevronUp, Settings } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportunity, type Position, type SimPosition } from '@/lib/types';
+import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportunity, type Position, type SimPosition, type FeeOverrides } from '@/lib/types';
 import { estimateProfit } from '@/lib/opportunities';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { buildManagedOpportunityItems, type ManagedOpportunityItem } from '@/lib/managedOpportunities';
@@ -217,6 +217,7 @@ export default function OpportunityCard() {
                 minSpreadPercent: state.strategyConfig.minSpreadPercent,
                 enabledExchanges: state.enabledExchanges,
                 maxConcurrentPairs: 5,
+                feeOverrides: state.strategyConfig.feeOverrides,
               },
             }),
           });
@@ -699,7 +700,10 @@ export default function OpportunityCard() {
               if (item.status === 'opportunity' && itemPerSide < 1) return null;
               // realSpread는 슬리피지+수수료 이미 반영 → skipFees=true로 이중차감 방지
               const hasRealSpread = !!realSpread;
-              const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage, hasRealSpread);
+              const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage, {
+                skipFees: hasRealSpread,
+                feeOverrides: strategyConfig.feeOverrides,
+              });
               // 마이너스 순수익: 후보만 숨김 (예약/활성은 항상 표시)
               if (profit.netPerFunding <= 0 && item.status === 'opportunity') return null;
 
@@ -867,6 +871,7 @@ export default function OpportunityCard() {
             coins={scheduledCoins}
             investmentUSDT={perExchangeInvestment}
             leverage={strategyConfig.leverage}
+            feeOverrides={strategyConfig.feeOverrides}
             compoundMode={compoundMode}
             setCompoundMode={setCompoundMode}
             realSpreads={realSpreads}
@@ -878,12 +883,13 @@ export default function OpportunityCard() {
 }
 
 /* ─── Portfolio Profit Summary Row ─── */
-function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, compoundMode, setCompoundMode, realSpreads }: {
+function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, feeOverrides, compoundMode, setCompoundMode, realSpreads }: {
   label: string;
   labelColor: string;
   coins: ManagedOpportunityItem[];
   investmentUSDT: number;
   leverage: number;
+  feeOverrides?: FeeOverrides;
   compoundMode: boolean;
   setCompoundMode: (v: boolean) => void;
   realSpreads?: Record<string, { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number }>;
@@ -919,8 +925,11 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
         ? { ...c.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread, shortExchange: c.opp.shortExchange, longExchange: c.opp.longExchange }
         : c.opp;
       const profit = rs
-        ? estimateProfit({ ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }, perSideInvestment, leverage, true)
-        : estimateProfit(opp, perSideInvestment, leverage);
+        ? estimateProfit({ ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }, perSideInvestment, leverage, {
+          skipFees: true,
+          feeOverrides,
+        })
+        : estimateProfit(opp, perSideInvestment, leverage, { feeOverrides });
       perDay += profit.perDay; per2Day += profit.per2Day; per3Day += profit.per3Day;
       per4Day += profit.per4Day; per5Day += profit.per5Day; per6Day += profit.per6Day;
       perWeek += profit.perWeek; per2Week += profit.per2Week; per3Week += profit.per3Week; perMonth += profit.perMonth;
@@ -932,7 +941,7 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
     }
     return { perDay, per2Day, per3Day, per4Day, per5Day, per6Day, perWeek, per2Week, per3Week, perMonth, per3Month, per6Month,
              cDay, c2Day, c3Day, c4Day, c5Day, c6Day, cWeek, c2Week, c3Week, cMonth, c3Month, c6Month };
-  }, [activeCoins, investmentUSDT, leverage, realSpreads]);
+  }, [activeCoins, feeOverrides, investmentUSDT, leverage, realSpreads]);
 
   if (activeCoins.length === 0) return null;
 

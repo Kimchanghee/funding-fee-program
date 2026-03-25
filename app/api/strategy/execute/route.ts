@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { ExchangeId, ApiConfig, ArbitrageOpportunity } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, getHedgeFees, calcNetSpreadPercent } from '@/lib/types';
+import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, getHedgeFeesWithOverrides, getExchangeFee, calcNetSpreadPercent } from '@/lib/types';
 import {
   openPositionExact,
   fetchMarketFillPrice,
@@ -42,6 +42,7 @@ async function rollbackExecutedLegs(legs: Array<{
       leg.symbol,
       leg.side,
       leg.execution.amount,
+      undefined,
     );
     return `${leg.label} rollback ok (${leg.failureReason})`;
   }));
@@ -60,11 +61,12 @@ export async function POST(req: NextRequest) {
       opportunity: ArbitrageOpportunity;
       investmentUSDT: number;
       leverage: number;
-      apiConfigs: Partial<Record<ExchangeId, ApiConfig>>;
+      apiConfigs?: Partial<Record<ExchangeId, ApiConfig>>;
       pairId?: string;
+      feeOverrides?: FeeOverrides;
     };
 
-    const { opportunity, investmentUSDT, leverage, apiConfigs } = body;
+    const { opportunity, investmentUSDT, leverage, apiConfigs, feeOverrides } = body;
     const pairId = typeof body.pairId === 'string' && body.pairId.trim()
       ? body.pairId.trim()
       : `api-${Date.now()}-${opportunity?.baseAsset ?? 'pair'}`;
@@ -127,7 +129,12 @@ export async function POST(req: NextRequest) {
 
     // 2b. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증 (통합 계산식)
     const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
-    const hedgeFeePct = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker') * 100;
+    const hedgeFeePct = getHedgeFeesWithOverrides(
+      opportunity.shortExchange,
+      opportunity.longExchange,
+      'taker',
+      feeOverrides,
+    ) * 100;
     const realNetSpread = calcNetSpreadPercent(opportunity.spreadPercent, entryGapPct, hedgeFeePct);
 
     if (realNetSpread <= 0) {
@@ -177,6 +184,7 @@ export async function POST(req: NextRequest) {
         shortQty,
         shortLimitPrice,
         leverage,
+        feeOverrides,
       ),
       openPositionExact(
         opportunity.longExchange,
@@ -186,6 +194,7 @@ export async function POST(req: NextRequest) {
         longQty,
         longLimitPrice,
         leverage,
+        feeOverrides,
       ),
     ]);
 
@@ -261,7 +270,7 @@ export async function POST(req: NextRequest) {
             const excessQty = (shortNotional - minNotional) / shortResult.value.price;
             await closePosition(
               opportunity.shortExchange, shortConfig,
-              opportunity.shortSymbol, 'short', excessQty,
+              opportunity.shortSymbol, 'short', excessQty, feeOverrides,
             );
             hedgeTrimNote = `숏 초과분 $${(shortNotional - minNotional).toFixed(2)} 트림 완료`;
           } else {
@@ -269,7 +278,7 @@ export async function POST(req: NextRequest) {
             const excessQty = (longNotional - minNotional) / longResult.value.price;
             await closePosition(
               opportunity.longExchange, longConfig,
-              opportunity.longSymbol, 'long', excessQty,
+              opportunity.longSymbol, 'long', excessQty, feeOverrides,
             );
             hedgeTrimNote = `롱 초과분 $${(longNotional - minNotional).toFixed(2)} 트림 완료`;
           }
@@ -308,6 +317,13 @@ export async function POST(req: NextRequest) {
       ]);
     }
 
+    const expectedTotalRoundTripFees = shortOk && longOk
+      ? shortResult.value.estimatedFee
+        + longResult.value.estimatedFee
+        + (shortResult.value.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker', feeOverrides))
+        + (longResult.value.filledNotional * getExchangeFee(opportunity.longExchange, 'taker', feeOverrides))
+      : undefined;
+
     return NextResponse.json({
       success: shortOk && longOk,
       short: shortOk
@@ -319,6 +335,7 @@ export async function POST(req: NextRequest) {
       rollback: rollbackError,
       hedgeTrim: hedgeTrimNote,
       pairId,
+      expectedTotalRoundTripFees,
     });
   } catch (err) {
     return NextResponse.json(

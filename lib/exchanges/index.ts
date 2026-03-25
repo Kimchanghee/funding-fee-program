@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as ccxt from 'ccxt';
-import type { ApiConfig, ExchangeId, FundingRate, Balance, Position, OrderLiquidity } from '../types';
+import type { ApiConfig, ExchangeId, FundingRate, Balance, Position, OrderLiquidity, FeeOverrides } from '../types';
 import { TRACKED_SYMBOLS, getExchangeFee } from '../types';
 import { normalizeFundingRate } from './utils';
 
@@ -396,8 +396,9 @@ export function analyzeOrderbook(
 function estimateExecutionFee(
   exchange: ExchangeId,
   parts: Array<{ notional: number; liquidity: Exclude<OrderLiquidity, 'mixed'> }>,
+  feeOverrides?: FeeOverrides,
 ): number {
-  return parts.reduce((sum, part) => sum + (part.notional * getExchangeFee(exchange, part.liquidity)), 0);
+  return parts.reduce((sum, part) => sum + (part.notional * getExchangeFee(exchange, part.liquidity, feeOverrides)), 0);
 }
 
 /**
@@ -412,6 +413,7 @@ export async function openPosition(
   side: 'long' | 'short',
   amountUSDT: number,
   leverage: number,
+  feeOverrides?: FeeOverrides,
 ): Promise<ExecutedOrderSummary> {
   let ex = makeExchange(id, config);
   try {
@@ -487,7 +489,7 @@ export async function openPosition(
             amount: filledAmount * cSize,
             filledNotional,
             liquidity: 'maker',
-            estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }]),
+            estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }], feeOverrides),
           };
         }
 
@@ -537,7 +539,7 @@ export async function openPosition(
               estimatedFee: estimateExecutionFee(id, [
                 { notional: filledAmount * cSize * filledPrice, liquidity: 'maker' },
                 { notional: iocFilled * cSize * iocFilledPrice, liquidity: 'taker' },
-              ]),
+              ], feeOverrides),
             };
           }
           // filledAmount === 0 → order cancelled, fall through to IOC
@@ -595,7 +597,7 @@ export async function openPosition(
         amount: totalFilled * cSize,
         filledNotional: totalFilled * cSize * avgPrice,
         liquidity: 'taker',
-        estimatedFee: estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }]),
+        estimatedFee: estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }], feeOverrides),
       };
     }
 
@@ -605,7 +607,7 @@ export async function openPosition(
       amount: filledAmount * cSize,
       filledNotional,
       liquidity: 'taker',
-      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides),
     };
   } catch (err) {
     throw new Error(`[${id}] openPosition failed: ${(err as Error).message}`);
@@ -629,6 +631,7 @@ export async function openPositionExact(
   qty: number,
   limitPrice: number,
   leverage: number,
+  feeOverrides?: FeeOverrides,
 ): Promise<ExecutedOrderSummary> {
   let ex = makeExchange(id, config);
   try {
@@ -690,7 +693,7 @@ export async function openPositionExact(
           filledAmount * cSize,
           filledNotional,
           'maker',
-          estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }]),
+          estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }], feeOverrides),
         );
       }
 
@@ -732,7 +735,7 @@ export async function openPositionExact(
                 estimateExecutionFee(id, [
                   { notional: filledAmount * cSize * filledPrice, liquidity: 'maker' },
                   { notional: iocFilled * cSize * iocPrice, liquidity: 'taker' },
-                ]),
+                ], feeOverrides),
               )
             : undefined;
 
@@ -802,7 +805,7 @@ export async function openPositionExact(
         totalFilled * cSize,
         totalFilled * cSize * avgPrice,
         'taker',
-        estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }]),
+        estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }], feeOverrides),
       );
 
       if (totalFilled < minFilledQty) {
@@ -823,7 +826,7 @@ export async function openPositionExact(
       filledAmount * cSize,
       filledNotional,
       'taker',
-      estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+      estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides),
     );
   } catch (err) {
     if (err instanceof OrderExecutionError) throw err;
@@ -837,6 +840,7 @@ export async function closePosition(
   symbol: string,
   side: 'long' | 'short',
   amount: number,
+  feeOverrides?: FeeOverrides,
 ): Promise<ExecutedOrderSummary> {
   let ex = makeExchange(id, config);
   let cSize = 1;
@@ -893,7 +897,7 @@ export async function closePosition(
           amount: filledAmount * cSize,
           filledNotional,
           liquidity: 'maker',
-          estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }]),
+          estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }], feeOverrides),
         };
       }
 
@@ -939,7 +943,7 @@ export async function closePosition(
             estimatedFee: estimateExecutionFee(id, [
               { notional: makerNotional, liquidity: 'maker' },
               { notional: iocNotional, liquidity: 'taker' },
-            ]),
+            ], feeOverrides),
           };
         }
         // filledAmount === 0 → cancelled, fall through to IOC
@@ -987,7 +991,7 @@ export async function closePosition(
         amount: totalFilled * cSize,
         filledNotional,
         liquidity: 'taker',
-        estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+        estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides),
       };
     }
     const filledPrice = (order.average as number) || limitPrice;
@@ -999,7 +1003,7 @@ export async function closePosition(
       amount: filledAmount * cSize,
       filledNotional,
       liquidity: 'taker',
-      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides),
     };
   } catch (err) {
     console.error(`[${id}] closePosition failed, fallback to market: ${(err as Error).message}`);
@@ -1022,7 +1026,7 @@ export async function closePosition(
       amount: filledAmount * cSize,
       filledNotional,
       liquidity: 'taker',
-      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }]),
+      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides),
     };
   }
 }

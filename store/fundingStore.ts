@@ -28,7 +28,7 @@ import {
 } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 import { sendTelegramMessage, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
-import { getHedgeFees, getExchangeFee, calcNetSpreadPercent, SAFETY_MARGIN_PCT } from '@/lib/types';
+import { getHedgeFeesWithOverrides, getExchangeFee, calcNetSpreadPercent, SAFETY_MARGIN_PCT } from '@/lib/types';
 
 // ─────────────────────────────────────────────
 // Fee constants (fallback for contexts without exchange info)
@@ -53,12 +53,32 @@ async function stopServerScheduler(addLog?: (level: LogLevel, msg: string, excha
   return false;
 }
 let _lastBalanceWarnAt = 0;  // 텔레그램 잔고 경고 쿨다운 (30분)
-// Taker 기준 최소 왕복 수수료 (보수적): ~0.05% × 4 = 0.20%
-// 거래소별 실제 수수료는 getHedgeFees()로 정확히 계산, 여기는 최소 안전 기준
-const MIN_ROUND_TRIP_FEE_PERCENT = 0.20;
-
+// 최소 스프레드는 사용자 설정값을 그대로 쓰고,
+// 실제 수익성 판단은 거래소별 수수료 override를 반영한 계산식으로 처리한다.
 function getEffectiveMinSpread(config: { minSpreadPercent: number }): number {
-  return Math.max(config.minSpreadPercent, MIN_ROUND_TRIP_FEE_PERCENT);
+  return Math.max(0, config.minSpreadPercent);
+}
+
+function getConfiguredHedgeFees(
+  config: Pick<StrategyConfig, 'feeOverrides'>,
+  shortExchange: ExchangeId,
+  longExchange: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+): number {
+  return getHedgeFeesWithOverrides(
+    shortExchange,
+    longExchange,
+    orderType,
+    config.feeOverrides,
+  );
+}
+
+function getConfiguredExchangeFee(
+  config: Pick<StrategyConfig, 'feeOverrides'>,
+  exchange: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+): number {
+  return getExchangeFee(exchange, orderType, config.feeOverrides);
 }
 
 /** 복리/단리에 따른 실제 notional 계산 */
@@ -171,13 +191,15 @@ function getSimPositionOpportunityKey(
 function getOpportunityYieldScore(
   opportunity: ArbitrageOpportunity,
   spread?: RealSpreadSnapshot,
+  feeOverrides?: StrategyConfig['feeOverrides'],
 ): number {
-  const hedgeFeePct = getHedgeFees(
+  const hedgeFeePct = getHedgeFeesWithOverrides(
     opportunity.shortExchange,
     opportunity.longExchange,
     'taker',
+    feeOverrides,
   ) * 100;
-  const netSpreadPercent = spread?.effectiveSpread ?? (opportunity.spreadPercent - hedgeFeePct);
+  const netSpreadPercent = spread?.effectiveSpread ?? calcNetSpreadPercent(opportunity.spreadPercent, 0, hedgeFeePct);
   return Math.max(0, netSpreadPercent / getOpportunityIntervalHours(opportunity));
 }
 
@@ -202,7 +224,11 @@ function planWindowAllocations(
   const candidates = opportunities
     .map((opportunity) => ({
       opportunity,
-      score: getOpportunityYieldScore(opportunity, getRealSpreadForOpportunity(realSpreads, opportunity)),
+      score: getOpportunityYieldScore(
+        opportunity,
+        getRealSpreadForOpportunity(realSpreads, opportunity),
+        strategyConfig.feeOverrides,
+      ),
     }))
     .filter((candidate) => candidate.score > 0)
     .sort((a, b) => {
@@ -1007,7 +1033,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
                 const merged = [...otherRates, ...json.data.rates];
                 const { investmentUSDT, leverage } = s.strategyConfig;
-                const opportunities = findOpportunities(merged, (s.simSnipeActive || s.realSnipeActive) ? 200 : 20, investmentUSDT, leverage);
+                const opportunities = findOpportunities(
+                  merged,
+                  (s.simSnipeActive || s.realSnipeActive) ? 200 : 20,
+                  investmentUSDT,
+                  leverage,
+                  s.strategyConfig.feeOverrides,
+                );
 
                 // 시뮬 포지션 마크가격 업데이트
                 let updatedSimPositions = s.simPositions;
@@ -1065,7 +1097,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
                 const merged = [...otherRates, ...retryJson2.data.rates];
                 const { investmentUSDT, leverage } = s.strategyConfig;
-                const opportunities = findOpportunities(merged, (s.simSnipeActive || s.realSnipeActive) ? 200 : 20, investmentUSDT, leverage);
+                const opportunities = findOpportunities(
+                  merged,
+                  (s.simSnipeActive || s.realSnipeActive) ? 200 : 20,
+                  investmentUSDT,
+                  leverage,
+                  s.strategyConfig.feeOverrides,
+                );
                 return {
                   fundingRates: merged, opportunities,
                   lastRatesUpdate: retryJson2.timestamp || Date.now(),
@@ -1102,7 +1140,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
                 const merged = [...otherRates, ...retryJson.data.rates];
                 const { investmentUSDT, leverage } = s.strategyConfig;
-                const opportunities = findOpportunities(merged, (s.simSnipeActive || s.realSnipeActive) ? 200 : 20, investmentUSDT, leverage);
+                const opportunities = findOpportunities(
+                  merged,
+                  (s.simSnipeActive || s.realSnipeActive) ? 200 : 20,
+                  investmentUSDT,
+                  leverage,
+                  s.strategyConfig.feeOverrides,
+                );
                 return {
                   fundingRates: merged, opportunities,
                   lastRatesUpdate: retryJson.timestamp || Date.now(),
@@ -1317,7 +1361,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             // short(sell) fillPrice < midPrice, long(buy) fillPrice > midPrice
             // entryGapPct = (longFill - shortFill) / shortFill * 100 → 양수 = 진입 손실
             const entryGapPct = ((longJson.fillPrice - shortJson.fillPrice) / shortJson.fillPrice) * 100;
-            const hedgeFeePct = getHedgeFees(opp.shortExchange, opp.longExchange, 'taker') * 100;
+            const hedgeFeePct = getConfiguredHedgeFees(
+              strategyConfig,
+              opp.shortExchange,
+              opp.longExchange,
+              'taker',
+            ) * 100;
             // ★ 통합 계산식: 진입갭×1.5 + 수수료 + 안전마진(3bps) 모두 반영
             const effectiveSpread = calcNetSpreadPercent(opp.spreadPercent, entryGapPct, hedgeFeePct);
             set(state => ({
@@ -1511,7 +1560,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     } else {
       // realSpread 없으면 이론값 기반 보수적 검증 (기존 로직)
       const estFundingRevenue = notionalEst * opportunity.spread;
-      const estRoundTripFee = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker');
+      const estRoundTripFee = getConfiguredHedgeFees(
+        strategyConfig,
+        opportunity.shortExchange,
+        opportunity.longExchange,
+        'taker',
+      );
       const estTotalFees = notionalEst * estRoundTripFee;
       if (estFundingRevenue <= estTotalFees) {
         get().addLog('warning',
@@ -1564,7 +1618,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
       const { shortExchange, longExchange } = opportunity;
       const notional = margin * leverage;
-      const shortEntryFee = notional * getExchangeFee(shortExchange, 'taker');
+      const shortEntryFee = notional * getConfiguredExchangeFee(strategyConfig, shortExchange, 'taker');
       const shortCostPerSide = margin + shortEntryFee;
 
       // ── 잔고 부족 시 여유 거래소에서 내부 이체 (최소 $1,400 유지) ──
@@ -1655,7 +1709,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
 
       // ── 양쪽 별도 수수료/마진/비용 계산 ──
-      const longEntryFee = adjustedLongNotional * getExchangeFee(longExchange, 'taker');
+      const longEntryFee = adjustedLongNotional * getConfiguredExchangeFee(strategyConfig, longExchange, 'taker');
       const longMargin = adjustedLongNotional / leverage;
       const longCostPerSide = longMargin + longEntryFee;
 
@@ -1735,7 +1789,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // Persist sim state after entry
       const st1 = get();
       saveSimState({ simBalances: st1.simBalances, simInitialBalances: st1.simInitialBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simTotalClosedPnl: st1.simTotalClosedPnl, simClosedPnlPerExchange: st1.simClosedPnlPerExchange, simClosedFeesPerExchange: st1.simClosedFeesPerExchange });
-      const totalRoundTripFees = notional * getExchangeFee(shortExchange, 'taker') * 2 + adjustedLongNotional * getExchangeFee(longExchange, 'taker') * 2; // 진입+청산 보수적 추정
+      const totalRoundTripFees = notional * getConfiguredExchangeFee(strategyConfig, shortExchange, 'taker') * 2
+        + adjustedLongNotional * getConfiguredExchangeFee(strategyConfig, longExchange, 'taker') * 2; // 진입+청산 보수적 추정
       const netProfit = perFunding - totalRoundTripFees;
       get().addLog('success',
         `[SIM] ${opportunity.baseAsset} 헷징 진입 완료 (${isSnipe ? '스나이프' : '홀딩'})`,
@@ -1791,7 +1846,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }
 
-    const previewProfit = estimateProfit(opportunity, realInvestment, strategyConfig.leverage);
+    const previewProfit = estimateProfit(opportunity, realInvestment, strategyConfig.leverage, {
+      feeOverrides: strategyConfig.feeOverrides,
+    });
     get().addLog('info',
       `전략 실행 시작: ${opportunity.baseAsset} | 숏:${opportunity.shortExchange.toUpperCase()} 롱:${opportunity.longExchange.toUpperCase()}`,
       undefined,
@@ -1811,6 +1868,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           investmentUSDT: realInvestment,
           leverage: strategyConfig.leverage,
           pairId,
+          feeOverrides: strategyConfig.feeOverrides,
           // apiConfigs는 서버 측 암호화 저장소에서 로드 (클라이언트 전송 X)
         }),
       });
@@ -1926,8 +1984,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const expectedTotalRoundTripFees = shortData && longData
         ? shortData.estimatedFee
           + longData.estimatedFee
-          + shortData.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker')
-          + longData.filledNotional * getExchangeFee(opportunity.longExchange, 'taker')
+          + shortData.filledNotional * getConfiguredExchangeFee(strategyConfig, opportunity.shortExchange, 'taker')
+          + longData.filledNotional * getConfiguredExchangeFee(strategyConfig, opportunity.longExchange, 'taker')
         : previewProfit.totalFees;
       const expectedNetProfit = expectedPerFunding - expectedTotalRoundTripFees;
       const executedNotional = shortData && longData
@@ -1984,6 +2042,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           symbol: position.symbol,
           side: position.side,
           amount: position.size,
+          feeOverrides: get().strategyConfig.feeOverrides,
         }),
       });
       const json = await res.json() as { success: boolean; data?: StrategyOrderExecution; error?: string };
@@ -2155,7 +2214,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
 
     const exitNotional = pos.size * exitPrice; // 현재 가격 기반 실제 청산 노셔널
-    const exitFee = exitNotional * getExchangeFee(pos.exchange, 'taker');
+    const exitFee = exitNotional * getConfiguredExchangeFee(get().strategyConfig, pos.exchange, 'taker');
     const pricePnl = pos.side === 'short'
       ? (pos.entryPrice - exitPrice) * pos.size
       : (exitPrice - pos.entryPrice) * pos.size;
@@ -2536,7 +2595,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
 
     // 실슬리피지+수수료 반영 순수익 계산 헬퍼 (복리 시 실잔고 기반 notional)
-    const SAFETY_MARGIN = 0.0003; // 3bps 안전 마진
     const getLiveNetProfit = (
       opp: ArbitrageOpportunity,
       isSim: boolean,
@@ -2555,7 +2613,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // realSpread 없으면 보수적으로 -1 반환 (이론값 진입 금지)
       if (!hasRS) return -1;
       // effectiveSpread에 슬리피지+수수료 모두 반영됨
-      return notional * (rs.effectiveSpread / 100) - notional * SAFETY_MARGIN;
+      return notional * (rs.effectiveSpread / 100);
     };
 
     for (const key of snipeKeys) {
@@ -2599,8 +2657,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const hasRealSpreadData = realSpreadData && Date.now() - realSpreadData.updatedAt < 30_000;
       const effectiveSpreadPercent = hasRealSpreadData
         ? realSpreadData.effectiveSpread
-        : currentOpp.spreadPercent;
-      const effectiveSpread = effectiveSpreadPercent / 100;
+        : calcNetSpreadPercent(
+          currentOpp.spreadPercent,
+          0,
+          getConfiguredHedgeFees(
+            strategyConfig,
+            currentOpp.shortExchange,
+            currentOpp.longExchange,
+            'taker',
+          ) * 100,
+        );
       const oppNotional = getEffectiveNotional(
         currentOpp,
         strategyConfig,
@@ -2610,15 +2676,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         scheduledInvestmentUSDT,
       );
       // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
-      const revalFees = hasRealSpreadData ? 0 : oppNotional * getHedgeFees(currentOpp.shortExchange, currentOpp.longExchange, 'taker');
-      const liveNetProfit = oppNotional * effectiveSpread - revalFees - oppNotional * SAFETY_MARGIN;
+      const liveNetProfit = oppNotional * (effectiveSpreadPercent / 100);
 
       // 순수익 ≤ 0 시 해제 — 진입 기준(3bps)과 동일한 안전마진 적용
       if (liveNetProfit <= 0) {
         get().addLog('warning',
           `[재검증] ${asset} 순수익 기준 미달 — 예약 해제`,
           undefined,
-          `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% | 순수익: $${fmtNum(liveNetProfit)} | 수수료: $${fmtNum(revalFees)}`,
+          `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% | 순수익: $${fmtNum(liveNetProfit)}`,
         );
         get().cancelSnipeForAsset(key);
         continue;
@@ -2746,7 +2811,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         return n * (rs.effectiveSpread / 100);
       }
       // 실측 없으면 이론 기반 보수적 계산
-      const hedgeFeePct = getHedgeFees(o.shortExchange, o.longExchange, 'taker') * 100;
+      const hedgeFeePct = getConfiguredHedgeFees(
+        strategyConfig,
+        o.shortExchange,
+        o.longExchange,
+        'taker',
+      ) * 100;
       const netPct = calcNetSpreadPercent(o.spreadPercent, 0, hedgeFeePct);
       return n * (netPct / 100);
     };
@@ -2815,8 +2885,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const groupCandidates = group
         .filter((opportunity) => !opportunityConflictsWithLegs(opportunity, occupiedLegs))
         .sort((a, b) => {
-          const scoreDiff = getOpportunityYieldScore(b, getRealSpreadForOpportunity(currentRealSpreads, b))
-            - getOpportunityYieldScore(a, getRealSpreadForOpportunity(currentRealSpreads, a));
+          const scoreDiff = getOpportunityYieldScore(
+            b,
+            getRealSpreadForOpportunity(currentRealSpreads, b),
+            strategyConfig.feeOverrides,
+          ) - getOpportunityYieldScore(
+            a,
+            getRealSpreadForOpportunity(currentRealSpreads, a),
+            strategyConfig.feeOverrides,
+          );
           if (scoreDiff !== 0) return scoreDiff;
           return getLiveNetProfit(b) - getLiveNetProfit(a);
         });
@@ -2949,7 +3026,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       currentEnabled.includes(o.shortExchange) &&
       currentEnabled.includes(o.longExchange),
     );
-    const SAFETY_MARGIN_PCT = 0.03; // 3bps 안전 마진 — 체결 오차 대비
     const meetsThreshold = (o: ArbitrageOpportunity) => {
       if (o.spreadPercent < effectiveMinPercent) return false;
       const n = plannedInvestmentUSDT * strategyConfig.leverage;
@@ -2959,7 +3035,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (!hasRS) return false;
       const effSpreadPct = rs.effectiveSpread; // 슬리피지+수수료 모두 반영됨
       const liveNet = n * (effSpreadPct / 100);
-      return liveNet > n * (SAFETY_MARGIN_PCT / 100); // 최소 3bps 순이익 필요
+      return liveNet > 0;
     };
     const finalTarget = latestOpp && meetsThreshold(latestOpp)
       ? latestOpp

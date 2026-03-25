@@ -113,7 +113,7 @@ export interface StrategyConfig {
   minSpreadPercent: number; // minimum spread to enter (e.g., 0.05%)
   autoExecute: boolean;     // auto enter at funding time
   compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (단리)
-  feeOverrides?: Partial<Record<ExchangeId, ExchangeFees>>; // 사용자 수수료 override
+  feeOverrides?: FeeOverrides; // 사용자 수수료 override
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
@@ -158,6 +158,8 @@ export interface ExchangeFees {
   maker: number;  // decimal (0.0002 = 0.02%)
 }
 
+export type FeeOverrides = Partial<Record<ExchangeId, ExchangeFees>>;
+
 export const EXCHANGE_FEES: Record<ExchangeId, ExchangeFees> = {
   binance: { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
   bybit:   { taker: 0.00055, maker: 0.00020 },  // 0.055% / 0.020%
@@ -183,7 +185,7 @@ export function getHedgeFees(
 export function getExchangeFee(
   exchange: ExchangeId,
   orderType: 'taker' | 'maker' = 'taker',
-  overrides?: Partial<Record<ExchangeId, ExchangeFees>>,
+  overrides?: FeeOverrides,
 ): number {
   const fees = overrides?.[exchange] ?? EXCHANGE_FEES[exchange];
   return fees[orderType];
@@ -192,7 +194,7 @@ export function getExchangeFee(
 /** Get effective fees considering user overrides */
 export function getEffectiveExchangeFees(
   exchange: ExchangeId,
-  overrides?: Partial<Record<ExchangeId, ExchangeFees>>,
+  overrides?: FeeOverrides,
 ): ExchangeFees {
   return overrides?.[exchange] ?? EXCHANGE_FEES[exchange];
 }
@@ -202,7 +204,7 @@ export function getHedgeFeesWithOverrides(
   shortEx: ExchangeId,
   longEx: ExchangeId,
   orderType: 'taker' | 'maker' = 'taker',
-  overrides?: Partial<Record<ExchangeId, ExchangeFees>>,
+  overrides?: FeeOverrides,
 ): number {
   const shortFee = getExchangeFee(shortEx, orderType, overrides);
   const longFee = getExchangeFee(longEx, orderType, overrides);

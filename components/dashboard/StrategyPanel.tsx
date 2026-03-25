@@ -10,14 +10,17 @@ import { getTelegramConfig, saveTelegramConfig, sendTelegramMessage } from '@/li
 export default function StrategyPanel() {
   const { strategyConfig, setStrategyConfig, setShowStrategyPanel, opportunities, realSpreads } = useFundingStore();
   const best = opportunities[0];
-  const realSpread = best ? realSpreads[best.baseAsset] : null;
+  const realSpread = best ? (realSpreads[best.id ?? ''] ?? realSpreads[best.baseAsset]) : null;
   const hasRealSpread = !!(realSpread && Date.now() - realSpread.updatedAt < 30_000);
   const effectiveBest = best && hasRealSpread && realSpread
     ? { ...best, spread: realSpread.effectiveSpread / 100, spreadPercent: realSpread.effectiveSpread }
     : best;
 
   const profit = effectiveBest
-    ? estimateProfit(effectiveBest, strategyConfig.investmentUSDT, strategyConfig.leverage, hasRealSpread)
+    ? estimateProfit(effectiveBest, strategyConfig.investmentUSDT, strategyConfig.leverage, {
+      skipFees: hasRealSpread,
+      feeOverrides: strategyConfig.feeOverrides,
+    })
     : null;
 
   return (

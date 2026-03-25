@@ -25,11 +25,12 @@ import {
 import { sendTelegramMessage } from './telegram';
 import {
   getExchangeFee,
-  getHedgeFees,
+  getHedgeFeesWithOverrides,
   calcNetSpreadPercent,
   type ApiConfig,
   type ArbitrageOpportunity,
   type ExchangeId,
+  type FeeOverrides,
   type FundingPayment,
   type FundingRate,
 } from './types';
@@ -56,6 +57,7 @@ export interface SchedulerConfig {
   minSpreadPercent: number;
   enabledExchanges: ExchangeId[];
   maxConcurrentPairs: number;
+  feeOverrides?: FeeOverrides;
 }
 
 interface SchedulerStats {
@@ -358,6 +360,7 @@ class ServerScheduler {
         200,
         this.config.investmentUSDT,
         this.config.leverage,
+        this.config.feeOverrides,
       );
 
       const occupiedLegs = this.getOccupiedLegs();
@@ -510,7 +513,12 @@ class ServerScheduler {
       }
 
       const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
-      const hedgeFeePct = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker') * 100;
+      const hedgeFeePct = getHedgeFeesWithOverrides(
+        opportunity.shortExchange,
+        opportunity.longExchange,
+        'taker',
+        this.config.feeOverrides,
+      ) * 100;
       const realNetSpread = calcNetSpreadPercent(opportunity.spreadPercent, entryGapPct, hedgeFeePct);
 
       if (realNetSpread <= 0) {
@@ -547,6 +555,7 @@ class ServerScheduler {
           shortQty,
           shortLimitPrice,
           this.config.leverage,
+          this.config.feeOverrides,
         ),
         openPositionExact(
           opportunity.longExchange,
@@ -556,6 +565,7 @@ class ServerScheduler {
           longQty,
           longLimitPrice,
           this.config.leverage,
+          this.config.feeOverrides,
         ),
       ]);
 
@@ -665,8 +675,8 @@ class ServerScheduler {
         - (longResult.value.filledNotional * opportunity.longRate);
       const expectedTotalRoundTripFees = shortResult.value.estimatedFee
         + longResult.value.estimatedFee
-        + (shortResult.value.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker'))
-        + (longResult.value.filledNotional * getExchangeFee(opportunity.longExchange, 'taker'));
+        + (shortResult.value.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides))
+        + (longResult.value.filledNotional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
 
       this.recordTrades([{
         timestamp: entryTime,
@@ -759,6 +769,7 @@ class ServerScheduler {
             position.opportunity.shortSymbol,
             'short',
             position.shortAmount,
+            this.config.feeOverrides,
           ),
         existingLongLeg
           ? Promise.resolve(existingLongLeg.exit)
@@ -768,6 +779,7 @@ class ServerScheduler {
             position.opportunity.longSymbol,
             'long',
             position.longAmount,
+            this.config.feeOverrides,
           ),
       ]);
 
@@ -806,6 +818,7 @@ class ServerScheduler {
               position.opportunity.shortSymbol,
               'short',
               position.shortAmount,
+              this.config.feeOverrides,
             );
             if (!existingShortLeg) {
               removeServerPositionMeta([makeServerPositionKey(
@@ -827,6 +840,7 @@ class ServerScheduler {
               position.opportunity.longSymbol,
               'long',
               position.longAmount,
+              this.config.feeOverrides,
             );
             if (!existingLongLeg) {
               removeServerPositionMeta([makeServerPositionKey(
@@ -1146,7 +1160,7 @@ class ServerScheduler {
     reason: string,
   ) {
     try {
-      await closePosition(exchange, config, symbol, side, amount);
+      await closePosition(exchange, config, symbol, side, amount, this.config.feeOverrides);
       this.log('warning', `entry rollback complete | asset=${asset} exchange=${exchange} reason=${reason}`);
     } catch (rollbackErr) {
       this.log(
