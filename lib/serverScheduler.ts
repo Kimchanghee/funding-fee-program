@@ -26,6 +26,7 @@ import { sendTelegramMessage } from './telegram';
 import {
   getExchangeFee,
   getHedgeFees,
+  calcNetSpreadPercent,
   type ApiConfig,
   type ArbitrageOpportunity,
   type ExchangeId,
@@ -510,7 +511,7 @@ class ServerScheduler {
 
       const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
       const hedgeFeePct = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker') * 100;
-      const realNetSpread = opportunity.spreadPercent - entryGapPct * 1.5 - hedgeFeePct - 0.03;
+      const realNetSpread = calcNetSpreadPercent(opportunity.spreadPercent, entryGapPct, hedgeFeePct);
 
       if (realNetSpread <= 0) {
         this.log(

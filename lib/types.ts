@@ -113,6 +113,7 @@ export interface StrategyConfig {
   minSpreadPercent: number; // minimum spread to enter (e.g., 0.05%)
   autoExecute: boolean;     // auto enter at funding time
   compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (단리)
+  feeOverrides?: Partial<Record<ExchangeId, ExchangeFees>>; // 사용자 수수료 override
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
@@ -182,8 +183,51 @@ export function getHedgeFees(
 export function getExchangeFee(
   exchange: ExchangeId,
   orderType: 'taker' | 'maker' = 'taker',
+  overrides?: Partial<Record<ExchangeId, ExchangeFees>>,
 ): number {
-  return EXCHANGE_FEES[exchange][orderType];
+  const fees = overrides?.[exchange] ?? EXCHANGE_FEES[exchange];
+  return fees[orderType];
+}
+
+/** Get effective fees considering user overrides */
+export function getEffectiveExchangeFees(
+  exchange: ExchangeId,
+  overrides?: Partial<Record<ExchangeId, ExchangeFees>>,
+): ExchangeFees {
+  return overrides?.[exchange] ?? EXCHANGE_FEES[exchange];
+}
+
+/** Get round-trip hedge fees with optional overrides */
+export function getHedgeFeesWithOverrides(
+  shortEx: ExchangeId,
+  longEx: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+  overrides?: Partial<Record<ExchangeId, ExchangeFees>>,
+): number {
+  const shortFee = getExchangeFee(shortEx, orderType, overrides);
+  const longFee = getExchangeFee(longEx, orderType, overrides);
+  return (shortFee + longFee) * 2;
+}
+
+/**
+ * ★ 통합 순수익 계산식 — 모든 진입 판단/표시에 이 함수를 사용
+ *
+ * netSpreadPct = spreadPct - entryGapPct*1.5 - hedgeFeePct - safetyMarginPct
+ *
+ * @param spreadPercent   - 명목 스프레드 (%)
+ * @param entryGapPct     - 진입 가격 갭 (%) — 양수 = 진입 손실
+ * @param hedgeFeePct     - 왕복 수수료 (%) — getHedgeFees * 100
+ * @param safetyMarginPct - 안전 마진 (%) — 기본 0.03 (3bps)
+ */
+export const SAFETY_MARGIN_PCT = 0.03; // 3bps — 전역 상수
+
+export function calcNetSpreadPercent(
+  spreadPercent: number,
+  entryGapPct: number,
+  hedgeFeePct: number,
+  safetyMarginPct: number = SAFETY_MARGIN_PCT,
+): number {
+  return spreadPercent - entryGapPct * 1.5 - hedgeFeePct - safetyMarginPct;
 }
 
 // Popular symbols to track (top coins by OI)

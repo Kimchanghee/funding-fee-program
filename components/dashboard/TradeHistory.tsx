@@ -66,6 +66,7 @@ interface HedgePair {
   longPricePnl: number;
   status: 'open' | 'partial' | 'closed';
   completion?: TradeEvent | null;
+  fundingVerified?: boolean | null; // null = 미확인, true = 검증됨, false = 검증 실패
 }
 
 function buildPairs(events: TradeEvent[]): HedgePair[] {
@@ -174,6 +175,13 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
     if (completion.pnl != null) {
       matchedPair.totalPnl = completion.pnl;
     }
+    // detail 필드에서 fundingVerified 상태 파싱
+    if (completion.detail) {
+      const verifiedMatch = completion.detail.match(/fundingVerified:(true|false)/);
+      if (verifiedMatch) {
+        matchedPair.fundingVerified = verifiedMatch[1] === 'true';
+      }
+    }
   }
 
   return Array.from(pairs.values()).sort((a, b) => b.entryTime - a.entryTime);
@@ -212,7 +220,15 @@ function PairRow({ pair }: { pair: HedgePair }) {
         onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
         onMouseLeave={e => (e.currentTarget.style.background = expanded ? 'rgba(255,255,255,0.03)' : 'transparent')}
       >
-        <span style={{ color: statusColor, fontSize: 10, fontWeight: 700 }}>{statusLabel}</span>
+        <span style={{ color: statusColor, fontSize: 10, fontWeight: 700 }}>
+          {statusLabel}
+          {pair.status === 'closed' && pair.fundingVerified === true && (
+            <span title="펀딩 검증 완료" style={{ color: '#10b981', marginLeft: 2 }}>&#10003;</span>
+          )}
+          {pair.status === 'closed' && pair.fundingVerified === false && (
+            <span title="펀딩 미검증 — 거래소 정산 내역 확인 필요" style={{ color: '#f59e0b', marginLeft: 2 }}>?</span>
+          )}
+        </span>
         <span style={{ fontWeight: 700, color: '#e2e8f0' }}>
           {pair.baseAsset}
         </span>

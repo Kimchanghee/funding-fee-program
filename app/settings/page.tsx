@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES } from '@/lib/types';
+import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES, EXCHANGE_FEES } from '@/lib/types';
 import StatusDot from '@/components/ui/StatusDot';
 import Header from '@/components/dashboard/Header';
 import ApiPanel from '@/components/dashboard/ApiPanel';
@@ -157,6 +157,99 @@ export default function SettingsPage() {
                     <div>
                       <div style={{ fontSize: 13, fontWeight: 600, color: value ? 'var(--color-text)' : 'var(--color-text-muted)' }}>{label}</div>
                       <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{desc}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Fee Overrides */}
+          <div className="glass-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: 'var(--color-text)' }}>
+              거래소별 수수료 설정
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 16 }}>
+              실제 VIP 등급에 맞는 수수료를 입력하세요. 비워두면 기본값(VIP0)이 적용됩니다.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+              {SUPPORTED_EXCHANGES.map(ex => {
+                const defaults = EXCHANGE_FEES[ex];
+                const override = strategyConfig.feeOverrides?.[ex];
+                const color = EXCHANGE_COLORS[ex];
+                return (
+                  <div key={ex} style={{
+                    padding: '12px 14px', borderRadius: 8,
+                    background: override ? `${color}0a` : 'var(--bg-accent)',
+                    border: `1px solid ${override ? `${color}33` : 'var(--color-border)'}`,
+                  }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color, marginBottom: 8 }}>
+                      {EXCHANGE_NAMES[ex]}
+                      {override && <span style={{ fontSize: 10, marginLeft: 6, color: '#10b981' }}>커스텀</span>}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <div>
+                        <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 2 }}>
+                          Taker (기본 {(defaults.taker * 100).toFixed(3)}%)
+                        </label>
+                        <input
+                          className="input-field"
+                          type="number"
+                          step={0.001}
+                          min={0}
+                          max={0.5}
+                          placeholder={(defaults.taker * 100).toFixed(3)}
+                          value={override ? (override.taker * 100).toFixed(3) : ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
+                            if (val === '' || val === '0') {
+                              const cur = currentOverrides[ex];
+                              if (cur && cur.maker !== defaults.maker) {
+                                currentOverrides[ex] = { ...cur, taker: defaults.taker };
+                              } else {
+                                delete currentOverrides[ex];
+                              }
+                            } else {
+                              const cur = currentOverrides[ex] ?? { ...defaults };
+                              currentOverrides[ex] = { ...cur, taker: Number(val) / 100 };
+                            }
+                            setStrategyConfig({ feeOverrides: currentOverrides });
+                          }}
+                          style={{ fontSize: 12, padding: '4px 8px' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 2 }}>
+                          Maker (기본 {(defaults.maker * 100).toFixed(3)}%)
+                        </label>
+                        <input
+                          className="input-field"
+                          type="number"
+                          step={0.001}
+                          min={0}
+                          max={0.5}
+                          placeholder={(defaults.maker * 100).toFixed(3)}
+                          value={override ? (override.maker * 100).toFixed(3) : ''}
+                          onChange={e => {
+                            const val = e.target.value;
+                            const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
+                            if (val === '' || val === '0') {
+                              const cur = currentOverrides[ex];
+                              if (cur && cur.taker !== defaults.taker) {
+                                currentOverrides[ex] = { ...cur, maker: defaults.maker };
+                              } else {
+                                delete currentOverrides[ex];
+                              }
+                            } else {
+                              const cur = currentOverrides[ex] ?? { ...defaults };
+                              currentOverrides[ex] = { ...cur, maker: Number(val) / 100 };
+                            }
+                            setStrategyConfig({ feeOverrides: currentOverrides });
+                          }}
+                          style={{ fontSize: 12, padding: '4px 8px' }}
+                        />
+                      </div>
                     </div>
                   </div>
                 );

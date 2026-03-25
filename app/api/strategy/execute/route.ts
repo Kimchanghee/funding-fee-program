@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, getHedgeFees } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, getHedgeFees, calcNetSpreadPercent } from '@/lib/types';
 import {
   openPositionExact,
   fetchMarketFillPrice,
@@ -125,11 +125,10 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2b. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증
+    // 2b. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증 (통합 계산식)
     const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
     const hedgeFeePct = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker') * 100;
-    const SAFETY_MARGIN = 0.03; // 3bps
-    const realNetSpread = opportunity.spreadPercent - entryGapPct * 1.5 - hedgeFeePct - SAFETY_MARGIN;
+    const realNetSpread = calcNetSpreadPercent(opportunity.spreadPercent, entryGapPct, hedgeFeePct);
 
     if (realNetSpread <= 0) {
       console.log(

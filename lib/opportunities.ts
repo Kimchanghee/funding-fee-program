@@ -1,5 +1,5 @@
 import type { FundingRate, ArbitrageOpportunity, ExchangeId } from './types';
-import { getHedgeFees } from './types';
+import { getHedgeFees, calcNetSpreadPercent } from './types';
 import { calcAnnualReturn, getMinutesToFunding } from './exchanges/utils';
 
 const FUNDING_ALIGNMENT_TOLERANCE_MS = 120_000;
@@ -95,8 +95,10 @@ export function findOpportunities(
         const nextFundingTime = Math.max(shortFundingTime, longFundingTime);
 
         const notional = investmentUSDT * leverage;
-        const roundTripFee = getHedgeFees(shortCandidate.exchange, longCandidate.exchange, 'taker');
-        const netProfit = notional * spread - notional * roundTripFee;
+        const roundTripFeePct = getHedgeFees(shortCandidate.exchange, longCandidate.exchange, 'taker') * 100;
+        // ★ 통합 계산식: 수수료 + 안전마진(3bps) 반영 (entryGap은 탐색 단계에서 0)
+        const netSpreadPct = calcNetSpreadPercent(spread * 100, 0, roundTripFeePct);
+        const netProfit = notional * (netSpreadPct / 100);
         if (netProfit <= 0) continue;
 
         const candidate: ArbitrageOpportunity = {
