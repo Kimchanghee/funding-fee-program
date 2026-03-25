@@ -700,8 +700,8 @@ export default function OpportunityCard() {
               // realSpread는 슬리피지+수수료 이미 반영 → skipFees=true로 이중차감 방지
               const hasRealSpread = !!realSpread;
               const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage, hasRealSpread);
-              // 마이너스 순수익: 후보는 숨김, 예약은 곧 재검증에서 취소되므로 숨김
-              if (profit.netPerFunding <= 0 && item.status !== 'active') return null;
+              // 마이너스 순수익: 후보만 숨김 (예약/활성은 항상 표시)
+              if (profit.netPerFunding <= 0 && item.status === 'opportunity') return null;
 
               visibleIdx++;
 
