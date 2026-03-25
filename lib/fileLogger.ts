@@ -32,6 +32,32 @@ function getDateStr(ts?: number): string {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
+const LOG_RETENTION_DAYS = 7;
+
+/**
+ * 7일 이상 된 로그/거래 파일 삭제.
+ * 매일 append 시 자동 호출.
+ */
+function pruneOldFiles(dir: string): void {
+  try {
+    ensureDir(dir);
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - LOG_RETENTION_DAYS);
+    const cutoffStr = cutoffDate.toISOString().slice(0, 10);
+
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+    for (const f of files) {
+      const dateStr = f.replace('.jsonl', '');
+      if (dateStr < cutoffStr) {
+        fs.unlinkSync(path.join(dir, f));
+        console.log(`[fileLogger] pruned old file: ${f}`);
+      }
+    }
+  } catch (err) {
+    console.error('[fileLogger] pruneOldFiles failed:', err);
+  }
+}
+
 // ── Log entry (general application logs) ──
 export interface FileLogEntry {
   timestamp: number;
@@ -83,6 +109,8 @@ export interface TradeEvent {
  * Append log entries to daily JSONL file.
  * File: data/logs/YYYY-MM-DD.jsonl
  */
+let lastPruneDate = '';
+
 export function appendLogs(entries: FileLogEntry[]): void {
   if (entries.length === 0) return;
   try {
@@ -91,6 +119,12 @@ export function appendLogs(entries: FileLogEntry[]): void {
     const filePath = path.join(LOGS_DIR, `${dateStr}.jsonl`);
     const lines = entries.map(e => JSON.stringify(e)).join('\n') + '\n';
     fs.appendFileSync(filePath, lines, 'utf-8');
+    // 하루 1회 오래된 파일 정리
+    if (dateStr !== lastPruneDate) {
+      lastPruneDate = dateStr;
+      pruneOldFiles(LOGS_DIR);
+      pruneOldFiles(TRADES_DIR);
+    }
   } catch (err) {
     console.error('[fileLogger] appendLogs failed:', err);
   }

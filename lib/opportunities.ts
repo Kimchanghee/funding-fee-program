@@ -29,10 +29,13 @@ export function getOpportunityId(opportunity: ArbitrageOpportunity): string {
   );
 }
 
-export function getOpportunityLegKeys(opportunity: ArbitrageOpportunity): [string, string] {
+export function getOpportunityLegKeys(opportunity: ArbitrageOpportunity): string[] {
   return [
     `${opportunity.shortExchange}:${opportunity.shortSymbol}:short`,
     `${opportunity.longExchange}:${opportunity.longSymbol}:long`,
+    // 방향 무관 키 — 같은 거래소+심볼이 중복 진입하는 것을 방지
+    `${opportunity.shortExchange}:${opportunity.shortSymbol}`,
+    `${opportunity.longExchange}:${opportunity.longSymbol}`,
   ];
 }
 

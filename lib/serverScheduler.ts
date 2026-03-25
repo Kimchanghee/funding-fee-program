@@ -476,6 +476,31 @@ class ServerScheduler {
         fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
       ]);
 
+      // ── Slippage guard: 1.5% 이상이면 거래 차단 ──
+      const MAX_SLIPPAGE_PCT = 1.5;
+      if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
+        const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
+        const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;
+        const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
+        this.log(
+          'warning',
+          `entry blocked by slippage guard | asset=${asset} ${worstSide}(${worstExchange}) slippage=${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}% | short(${opportunity.shortExchange})=${shortFill.slippagePercent.toFixed(4)}% long(${opportunity.longExchange})=${longFill.slippagePercent.toFixed(4)}%`,
+        );
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'slippage_exceeded',
+          detail: `slippage_${worstSide}(${worstExchange}):${worstSlippage.toFixed(6)}% max:${MAX_SLIPPAGE_PCT}% short(${opportunity.shortExchange}):${shortFill.slippagePercent.toFixed(6)}% long(${opportunity.longExchange}):${longFill.slippagePercent.toFixed(6)}%`,
+        }]);
+        return;
+      }
+
       const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
       const hedgeFeePct = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker') * 100;
       const realNetSpread = opportunity.spreadPercent - entryGapPct * 1.5 - hedgeFeePct - 0.03;
@@ -494,6 +519,7 @@ class ServerScheduler {
           longExchange: opportunity.longExchange,
           spread: opportunity.spread,
           spreadPercent: opportunity.spreadPercent,
+          reason: 'profitability_insufficient',
           detail: `realNetSpread:${realNetSpread.toFixed(6)} entryGapPct:${entryGapPct.toFixed(6)} hedgeFeePct:${hedgeFeePct.toFixed(6)}`,
         }]);
         return;

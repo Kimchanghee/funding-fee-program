@@ -62,7 +62,28 @@ export async function POST(req: NextRequest) {
       fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
     ]);
 
-    // 2. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증
+    // 2a. Slippage guard — 1.5% 이상이면 거래 차단
+    const MAX_SLIPPAGE_PCT = 1.5;
+    if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
+      const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
+      const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;
+      const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
+      console.log(
+        `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 슬리피지 초과: ` +
+        `${worstSide}(${worstExchange})=${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}% | ` +
+        `short(${opportunity.shortExchange})=${shortFill.slippagePercent.toFixed(4)}% long(${opportunity.longExchange})=${longFill.slippagePercent.toFixed(4)}%`,
+      );
+      return NextResponse.json({
+        success: false,
+        error: `슬리피지 초과: ${worstSide}(${worstExchange}) ${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}%`,
+        reason: 'slippage_exceeded',
+        shortSlippage: shortFill.slippagePercent,
+        longSlippage: longFill.slippagePercent,
+        maxSlippage: MAX_SLIPPAGE_PCT,
+      });
+    }
+
+    // 2b. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증
     const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
     const hedgeFeePct = getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker') * 100;
     const SAFETY_MARGIN = 0.03; // 3bps
@@ -77,6 +98,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: false,
         error: `실시간 수익성 미달: 순스프레드 ${realNetSpread.toFixed(4)}% ≤ 0 (진입갭 ${entryGapPct.toFixed(4)}%, 수수료 ${hedgeFeePct.toFixed(3)}%)`,
+        reason: 'profitability_insufficient',
         entryGapPct,
         hedgeFeePct,
         realNetSpread,
