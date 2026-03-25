@@ -144,7 +144,7 @@ export default function Header() {
           flexShrink: 0,
         }}>
           <button
-            onClick={() => { if (!simulationMode) toggleSimulationMode(); }}
+            onClick={() => { if (!simulationMode) void toggleSimulationMode(); }}
             style={{
               display: 'flex', alignItems: 'center', gap: 4,
               padding: '4px 10px', border: 'none', cursor: 'pointer',
@@ -157,7 +157,7 @@ export default function Header() {
             SIM
           </button>
           <button
-            onClick={() => { if (simulationMode) toggleSimulationMode(); }}
+            onClick={() => { if (simulationMode) void toggleSimulationMode(); }}
             style={{
               display: 'flex', alignItems: 'center', gap: 4,
               padding: '4px 10px', border: 'none', cursor: 'pointer',

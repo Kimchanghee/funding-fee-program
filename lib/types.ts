@@ -164,6 +164,13 @@ export interface SimStateSnapshot {
   updatedAt: number;
 }
 
+export interface SnipeStateSnapshot {
+  simSnipeActive: boolean;
+  realSnipeActive: boolean;
+  simulationMode: boolean;
+  updatedAt: number;
+}
+
 export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx'];
 
 // ── Per-exchange fee matrix (VIP0 / basic tier, USDT-M futures) ──

@@ -15,6 +15,7 @@ import type {
   FundingPayment,
   OrderLiquidity,
   SimStateSnapshot,
+  SnipeStateSnapshot,
 } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta } from '@/lib/keyStore';
@@ -339,6 +340,46 @@ function getEffectiveNotional(
   return Math.max(perSide, 0) * config.leverage;
 }
 
+function applySharedSnipeStateSnapshot(
+  setState: (partial: Partial<FundingState>) => void,
+  snapshot?: SnipeStateSnapshot | null,
+) {
+  if (!snapshot) return;
+  setState({
+    simulationMode: snapshot.simulationMode,
+    simSnipeActive: snapshot.simSnipeActive,
+    realSnipeActive: snapshot.realSnipeActive,
+  });
+}
+
+async function fetchSharedSnipeStateSnapshot() {
+  const response = await fetch('/api/snipe-state');
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const payload = await response.json() as { success?: boolean; data?: SnipeStateSnapshot; error?: string };
+  if (!payload.success || !payload.data) {
+    throw new Error(payload.error || 'failed to load shared snipe state');
+  }
+  return payload.data;
+}
+
+async function updateSharedSnipeStateSnapshot(partial: Partial<SnipeStateSnapshot>) {
+  const response = await fetch('/api/snipe-state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(partial),
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const payload = await response.json() as { success?: boolean; data?: SnipeStateSnapshot; error?: string };
+  if (!payload.success || !payload.data) {
+    throw new Error(payload.error || 'failed to update shared snipe state');
+  }
+  return payload.data;
+}
+
 function getScheduleAheadWindowMs(opportunity: Pick<ArbitrageOpportunity, 'fundingIntervalMs'>): number {
   const DEFAULT_AHEAD_MS = 5 * 60 * 60 * 1000;
   const fundingWindowMs = opportunity.fundingIntervalMs ?? 8 * 60 * 60 * 1000;
@@ -657,7 +698,7 @@ interface FundingState {
   clearLogs: () => void;
 
   // Simulation actions
-  toggleSimulationMode: () => void;
+  toggleSimulationMode: () => Promise<void>;
   resetSimulation: () => void;
   clearSimFundingHistory: () => void;
   closeSimPosition: (simId: string) => Promise<{ netPnl: number; funding: number } | null>;
@@ -1090,9 +1131,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
 
       // 서버에 저장된 자동투자 상태 복원 (PC↔모바일 동기화)
-      fetch('/api/snipe-state').then(r => r.json()).then(async (res: { success: boolean; data?: { simSnipeActive: boolean; realSnipeActive: boolean } }) => {
-        if (!res.success || !res.data) return;
-        const { realSnipeActive: savedReal } = res.data;
+      fetchSharedSnipeStateSnapshot().then(async (sharedState) => {
+        applySharedSnipeStateSnapshot(set, sharedState);
+        saveSimMode(sharedState.simulationMode);
+        const { realSnipeActive: savedReal } = sharedState;
 
         // REAL: 서버 스케줄러가 실제로 돌고 있는지 확인 후에만 UI 상태를 ON으로
         let realConfirmed = false;
@@ -1106,22 +1148,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           } catch { /* 확인 불가 → OFF 유지 */ }
           if (!realConfirmed) {
             // 서버 스케줄러가 안 돌고 있으면 snipe-state도 정정
-            void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ realSnipeActive: false }) }).catch(() => {});
+            void updateSharedSnipeStateSnapshot({ realSnipeActive: false }).catch(() => {});
             get().addLog('warning', '[복원] REAL 자동투자 상태 OFF — 서버 스케줄러 미실행');
           }
         }
 
         if (realConfirmed) {
-          const updates: Partial<FundingState> = {};
-          if (realConfirmed) updates.realSnipeActive = true;
-          set(updates);
-          if (realConfirmed) {
-            void syncServerSchedulerConfig(
-              getResolvedStrategyConfig(get().strategyConfig),
-              get().enabledExchanges,
-              get().addLog,
-            );
-          }
+          set({ realSnipeActive: true });
+          void syncServerSchedulerConfig(
+            getResolvedStrategyConfig(get().strategyConfig),
+            get().enabledExchanges,
+            get().addLog,
+          );
           get().addLog('info', '[복원] 자동투자 상태 복원 — REAL');
         }
       }).catch(() => { /* silent */ });
@@ -1851,6 +1889,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (get().simSnipeActive || get().realSnipeActive) {
         get().refreshRealSpreads();
       }
+      void fetchSharedSnipeStateSnapshot()
+        .then((snapshot) => {
+          applySharedSnipeStateSnapshot(set, snapshot);
+          saveSimMode(snapshot.simulationMode);
+        })
+        .catch(() => {});
     }, 8_000);
 
     // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)
@@ -2598,13 +2642,28 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   // ── Simulation ────────────────────────────────
-  toggleSimulationMode() {
-    const next = !get().simulationMode;
+  async toggleSimulationMode() {
+    const current = get().simulationMode;
+    const next = !current;
     // 모드 전환 시 스나이프를 취소하지 않음 — 각 모드가 독립적으로 동시 실행
     set({ simulationMode: next });
     // 모드 상태 영속화
     saveSimMode(next);
-    get().addLog('info', next ? `[SIM] 시뮬레이션 모드 ON — 각 거래소 $${get().strategyConfig.investmentUSDT * 2} 가상 잔고` : '[REAL] 실거래 모드 ON');
+    try {
+      const sharedState = await updateSharedSnipeStateSnapshot({ simulationMode: next });
+      applySharedSnipeStateSnapshot(set, sharedState);
+      saveSimMode(sharedState.simulationMode);
+      get().addLog(
+        'info',
+        sharedState.simulationMode
+          ? `[SIM] shared mode ON ($${get().strategyConfig.investmentUSDT * 2} virtual balance per exchange)`
+          : '[REAL] shared mode ON',
+      );
+    } catch (err) {
+      set({ simulationMode: current });
+      saveSimMode(current);
+      get().addLog('error', '[shared-state] failed to sync SIM/REAL mode', undefined, (err as Error).message);
+    }
   },
 
   resetSimulation() {

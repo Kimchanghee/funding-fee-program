@@ -1,13 +1,26 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import type { SnipeStateSnapshot } from '@/lib/types';
 
 const STATE_FILE = path.join(process.cwd(), 'data', 'snipe-state.json');
 
-interface SnipeState {
-  simSnipeActive: boolean;
-  realSnipeActive: boolean;
-  updatedAt: number;
+function buildDefaultState(): SnipeStateSnapshot {
+  return {
+    simSnipeActive: false,
+    realSnipeActive: false,
+    simulationMode: true,
+    updatedAt: Date.now(),
+  };
+}
+
+function normalizeState(raw?: Partial<SnipeStateSnapshot> | null): SnipeStateSnapshot {
+  return {
+    simSnipeActive: typeof raw?.simSnipeActive === 'boolean' ? raw.simSnipeActive : false,
+    realSnipeActive: typeof raw?.realSnipeActive === 'boolean' ? raw.realSnipeActive : false,
+    simulationMode: typeof raw?.simulationMode === 'boolean' ? raw.simulationMode : true,
+    updatedAt: typeof raw?.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
+  };
 }
 
 function ensureDir() {
@@ -18,31 +31,32 @@ function ensureDir() {
 export async function GET() {
   try {
     if (!fs.existsSync(STATE_FILE)) {
-      return NextResponse.json({ success: true, data: { simSnipeActive: false, realSnipeActive: false } });
+      return NextResponse.json({ success: true, data: buildDefaultState() });
     }
     const raw = fs.readFileSync(STATE_FILE, 'utf-8');
-    const data: SnipeState = JSON.parse(raw);
+    const data = normalizeState(JSON.parse(raw) as Partial<SnipeStateSnapshot>);
     return NextResponse.json({ success: true, data });
   } catch {
-    return NextResponse.json({ success: true, data: { simSnipeActive: false, realSnipeActive: false } });
+    return NextResponse.json({ success: true, data: buildDefaultState() });
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as Partial<SnipeState>;
+    const body = await request.json() as Partial<SnipeStateSnapshot>;
     ensureDir();
 
     // Load existing state and merge
-    let current: SnipeState = { simSnipeActive: false, realSnipeActive: false, updatedAt: Date.now() };
+    let current = buildDefaultState();
     try {
       if (fs.existsSync(STATE_FILE)) {
-        current = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
+        current = normalizeState(JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8')) as Partial<SnipeStateSnapshot>);
       }
     } catch { /* start fresh */ }
 
     if (typeof body.simSnipeActive === 'boolean') current.simSnipeActive = body.simSnipeActive;
     if (typeof body.realSnipeActive === 'boolean') current.realSnipeActive = body.realSnipeActive;
+    if (typeof body.simulationMode === 'boolean') current.simulationMode = body.simulationMode;
     current.updatedAt = Date.now();
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(current, null, 2));
