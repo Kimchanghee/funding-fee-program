@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, getHedgeFeesWithOverrides, getExchangeFee, calcNetSpreadPercent } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, getHedgeFeesWithOverrides, getExchangeFee, calcNetSpreadPercent, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
 import {
   openPositionExact,
   fetchMarketFillPrice,
@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
     };
 
     const { opportunity, investmentUSDT, leverage, apiConfigs, feeOverrides } = body;
+    const normalizedFeeOverrides = sanitizeFeeOverrides(feeOverrides);
     const pairId = typeof body.pairId === 'string' && body.pairId.trim()
       ? body.pairId.trim()
       : `api-${Date.now()}-${opportunity?.baseAsset ?? 'pair'}`;
@@ -83,6 +84,9 @@ export async function POST(req: NextRequest) {
     }
     if (typeof leverage !== 'number' || leverage < 1 || leverage > 125) {
       return NextResponse.json({ success: false, error: 'Invalid leverage' }, { status: 400 });
+    }
+    if (!hasValidFeeOverrides(feeOverrides)) {
+      return NextResponse.json({ success: false, error: 'Invalid feeOverrides' }, { status: 400 });
     }
 
     // 서버 측 암호화 키 저장소 우선, fallback으로 클라이언트 전송 키 사용
@@ -133,7 +137,7 @@ export async function POST(req: NextRequest) {
       opportunity.shortExchange,
       opportunity.longExchange,
       'taker',
-      feeOverrides,
+      normalizedFeeOverrides,
     ) * 100;
     const realNetSpread = calcNetSpreadPercent(opportunity.spreadPercent, entryGapPct, hedgeFeePct);
 
@@ -184,7 +188,7 @@ export async function POST(req: NextRequest) {
         shortQty,
         shortLimitPrice,
         leverage,
-        feeOverrides,
+        normalizedFeeOverrides,
       ),
       openPositionExact(
         opportunity.longExchange,
@@ -194,7 +198,7 @@ export async function POST(req: NextRequest) {
         longQty,
         longLimitPrice,
         leverage,
-        feeOverrides,
+        normalizedFeeOverrides,
       ),
     ]);
 
@@ -270,7 +274,7 @@ export async function POST(req: NextRequest) {
             const excessQty = (shortNotional - minNotional) / shortResult.value.price;
             await closePosition(
               opportunity.shortExchange, shortConfig,
-              opportunity.shortSymbol, 'short', excessQty, feeOverrides,
+              opportunity.shortSymbol, 'short', excessQty, normalizedFeeOverrides,
             );
             hedgeTrimNote = `숏 초과분 $${(shortNotional - minNotional).toFixed(2)} 트림 완료`;
           } else {
@@ -278,7 +282,7 @@ export async function POST(req: NextRequest) {
             const excessQty = (longNotional - minNotional) / longResult.value.price;
             await closePosition(
               opportunity.longExchange, longConfig,
-              opportunity.longSymbol, 'long', excessQty, feeOverrides,
+              opportunity.longSymbol, 'long', excessQty, normalizedFeeOverrides,
             );
             hedgeTrimNote = `롱 초과분 $${(longNotional - minNotional).toFixed(2)} 트림 완료`;
           }
@@ -320,8 +324,8 @@ export async function POST(req: NextRequest) {
     const expectedTotalRoundTripFees = shortOk && longOk
       ? shortResult.value.estimatedFee
         + longResult.value.estimatedFee
-        + (shortResult.value.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker', feeOverrides))
-        + (longResult.value.filledNotional * getExchangeFee(opportunity.longExchange, 'taker', feeOverrides))
+        + (shortResult.value.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides))
+        + (longResult.value.filledNotional * getExchangeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides))
       : undefined;
 
     return NextResponse.json({

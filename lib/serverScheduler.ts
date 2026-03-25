@@ -27,22 +27,22 @@ import {
   getExchangeFee,
   getHedgeFeesWithOverrides,
   calcNetSpreadPercent,
+  getResolvedTimingConfig,
+  sanitizeFeeOverrides,
+  sanitizeTimingConfig,
   type ApiConfig,
   type ArbitrageOpportunity,
   type ExchangeId,
   type FeeOverrides,
   type FundingPayment,
   type FundingRate,
+  type TimingConfig,
 } from './types';
 
 const DATA_DIR = join(process.cwd(), 'data');
 const STATE_FILE = join(DATA_DIR, 'scheduler-state.json');
 const LOG_FILE = join(DATA_DIR, 'scheduler.log');
-const ENTRY_BEFORE_MS = 5_000;
-const CLOSE_BUFFER_MS = 2_000;
 const CLOSE_RETRY_DELAY_MS = 30_000;
-const FUNDING_VERIFY_RETRY_MS = 5_000;
-const FUNDING_VERIFY_ATTEMPTS = 3;
 const FUNDING_MATCH_WINDOW_MS = 10 * 60 * 1000;
 
 function getErrorMessage(error: unknown): string {
@@ -58,6 +58,7 @@ export interface SchedulerConfig {
   enabledExchanges: ExchangeId[];
   maxConcurrentPairs: number;
   feeOverrides?: FeeOverrides;
+  timingConfig?: TimingConfig;
 }
 
 interface SchedulerStats {
@@ -132,6 +133,7 @@ class ServerScheduler {
     minSpreadPercent: 0.01,
     enabledExchanges: [],
     maxConcurrentPairs: 5,
+    timingConfig: getResolvedTimingConfig(),
   };
   private startedAt: number | null = null;
   private stats: SchedulerStats = { totalEntries: 0, totalCloses: 0, totalProfit: 0, errors: 0 };
@@ -153,6 +155,18 @@ class ServerScheduler {
     this.loadPersistedState();
   }
 
+  private normalizeConfig(config: SchedulerConfig): SchedulerConfig {
+    return {
+      ...config,
+      feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
+      timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
+    };
+  }
+
+  private getTimingConfig() {
+    return getResolvedTimingConfig(this.config.timingConfig);
+  }
+
   start(config: SchedulerConfig) {
     if (this.active) {
       this.stop();
@@ -161,7 +175,7 @@ class ServerScheduler {
     const continuingSession = this.scheduledEntries.size > 0 || this.activePositions.size > 0;
 
     this.active = true;
-    this.config = config;
+    this.config = this.normalizeConfig(config);
     if (!continuingSession) {
       this.startedAt = Date.now();
       this.stats = { totalEntries: 0, totalCloses: 0, totalProfit: 0, errors: 0 };
@@ -175,11 +189,35 @@ class ServerScheduler {
 
     this.log(
       'info',
-      `scheduler started | investment=$${config.investmentUSDT} leverage=${config.leverage}x exchanges=${config.enabledExchanges.join(',')} minSpread=${config.minSpreadPercent}%`,
+      `scheduler started | investment=$${this.config.investmentUSDT} leverage=${this.config.leverage}x exchanges=${this.config.enabledExchanges.join(',')} minSpread=${this.config.minSpreadPercent}%`,
     );
     void sendTelegramMessage(
-      `[Server Scheduler] started\ninvestment: $${config.investmentUSDT} | leverage: ${config.leverage}x\nexchanges: ${config.enabledExchanges.join(', ')}\nminSpread: ${config.minSpreadPercent}%`,
+      `[Server Scheduler] started\ninvestment: $${this.config.investmentUSDT} | leverage: ${this.config.leverage}x\nexchanges: ${this.config.enabledExchanges.join(', ')}\nminSpread: ${this.config.minSpreadPercent}%`,
     );
+  }
+
+  updateConfig(config: SchedulerConfig) {
+    const nextConfig = this.normalizeConfig(config);
+
+    this.config = nextConfig;
+
+    for (const entry of this.scheduledEntries.values()) {
+      if (entry.timer) clearTimeout(entry.timer);
+    }
+    this.scheduledEntries.clear();
+
+    if (this.active) {
+      this.restoreTimers();
+      this.saveState();
+      this.startPolling();
+      setTimeout(() => void this.poll(), 250);
+      this.log(
+        'info',
+        `scheduler config updated | investment=$${nextConfig.investmentUSDT} leverage=${nextConfig.leverage}x exchanges=${nextConfig.enabledExchanges.join(',')} minSpread=${nextConfig.minSpreadPercent}%`,
+      );
+    } else {
+      this.saveState();
+    }
   }
 
   stop() {
@@ -267,7 +305,7 @@ class ServerScheduler {
       if (!existsSync(STATE_FILE)) return;
 
       const saved = JSON.parse(readFileSync(STATE_FILE, 'utf-8')) as PersistedState;
-      this.config = saved.config ?? this.config;
+      this.config = saved.config ? this.normalizeConfig(saved.config) : this.config;
       this.startedAt = saved.startedAt ?? null;
       this.stats = saved.stats ?? this.stats;
       this.lastPollTime = saved.lastPollTime ?? 0;
@@ -410,13 +448,14 @@ class ServerScheduler {
     const opportunityId = getOpportunityId(opportunity);
     const asset = opportunity.baseAsset;
     if (this.scheduledEntries.has(opportunityId)) return;
+    const timing = this.getTimingConfig();
 
     let targetTime = opportunity.nextFundingTime;
     const intervalMs = opportunity.fundingIntervalMs ?? 8 * 3600000;
     const now = Date.now();
 
     while (targetTime <= now) targetTime += intervalMs;
-    if (targetTime - now < 6_000) targetTime += intervalMs;
+    if (targetTime - now < timing.entryLeadMs + 1_000) targetTime += intervalMs;
 
     const scheduledEntry: ScheduledEntry = {
       opportunityId,
@@ -429,7 +468,7 @@ class ServerScheduler {
     this.scheduledEntries.set(opportunityId, scheduledEntry);
     this.saveState();
 
-    const delayMs = Math.max(0, targetTime - now - ENTRY_BEFORE_MS);
+    const delayMs = Math.max(0, targetTime - now - timing.entryLeadMs);
     const minutes = Math.floor(delayMs / 60000);
     const seconds = Math.floor((delayMs / 1000) % 60);
     this.log(
@@ -439,7 +478,7 @@ class ServerScheduler {
   }
 
   private scheduleEntryTimer(opportunity: ArbitrageOpportunity, targetTime: number) {
-    const delayMs = Math.max(0, targetTime - Date.now() - ENTRY_BEFORE_MS);
+    const delayMs = Math.max(0, targetTime - Date.now() - this.getTimingConfig().entryLeadMs);
     return setTimeout(() => {
       void this.executeEntry(opportunity, targetTime);
     }, delayMs);
@@ -649,7 +688,7 @@ class ServerScheduler {
 
       const pairId = `srv-${Date.now()}-${opportunityId.replace(/[:]/g, '-')}`;
       const entryTime = Date.now();
-      const closeAt = Math.max(Date.now(), targetFundingTime + CLOSE_BUFFER_MS);
+      const closeAt = Math.max(Date.now(), targetFundingTime + this.getTimingConfig().closeDelayMs);
       const activePosition: ActivePosition = {
         opportunityId,
         asset,
@@ -1034,9 +1073,10 @@ class ServerScheduler {
     shortConfig: ApiConfig,
     longConfig: ApiConfig,
   ): Promise<FundingVerificationResult> {
+    const timing = this.getTimingConfig();
     let lastErrors: string[] = [];
 
-    for (let attempt = 0; attempt < FUNDING_VERIFY_ATTEMPTS; attempt++) {
+    for (let attempt = 0; attempt < timing.fundingVerifyAttempts; attempt++) {
       const results = await Promise.allSettled([
         this.fetchFundingForLeg(
           position.opportunity.shortExchange,
@@ -1069,8 +1109,8 @@ class ServerScheduler {
       }
 
       lastErrors = errors;
-      if (attempt < FUNDING_VERIFY_ATTEMPTS - 1) {
-        await this.sleep(FUNDING_VERIFY_RETRY_MS);
+      if (attempt < timing.fundingVerifyAttempts - 1) {
+        await this.sleep(timing.fundingVerifyRetryMs);
       }
     }
 

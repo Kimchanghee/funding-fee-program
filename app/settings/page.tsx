@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES, EXCHANGE_FEES } from '@/lib/types';
+import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES, EXCHANGE_FEES, DEFAULT_TIMING_CONFIG } from '@/lib/types';
 import StatusDot from '@/components/ui/StatusDot';
 import Header from '@/components/dashboard/Header';
 import ApiPanel from '@/components/dashboard/ApiPanel';
@@ -32,6 +32,16 @@ export default function SettingsPage() {
   }, []);
 
   const bestOpp = opportunities[0];
+  const timingConfig = strategyConfig.timingConfig ?? DEFAULT_TIMING_CONFIG;
+
+  const updateTimingConfig = (patch: Partial<typeof timingConfig>) => {
+    setStrategyConfig({
+      timingConfig: {
+        ...timingConfig,
+        ...patch,
+      },
+    });
+  };
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
@@ -105,6 +115,85 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+            </div>
+
+            <div style={{ marginTop: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--color-text)' }}>
+                스나이프 타이밍
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
+                    진입 리드 타임 (ms)
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={0}
+                    max={60000}
+                    step={100}
+                    value={timingConfig.entryLeadMs}
+                    onChange={e => updateTimingConfig({ entryLeadMs: Number(e.target.value) })}
+                  />
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                    펀딩 시각 몇 ms 전에 진입을 시작할지 설정
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
+                    청산 지연 (ms)
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={0}
+                    max={60000}
+                    step={100}
+                    value={timingConfig.closeDelayMs}
+                    onChange={e => updateTimingConfig({ closeDelayMs: Number(e.target.value) })}
+                  />
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                    펀딩 시각 이후 몇 ms 뒤에 청산할지 설정
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
+                    펀딩 검증 재시도 간격 (ms)
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={1000}
+                    max={120000}
+                    step={1000}
+                    value={timingConfig.fundingVerifyRetryMs}
+                    onChange={e => updateTimingConfig({ fundingVerifyRetryMs: Number(e.target.value) })}
+                  />
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                    거래 후 펀딩 내역을 다시 확인하는 간격
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
+                    펀딩 검증 재시도 횟수
+                  </label>
+                  <input
+                    className="input-field"
+                    type="number"
+                    min={1}
+                    max={20}
+                    step={1}
+                    value={timingConfig.fundingVerifyAttempts}
+                    onChange={e => updateTimingConfig({ fundingVerifyAttempts: Number(e.target.value) })}
+                  />
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                    펀딩 내역 미확인 시 몇 번 더 조회할지 설정
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Toggles */}

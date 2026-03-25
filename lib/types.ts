@@ -114,6 +114,7 @@ export interface StrategyConfig {
   autoExecute: boolean;     // auto enter at funding time
   compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (단리)
   feeOverrides?: FeeOverrides; // 사용자 수수료 override
+  timingConfig?: TimingConfig; // 스나이프/펀딩 검증 타이밍 설정
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
@@ -160,6 +161,107 @@ export interface ExchangeFees {
 
 export type FeeOverrides = Partial<Record<ExchangeId, ExchangeFees>>;
 
+export interface TimingConfig {
+  entryLeadMs: number;
+  closeDelayMs: number;
+  fundingVerifyRetryMs: number;
+  fundingVerifyAttempts: number;
+}
+
+export const DEFAULT_TIMING_CONFIG: TimingConfig = {
+  entryLeadMs: 5_000,
+  closeDelayMs: 2_000,
+  fundingVerifyRetryMs: 5_000,
+  fundingVerifyAttempts: 3,
+};
+
+const MAX_REASONABLE_FEE_RATE = 0.1;
+
+function isValidFeeRate(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= MAX_REASONABLE_FEE_RATE;
+}
+
+function isValidTimingMs(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= min
+    && value <= max;
+}
+
+function isValidTimingCount(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= min
+    && value <= max;
+}
+
+export function hasValidFeeOverrides(overrides: unknown): overrides is FeeOverrides {
+  if (overrides == null) return true;
+  if (typeof overrides !== 'object') return false;
+
+  for (const [exchange, value] of Object.entries(overrides as Record<string, unknown>)) {
+    if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) return false;
+    if (!value || typeof value !== 'object') return false;
+
+    const fees = value as Record<string, unknown>;
+    if (!isValidFeeRate(fees.maker) || !isValidFeeRate(fees.taker)) return false;
+  }
+
+  return true;
+}
+
+export function sanitizeFeeOverrides(overrides: unknown): FeeOverrides | undefined {
+  if (overrides == null || typeof overrides !== 'object') return undefined;
+
+  const sanitized: FeeOverrides = {};
+  for (const exchange of SUPPORTED_EXCHANGES) {
+    const rawValue = (overrides as Record<string, unknown>)[exchange];
+    if (!rawValue || typeof rawValue !== 'object') continue;
+
+    const fees = rawValue as Record<string, unknown>;
+    if (!isValidFeeRate(fees.maker) || !isValidFeeRate(fees.taker)) continue;
+
+    sanitized[exchange] = {
+      maker: fees.maker,
+      taker: fees.taker,
+    };
+  }
+
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+export function hasValidTimingConfig(config: unknown): config is TimingConfig {
+  if (config == null) return true;
+  if (!config || typeof config !== 'object') return false;
+
+  const timing = config as Record<string, unknown>;
+  return isValidTimingMs(timing.entryLeadMs, 0, 60_000)
+    && isValidTimingMs(timing.closeDelayMs, 0, 60_000)
+    && isValidTimingMs(timing.fundingVerifyRetryMs, 1_000, 120_000)
+    && isValidTimingCount(timing.fundingVerifyAttempts, 1, 20);
+}
+
+export function sanitizeTimingConfig(config: unknown): TimingConfig | undefined {
+  if (!hasValidTimingConfig(config)) return undefined;
+  if (config == null) return undefined;
+
+  const timing = config as TimingConfig;
+  return {
+    entryLeadMs: timing.entryLeadMs,
+    closeDelayMs: timing.closeDelayMs,
+    fundingVerifyRetryMs: timing.fundingVerifyRetryMs,
+    fundingVerifyAttempts: timing.fundingVerifyAttempts,
+  };
+}
+
+export function getResolvedTimingConfig(config?: Partial<TimingConfig> | null): TimingConfig {
+  const sanitized = sanitizeTimingConfig(config);
+  return sanitized ? sanitized : { ...DEFAULT_TIMING_CONFIG };
+}
+
 export const EXCHANGE_FEES: Record<ExchangeId, ExchangeFees> = {
   binance: { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
   bybit:   { taker: 0.00055, maker: 0.00020 },  // 0.055% / 0.020%
@@ -187,7 +289,12 @@ export function getExchangeFee(
   orderType: 'taker' | 'maker' = 'taker',
   overrides?: FeeOverrides,
 ): number {
-  const fees = overrides?.[exchange] ?? EXCHANGE_FEES[exchange];
+  const overrideFees = overrides?.[exchange];
+  const fees = overrideFees
+    && isValidFeeRate(overrideFees.maker)
+    && isValidFeeRate(overrideFees.taker)
+    ? overrideFees
+    : EXCHANGE_FEES[exchange];
   return fees[orderType];
 }
 
@@ -196,7 +303,12 @@ export function getEffectiveExchangeFees(
   exchange: ExchangeId,
   overrides?: FeeOverrides,
 ): ExchangeFees {
-  return overrides?.[exchange] ?? EXCHANGE_FEES[exchange];
+  const overrideFees = overrides?.[exchange];
+  return overrideFees
+    && isValidFeeRate(overrideFees.maker)
+    && isValidFeeRate(overrideFees.taker)
+    ? overrideFees
+    : EXCHANGE_FEES[exchange];
 }
 
 /** Get round-trip hedge fees with optional overrides */

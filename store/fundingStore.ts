@@ -28,7 +28,16 @@ import {
 } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 import { sendTelegramMessage, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
-import { getHedgeFeesWithOverrides, getExchangeFee, calcNetSpreadPercent, SAFETY_MARGIN_PCT } from '@/lib/types';
+import {
+  DEFAULT_TIMING_CONFIG,
+  getHedgeFeesWithOverrides,
+  getExchangeFee,
+  calcNetSpreadPercent,
+  SAFETY_MARGIN_PCT,
+  getResolvedTimingConfig,
+  sanitizeFeeOverrides,
+  sanitizeTimingConfig,
+} from '@/lib/types';
 
 // ─────────────────────────────────────────────
 // Fee constants (fallback for contexts without exchange info)
@@ -79,6 +88,121 @@ function getConfiguredExchangeFee(
   orderType: 'taker' | 'maker' = 'taker',
 ): number {
   return getExchangeFee(exchange, orderType, config.feeOverrides);
+}
+
+function getResolvedStrategyConfig(config: StrategyConfig): StrategyConfig {
+  return {
+    ...config,
+    feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
+    timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
+  };
+}
+
+function getOpportunityResultLimit(activeModes: {
+  simSnipeActive: boolean;
+  realSnipeActive: boolean;
+}): number {
+  return (activeModes.simSnipeActive || activeModes.realSnipeActive) ? 200 : 20;
+}
+
+function buildOpportunitiesFromRates(
+  rates: FundingRate[],
+  config: Pick<StrategyConfig, 'investmentUSDT' | 'leverage' | 'feeOverrides'>,
+  activeModes: {
+    simSnipeActive: boolean;
+    realSnipeActive: boolean;
+  },
+): ArbitrageOpportunity[] {
+  return findOpportunities(
+    rates,
+    getOpportunityResultLimit(activeModes),
+    config.investmentUSDT,
+    config.leverage,
+    config.feeOverrides,
+  );
+}
+
+function rebuildRealSpreadsForConfig(
+  currentSpreads: Record<string, RealSpreadSnapshot>,
+  opportunities: ArbitrageOpportunity[],
+  strategyConfig: Pick<StrategyConfig, 'feeOverrides'>,
+): Record<string, RealSpreadSnapshot> {
+  if (Object.keys(currentSpreads).length === 0) return currentSpreads;
+
+  const opportunitiesById = new Map(
+    opportunities.map((opportunity) => [getOpportunityId(opportunity), opportunity]),
+  );
+
+  const next: Record<string, RealSpreadSnapshot> = {};
+  for (const [key, spread] of Object.entries(currentSpreads)) {
+    const opportunity = opportunitiesById.get(key);
+    if (!opportunity) {
+      next[key] = spread;
+      continue;
+    }
+
+    const hedgeFeePct = getConfiguredHedgeFees(
+      strategyConfig,
+      opportunity.shortExchange,
+      opportunity.longExchange,
+      'taker',
+    ) * 100;
+
+    next[key] = {
+      ...spread,
+      effectiveSpread: calcNetSpreadPercent(
+        opportunity.spreadPercent,
+        spread.entryGapPct,
+        hedgeFeePct,
+      ),
+    };
+  }
+
+  return next;
+}
+
+function buildSchedulerConfig(
+  strategyConfig: StrategyConfig,
+  enabledExchanges: ExchangeId[],
+) {
+  return {
+    investmentUSDT: strategyConfig.investmentUSDT,
+    leverage: strategyConfig.leverage,
+    minSpreadPercent: strategyConfig.minSpreadPercent,
+    enabledExchanges,
+    maxConcurrentPairs: 5,
+    feeOverrides: strategyConfig.feeOverrides,
+    timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
+  };
+}
+
+async function syncServerSchedulerConfig(
+  strategyConfig: StrategyConfig,
+  enabledExchanges: ExchangeId[],
+  addLog: (level: LogLevel, message: string, exchange?: ExchangeId, detail?: string) => void,
+) {
+  try {
+    const response = await fetch('/api/scheduler', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'update',
+        config: buildSchedulerConfig(strategyConfig, enabledExchanges),
+      }),
+    });
+
+    const payload = await response.json().catch(() => null) as { success?: boolean; error?: string } | null;
+    if (!response.ok || !payload?.success) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+  } catch (error) {
+    addLog(
+      'error',
+      '[스케줄러] 설정 동기화 실패',
+      undefined,
+      (error as Error).message,
+    );
+  }
 }
 
 /** 복리/단리에 따른 실제 notional 계산 */
@@ -714,6 +838,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     minSpreadPercent: 0.20,
     autoExecute: false,
     compoundInvesting: true,
+    timingConfig: { ...DEFAULT_TIMING_CONFIG },
   },
   fundingHistory: [],
   simulationMode: true,
@@ -820,7 +945,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // 저장된 전략 설정 로드
       const savedStrategy = loadStrategyConfig();
       if (savedStrategy) {
-        set({ strategyConfig: { ...get().strategyConfig, ...savedStrategy } });
+        set({
+          strategyConfig: getResolvedStrategyConfig({
+            ...get().strategyConfig,
+            ...savedStrategy,
+            timingConfig: {
+              ...getResolvedTimingConfig(get().strategyConfig.timingConfig),
+              ...getResolvedTimingConfig(savedStrategy.timingConfig),
+            },
+          }),
+        });
       }
 
       // 저장된 거래소 ON/OFF 설정 로드
@@ -871,6 +1005,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           if (savedSim) updates.simSnipeActive = true;
           if (realConfirmed) updates.realSnipeActive = true;
           set(updates);
+          if (realConfirmed) {
+            void syncServerSchedulerConfig(
+              getResolvedStrategyConfig(get().strategyConfig),
+              get().enabledExchanges,
+              get().addLog,
+            );
+          }
           get().addLog('info', `[복원] 자동투자 상태 복원 — ${savedSim ? 'SIM ' : ''}${realConfirmed ? 'REAL' : ''}`.trim());
           // SIM 모드만 클라이언트 타이머로 스케줄링 (REAL은 서버 스케줄러가 담당)
           if (savedSim) {
@@ -976,22 +1117,114 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   setStrategyConfig(config) {
+    const previousState = get();
+    const previousConfig = previousState.strategyConfig;
+    const currentTiming = getResolvedTimingConfig(previousConfig.timingConfig);
+    const nextTiming = config.timingConfig
+      ? getResolvedTimingConfig({
+        entryLeadMs: Number.isFinite(config.timingConfig.entryLeadMs)
+          ? config.timingConfig.entryLeadMs
+          : currentTiming.entryLeadMs,
+        closeDelayMs: Number.isFinite(config.timingConfig.closeDelayMs)
+          ? config.timingConfig.closeDelayMs
+          : currentTiming.closeDelayMs,
+        fundingVerifyRetryMs: Number.isFinite(config.timingConfig.fundingVerifyRetryMs)
+          ? config.timingConfig.fundingVerifyRetryMs
+          : currentTiming.fundingVerifyRetryMs,
+        fundingVerifyAttempts: Number.isInteger(config.timingConfig.fundingVerifyAttempts)
+          ? config.timingConfig.fundingVerifyAttempts
+          : currentTiming.fundingVerifyAttempts,
+      })
+      : currentTiming;
+
+    const next = getResolvedStrategyConfig({
+      ...previousConfig,
+      ...config,
+      feeOverrides: config.feeOverrides !== undefined
+        ? sanitizeFeeOverrides(config.feeOverrides)
+        : previousConfig.feeOverrides,
+      timingConfig: nextTiming,
+    });
+
+    const investmentChanged = next.investmentUSDT !== previousConfig.investmentUSDT;
+    const leverageChanged = next.leverage !== previousConfig.leverage;
+    const minSpreadChanged = next.minSpreadPercent !== previousConfig.minSpreadPercent;
+    const feeChanged = JSON.stringify(next.feeOverrides ?? {}) !== JSON.stringify(previousConfig.feeOverrides ?? {});
+    const timingChanged = JSON.stringify(next.timingConfig ?? DEFAULT_TIMING_CONFIG) !== JSON.stringify(previousConfig.timingConfig ?? DEFAULT_TIMING_CONFIG);
+    const schedulerRelevantChanged = investmentChanged || leverageChanged || minSpreadChanged || feeChanged || timingChanged;
+
     set((s) => {
-      const next = { ...s.strategyConfig, ...config };
+      const opportunities = buildOpportunitiesFromRates(s.fundingRates, next, s);
+      const nextRealSpreads = feeChanged
+        ? rebuildRealSpreadsForConfig(s.realSpreads, opportunities, next)
+        : s.realSpreads;
+
       saveStrategyConfig(next);
 
       // investmentUSDT 변경 시 시뮬 잔고 동기화 (포지션 없을 때만)
-      if (config.investmentUSDT !== undefined && config.investmentUSDT !== s.strategyConfig.investmentUSDT) {
-        if (s.simulationMode && s.simPositions.length === 0) {
-          const newBal = {} as Record<ExchangeId, number>;
-          for (const ex of SUPPORTED_EXCHANGES) {
-            newBal[ex] = s.enabledExchanges.includes(ex) ? config.investmentUSDT * 2 : 0;
-          }
-          return { strategyConfig: next, simBalances: newBal, simInitialBalances: { ...newBal } };
+      if (investmentChanged && s.simulationMode && s.simPositions.length === 0) {
+        const newBal = {} as Record<ExchangeId, number>;
+        for (const ex of SUPPORTED_EXCHANGES) {
+          newBal[ex] = s.enabledExchanges.includes(ex) ? next.investmentUSDT * 2 : 0;
         }
+        return {
+          strategyConfig: next,
+          opportunities,
+          realSpreads: nextRealSpreads,
+          simBalances: newBal,
+          simInitialBalances: { ...newBal },
+        };
       }
-      return { strategyConfig: next };
+
+      return {
+        strategyConfig: next,
+        opportunities,
+        realSpreads: nextRealSpreads,
+      };
     });
+
+    if (previousState.simSnipeActive) {
+      if (timingChanged) {
+        set((s) => {
+          const nextTimers = { ...s._snipeTimers };
+          const nextTargets = { ...s.snipeTargets };
+
+          for (const key of Object.keys(nextTimers)) {
+            if (key.startsWith('sim:')) {
+              clearTimeout(nextTimers[key]);
+              delete nextTimers[key];
+            }
+          }
+          for (const key of Object.keys(nextTargets)) {
+            if (key.startsWith('sim:')) {
+              delete nextTargets[key];
+            }
+          }
+
+          return {
+            _snipeTimers: nextTimers,
+            snipeTargets: nextTargets,
+          };
+        });
+      }
+
+      get().revalidateScheduledSnipes();
+      get().scheduleAllSnipes();
+    } else if (previousState.realSnipeActive) {
+      get().revalidateScheduledSnipes();
+    }
+
+    if (investmentChanged || leverageChanged || feeChanged) {
+      void get().refreshRealSpreads();
+    }
+
+    if (previousState.realSnipeActive && schedulerRelevantChanged) {
+      void syncServerSchedulerConfig(
+        get().strategyConfig,
+        get().enabledExchanges,
+        get().addLog,
+      );
+    }
   },
 
   // ── Refresh rates (거래소별 개별 비동기 — 응답 즉시 UI 업데이트) ──
@@ -2554,7 +2787,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const updatedBal = redistributePool(newBal, lockedPerExchangeHedge);
 
-    set({ enabledExchanges: next, simBalances: updatedBal });
+    const filteredRates = get().fundingRates.filter(rate => next.includes(rate.exchange));
+    set(s => ({
+      enabledExchanges: next,
+      simBalances: updatedBal,
+      fundingRates: filteredRates,
+      opportunities: buildOpportunitiesFromRates(filteredRates, s.strategyConfig, s),
+    }));
     saveEnabledExchanges(next);
 
     const action = enabledExchanges.includes(exchange) ? 'OFF' : 'ON';
@@ -2566,6 +2805,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     );
 
     // 즉시 새 설정으로 펀딩률 갱신
+    if (get().realSnipeActive) {
+      void syncServerSchedulerConfig(get().strategyConfig, next, get().addLog);
+    }
+    if (get().simSnipeActive) {
+      get().revalidateScheduledSnipes();
+      get().scheduleAllSnipes();
+    }
     get().refreshRates();
   },
 
@@ -2956,14 +3202,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       targetTime += intervalMs;
     }
 
-    const ENTRY_BEFORE_MS = 5_000;
+    const entryLeadMs = getResolvedTimingConfig(get().strategyConfig.timingConfig).entryLeadMs;
 
     // 펀딩까지 6초 미만 → 다음 사이클 (ENTRY_BEFORE_MS=5초보다 약간 여유)
-    if (targetTime - now < 6_000) {
+    if (targetTime - now < entryLeadMs + 1_000) {
       targetTime += intervalMs;
     }
 
-    const entryDelay = Math.max(0, targetTime - now - ENTRY_BEFORE_MS);
+    const entryDelay = Math.max(0, targetTime - now - entryLeadMs);
 
     // 타이머 등록
     const timer = setTimeout(() => get()._executeSnipeEntry(opportunity, targetTime, isSim), entryDelay);
@@ -3162,7 +3408,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           undefined,
           `펀딩까지 ~${secsToFunding}초`,
         );
-        const closeDelay = Math.max(0, targetFundingTime - Date.now()) + 2_000;
+        const closeDelay = Math.max(0, targetFundingTime - Date.now()) + getResolvedTimingConfig(get().strategyConfig.timingConfig).closeDelayMs;
         const closeTimer = setTimeout(() => {
           get()._executeSnipeClose(finalTarget, isSim);
         }, closeDelay);

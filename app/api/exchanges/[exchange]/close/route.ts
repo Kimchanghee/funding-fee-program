@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, FeeOverrides } from '@/lib/types';
-import { SUPPORTED_EXCHANGES } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
 import { closePosition } from '@/lib/exchanges';
 import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
 import { makeServerPositionKey, removeServerPositionMeta } from '@/lib/serverPositionMeta';
@@ -39,8 +39,18 @@ export async function POST(
     if (typeof body.amount !== 'number' || body.amount <= 0) {
       return NextResponse.json({ success: false, error: 'Invalid amount: must be positive number' }, { status: 400 });
     }
+    if (!hasValidFeeOverrides(body.feeOverrides)) {
+      return NextResponse.json({ success: false, error: 'Invalid feeOverrides' }, { status: 400 });
+    }
 
-    const result = await closePosition(id, config, body.symbol, body.side, body.amount, body.feeOverrides);
+    const result = await closePosition(
+      id,
+      config,
+      body.symbol,
+      body.side,
+      body.amount,
+      sanitizeFeeOverrides(body.feeOverrides),
+    );
     removeServerPositionMeta([makeServerPositionKey(id, body.symbol, body.side)]);
     return NextResponse.json({ success: true, data: result });
   } catch (err) {

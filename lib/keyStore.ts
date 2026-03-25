@@ -1,4 +1,5 @@
 import type { ApiConfig, ExchangeId, StrategyConfig, LogEntry, FundingPayment, SimPosition } from './types';
+import { sanitizeFeeOverrides, getResolvedTimingConfig } from './types';
 
 const STORAGE_KEY = 'funding_fee_api_configs_v2';
 const LEGACY_STORAGE_KEY = 'funding_fee_api_configs';
@@ -106,7 +107,12 @@ const STRATEGY_CONFIG_KEY = 'funding_fee_strategy_config';
 
 export function saveStrategyConfig(config: StrategyConfig): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STRATEGY_CONFIG_KEY, JSON.stringify(config));
+  const normalized: StrategyConfig = {
+    ...config,
+    feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
+    timingConfig: getResolvedTimingConfig(config.timingConfig),
+  };
+  localStorage.setItem(STRATEGY_CONFIG_KEY, JSON.stringify(normalized));
 }
 
 export function loadStrategyConfig(): StrategyConfig | null {
@@ -114,7 +120,12 @@ export function loadStrategyConfig(): StrategyConfig | null {
   try {
     const raw = localStorage.getItem(STRATEGY_CONFIG_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as StrategyConfig;
+    return {
+      ...parsed,
+      feeOverrides: sanitizeFeeOverrides(parsed.feeOverrides),
+      timingConfig: getResolvedTimingConfig(parsed.timingConfig),
+    };
   } catch {
     return null;
   }

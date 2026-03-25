@@ -218,6 +218,7 @@ export default function OpportunityCard() {
                 enabledExchanges: state.enabledExchanges,
                 maxConcurrentPairs: 5,
                 feeOverrides: state.strategyConfig.feeOverrides,
+                timingConfig: state.strategyConfig.timingConfig,
               },
             }),
           });

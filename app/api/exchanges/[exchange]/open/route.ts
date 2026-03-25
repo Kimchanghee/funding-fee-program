@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, FeeOverrides } from '@/lib/types';
-import { SUPPORTED_EXCHANGES } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
 import { openPosition } from '@/lib/exchanges';
 import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
 
@@ -42,8 +42,19 @@ export async function POST(
     if (typeof body.leverage !== 'number' || body.leverage < 1 || body.leverage > 125) {
       return NextResponse.json({ success: false, error: 'Invalid leverage: must be 1-125' }, { status: 400 });
     }
+    if (!hasValidFeeOverrides(body.feeOverrides)) {
+      return NextResponse.json({ success: false, error: 'Invalid feeOverrides' }, { status: 400 });
+    }
 
-    const result = await openPosition(id, config, body.symbol, body.side, body.amountUSDT, body.leverage, body.feeOverrides);
+    const result = await openPosition(
+      id,
+      config,
+      body.symbol,
+      body.side,
+      body.amountUSDT,
+      body.leverage,
+      sanitizeFeeOverrides(body.feeOverrides),
+    );
     return NextResponse.json({ success: true, data: result });
   } catch (err) {
     return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
