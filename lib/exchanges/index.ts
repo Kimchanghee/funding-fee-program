@@ -723,21 +723,30 @@ export async function openPositionExact(
 
     if (filledAmount < qty * 0.90) {
       const remaining = qty - filledAmount;
+      // 슬리피지 제한: market order 대신 limitPrice 기준 limit IOC로 재시도
+      // limitPrice는 사전 오더북 스캔의 worst level + 0.05% 버퍼 — 이 가격 이상 체결 방지
       console.log(
         `[${id}] ${symbol} ${side} IOC partial fill ${((filledAmount / qty) * 100).toFixed(1)}%, ` +
-        `market-filling remaining ${remaining.toFixed(6)}`,
+        `limit-IOC remaining ${remaining.toFixed(6)} @${limitPrice.toFixed(4)} (no market fallback)`,
       );
-      const mktOrder = await Promise.race([
-        ex.createMarketOrder(symbol, orderSide, remaining, undefined, { reduceOnly: false }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Market order timeout')), 3000)),
+      const retryOrder = await Promise.race([
+        ex.createOrder(symbol, 'limit', orderSide, remaining, limitPrice, {
+          timeInForce: 'IOC', reduceOnly: false,
+        }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Retry IOC timeout')), 3000)),
       ]);
-      const mktFilled = (mktOrder.filled as number) || remaining;
-      const mktPrice = (mktOrder.average as number) || limitPrice;
-      const totalFilled = filledAmount + mktFilled;
-      const avgPrice = (filledAmount * filledPrice + mktFilled * mktPrice) / totalFilled;
+      const retryFilled = (retryOrder.filled as number) || 0;
+      const retryPrice = (retryOrder.average as number) || limitPrice;
+      const totalFilled = filledAmount + retryFilled;
+      if (totalFilled === 0) {
+        throw new Error(`[${id}] ${symbol} ${side} 체결 실패: IOC + retry 모두 0 filled`);
+      }
+      const avgPrice = totalFilled > 0
+        ? (filledAmount * filledPrice + retryFilled * retryPrice) / totalFilled
+        : filledPrice;
 
       return {
-        orderId: (order.id as string) || (mktOrder.id as string) || '',
+        orderId: (order.id as string) || (retryOrder.id as string) || '',
         price: avgPrice,
         amount: totalFilled * cSize,
         filledNotional: totalFilled * cSize * avgPrice,

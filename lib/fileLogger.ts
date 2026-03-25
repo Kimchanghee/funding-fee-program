@@ -142,6 +142,12 @@ export function appendTrades(events: TradeEvent[]): void {
     const filePath = path.join(TRADES_DIR, `${dateStr}.jsonl`);
     const lines = events.map(e => JSON.stringify(e)).join('\n') + '\n';
     fs.appendFileSync(filePath, lines, 'utf-8');
+    // 로그 없이 거래만 기록되는 날에도 정리 실행
+    if (dateStr !== lastPruneDate) {
+      lastPruneDate = dateStr;
+      pruneOldFiles(LOGS_DIR);
+      pruneOldFiles(TRADES_DIR);
+    }
   } catch (err) {
     console.error('[fileLogger] appendTrades failed:', err);
   }

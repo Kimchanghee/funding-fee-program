@@ -1802,6 +1802,26 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const json = await res.json() as ExecuteStrategyResult;
       const result: ExecuteStrategyResult = { ...json, pairId: json.pairId ?? pairId };
 
+      // Guard 차단 응답 처리 (슬리피지 초과, 수익성 미달 등)
+      if (!result.success && !result.short && !result.long) {
+        const rawJson = json as unknown as { reason?: string; error?: string };
+        const reason = rawJson.reason;
+        const errorMsg = rawJson.error;
+        get().addLog('warning',
+          `${opportunity.baseAsset} 진입 차단: ${errorMsg || '사전 검증 실패'}`,
+          undefined,
+          `reason: ${reason || 'unknown'}`,
+        );
+        queueTrade({
+          timestamp: Date.now(), type: 'guard_block', simulation: false,
+          baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
+          spread: opportunity.spread, spreadPercent: opportunity.spreadPercent,
+          reason: errorMsg || reason || 'pre_execution_guard',
+        });
+        set({ strategyRunning: false });
+        return result;
+      }
+
       if (result.short?.success) {
         get().addLog('success',
           `${opportunity.shortExchange.toUpperCase()} 숏 포지션 진입 성공`,
