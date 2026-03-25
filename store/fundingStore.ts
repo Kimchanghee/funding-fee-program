@@ -210,7 +210,7 @@ function planWindowAllocations(
 
   const allocations = new Map<string, number>();
   const allocationStep = Math.max(25, Math.min(strategyConfig.investmentUSDT / 5, 250));
-  const minAllocation = Math.max(10, Math.min(strategyConfig.investmentUSDT, 50));
+  const minAllocation = Math.min(Math.max(10, strategyConfig.investmentUSDT * 0.1), allocationStep);
 
   const getCap = (opportunity: ArbitrageOpportunity) => {
     const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
