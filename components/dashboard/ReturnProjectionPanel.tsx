@@ -3,8 +3,9 @@
 import { useMemo, useState } from 'react';
 import { TrendingUp } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { fmtNum } from '@/lib/format';
+import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { getHedgeFees } from '@/lib/types';
+import { buildManagedOpportunityItems } from '@/lib/managedOpportunities';
 
 const TIME_PERIODS = [
   { key: '1h', label: '1시간' },
@@ -22,14 +23,38 @@ type PeriodKey = typeof TIME_PERIODS[number]['key'];
 export default function ReturnProjectionPanel() {
   const {
     opportunities, strategyConfig, simulationMode,
-    realSpreads, snipeTargets, simPositions, positions,
+    realSpreads, snipeTargets, snipeAllocations, simPositions, positions,
   } = useFundingStore();
   const [compoundMode, setCompoundMode] = useState(false);
 
-  const pairCapital = strategyConfig.investmentUSDT * 2;
-
   // 예약 + 활성 중인 코인 목록 → 기회 매핑
   const scheduledOpps = useMemo(() => {
+    const managedItems = buildManagedOpportunityItems({
+      opportunities,
+      snipeTargets,
+      snipeAllocations,
+      activePositions: simulationMode ? simPositions : positions,
+      simulationMode,
+      defaultInvestmentUSDT: strategyConfig.investmentUSDT,
+      limit: 200,
+    });
+
+    return managedItems
+      .filter((item) => item.status === 'scheduled' || item.status === 'active')
+      .map((item) => {
+        const rs = realSpreads[item.id] ?? realSpreads[item.asset];
+        const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
+        const spread = hasRS ? rs.effectiveSpread / 100 : item.opp.spread;
+        const fee = hasRS ? 0 : getHedgeFees(item.opp.shortExchange, item.opp.longExchange, 'taker');
+        const investmentUSDT = item.investmentUSDT ?? strategyConfig.investmentUSDT;
+        const notional = investmentUSDT * strategyConfig.leverage;
+        const net = notional * spread - notional * fee;
+        const intervalH = (item.opp.fundingIntervalMs ?? 8 * 3600000) / 3600000;
+        return { ...item, investmentUSDT, intervalH, netPerFunding: net };
+      })
+      .filter((item) => item.netPerFunding > 0);
+  }, [opportunities, positions, realSpreads, simulationMode, simPositions, snipeAllocations, snipeTargets, strategyConfig.investmentUSDT, strategyConfig.leverage]);
+  useMemo(() => {
     const modePrefix = simulationMode ? 'sim' : 'real';
     const activePositions = simulationMode ? simPositions : positions;
     const assets = new Set<string>();
@@ -62,20 +87,24 @@ export default function ReturnProjectionPanel() {
   const activePairs = scheduledOpps.length > 0 ? scheduledOpps : (() => {
     const best = opportunities[0];
     if (!best) return [];
-    const rs = realSpreads[best.baseAsset];
+    const rs = realSpreads[best.id ?? ''] ?? realSpreads[best.baseAsset];
     const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
     const spread = hasRS ? rs.effectiveSpread / 100 : best.spread;
     const fee = hasRS ? 0 : getHedgeFees(best.shortExchange, best.longExchange, 'taker');
-    const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+    const investmentUSDT = strategyConfig.investmentUSDT;
+    const notional = investmentUSDT * strategyConfig.leverage;
     const net = notional * spread - notional * fee;
     const intervalH = (best.fundingIntervalMs ?? 8 * 3600000) / 3600000;
-    return [{ opp: best, intervalH, netPerFunding: net }];
+    return [{ id: best.id, asset: best.baseAsset, opp: best, intervalH, netPerFunding: net, investmentUSDT }];
   })();
 
   const projection = useMemo(() => {
     if (activePairs.length === 0) return null;
     const numPairs = activePairs.length;
-    const deployedCapital = numPairs * pairCapital;
+    const deployedCapital = activePairs.reduce(
+      (sum, pair) => sum + ((pair.investmentUSDT ?? strategyConfig.investmentUSDT) * 2),
+      0,
+    );
 
     // 단리: 각 쌍의 시간당 수익 합산
     const totalSimple = (hours: number) =>
@@ -95,6 +124,7 @@ export default function ReturnProjectionPanel() {
     // 복리: 각 쌍 독립적으로 이산 복리 → 합산
     const totalCompound = (hours: number) =>
       activePairs.reduce((sum, p) => {
+        const pairCapital = (p.investmentUSDT ?? strategyConfig.investmentUSDT) * 2;
         const rate = p.netPerFunding / pairCapital;
         const totalFundings = hours / p.intervalH;
         const whole = Math.floor(totalFundings);
@@ -122,8 +152,9 @@ export default function ReturnProjectionPanel() {
 
     // 헤더 표시용: 총 펀딩 수익 / 총 수수료
     const totalPerFunding = activePairs.reduce((s, p) => s + p.netPerFunding, 0);
-    const best = activePairs[0].opp;
-    const rs = realSpreads[best.baseAsset];
+    const bestItem = activePairs[0];
+    const best = bestItem.opp;
+    const rs = realSpreads[bestItem.id] ?? realSpreads[best.baseAsset];
     const hasRealSpread = rs && Date.now() - rs.updatedAt < 30_000;
     const displaySpreadPercent = hasRealSpread ? rs.effectiveSpread : best.spreadPercent;
 
@@ -131,7 +162,7 @@ export default function ReturnProjectionPanel() {
       best, simple, compound, numPairs, deployedCapital,
       totalPerFunding, displaySpreadPercent, hasRealSpread,
     };
-  }, [activePairs, pairCapital, realSpreads]);
+  }, [activePairs, realSpreads, strategyConfig.investmentUSDT]);
 
   if (!projection) return null;
 
@@ -156,7 +187,7 @@ export default function ReturnProjectionPanel() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--color-text-muted)', flexWrap: 'wrap' }}>
           <span style={{ fontWeight: 800, color: '#10b981' }}>{numPairs}쌍 예약</span>
           <span>• 베스트: <strong style={{ color: 'var(--color-text)' }}>{best.baseAsset}</strong> +{fmtNum(displaySpreadPercent, 4)}%{hasRealSpread ? ' (실측)' : ''}</span>
-          <span>• 투입 <strong style={{ color: '#a78bfa' }}>${deployedCapital.toLocaleString()}</strong> ({numPairs}×${pairCapital.toLocaleString()})</span>
+          <span>• 투입 <strong style={{ color: '#a78bfa' }}>${deployedCapital.toLocaleString()}</strong> ({numPairs}쌍)</span>
         </div>
 
         <div style={{ flex: 1 }} />
@@ -202,10 +233,10 @@ export default function ReturnProjectionPanel() {
                   {label}
                 </div>
                 <div className="mono" style={{ fontSize: 16, fontWeight: 800, color: profitColor, lineHeight: 1.2 }}>
-                  {value >= 0 ? '+' : ''}{value >= 1000 ? `$${fmtNum(value, 0)}` : `$${fmtNum(value)}`}
+                  {fmtUsdOrInfinity(value, value >= 1000 ? 0 : 2)}
                 </div>
                 <div className="mono" style={{ fontSize: 11, color: roiColor, marginTop: 3, fontWeight: 600 }}>
-                  {roi >= 0 ? '+' : ''}{fmtNum(roi, roi >= 100 ? 1 : 3)}%
+                  {fmtPctOrInfinity(roi, roi >= 100 ? 1 : 3, { forceInfinity: isInfiniteProfitDisplay(value) })}
                 </div>
               </div>
             );
@@ -220,14 +251,14 @@ export default function ReturnProjectionPanel() {
           background: 'rgba(255,255,255,0.02)',
         }}>
           <span>
-            {numPairs}쌍 합산 순수익/사이클: <span className="mono" style={{ color: '#10b981', fontWeight: 700 }}>${fmtNum(totalPerFunding)}</span>
+            {numPairs}쌍 합산 순수익/사이클: <span className="mono" style={{ color: '#10b981', fontWeight: 700 }}>{fmtUsdOrInfinity(totalPerFunding, 2, { showPlus: false })}</span>
           </span>
           <span>
-            단리 월: <span className="mono" style={{ color: '#10b981', fontWeight: compoundMode ? 400 : 700 }}>${fmtNum(simple.month)}</span>
-            {' | '}복리 월: <span className="mono" style={{ color: '#a78bfa', fontWeight: compoundMode ? 700 : 400 }}>${fmtNum(compound.month)}</span>
+            단리 월: <span className="mono" style={{ color: '#10b981', fontWeight: compoundMode ? 400 : 700 }}>{fmtUsdOrInfinity(simple.month, 2, { showPlus: false })}</span>
+            {' | '}복리 월: <span className="mono" style={{ color: '#a78bfa', fontWeight: compoundMode ? 700 : 400 }}>{fmtUsdOrInfinity(compound.month, 2, { showPlus: false })}</span>
             {compound.month > simple.month && (
               <span style={{ color: '#f59e0b', marginLeft: 4 }}>
-                (+{fmtNum(((compound.month - simple.month) / Math.max(simple.month, 0.01)) * 100, 1)}%)
+                ({fmtPctOrInfinity(((compound.month - simple.month) / Math.max(simple.month, 0.01)) * 100, 1, { forceInfinity: isInfiniteProfitDisplay(compound.month) || isInfiniteProfitDisplay(simple.month) })})
               </span>
             )}
           </span>

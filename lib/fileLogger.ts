@@ -57,6 +57,9 @@ export interface TradeEvent {
   margin?: number;
   leverage?: number;
   notional?: number;
+  netProfit?: number;
+  perFunding?: number;
+  totalRoundTripFees?: number;
   pairId?: string;
   entryFee?: number;
   exitFee?: number;

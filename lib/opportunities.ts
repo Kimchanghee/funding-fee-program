@@ -2,9 +2,54 @@ import type { FundingRate, ArbitrageOpportunity, ExchangeId } from './types';
 import { getHedgeFees } from './types';
 import { calcAnnualReturn, getMinutesToFunding } from './exchanges/utils';
 
+const FUNDING_ALIGNMENT_TOLERANCE_MS = 120_000;
+
+export function getOpportunityIntervalHours(
+  opportunity: Pick<ArbitrageOpportunity, 'fundingIntervalMs'>,
+): number {
+  return Math.max(1, (opportunity.fundingIntervalMs ?? 8 * 3600000) / 3600000);
+}
+
+export function makeOpportunityId(
+  baseAsset: string,
+  shortExchange: ExchangeId,
+  longExchange: ExchangeId,
+  fundingIntervalMs: number,
+): string {
+  const intervalHours = Math.max(1, Math.round(fundingIntervalMs / 3600000));
+  return `${baseAsset}:${shortExchange}:${longExchange}:${intervalHours}h`;
+}
+
+export function getOpportunityId(opportunity: ArbitrageOpportunity): string {
+  return opportunity.id || makeOpportunityId(
+    opportunity.baseAsset,
+    opportunity.shortExchange,
+    opportunity.longExchange,
+    opportunity.fundingIntervalMs ?? 8 * 3600000,
+  );
+}
+
+export function getOpportunityLegKeys(opportunity: ArbitrageOpportunity): [string, string] {
+  return [
+    `${opportunity.shortExchange}:${opportunity.shortSymbol}:short`,
+    `${opportunity.longExchange}:${opportunity.longSymbol}:long`,
+  ];
+}
+
+export function getOpportunityHourlyNetProfit(opportunity: ArbitrageOpportunity): number {
+  return opportunity.netProfit / getOpportunityIntervalHours(opportunity);
+}
+
+export function getOpportunityTimeGroupKey(
+  nextFundingTime: number,
+  toleranceMs = FUNDING_ALIGNMENT_TOLERANCE_MS,
+): number {
+  return Math.round(nextFundingTime / toleranceMs) * toleranceMs;
+}
+
 /**
- * From all collected funding rates, find the best delta-neutral
- * arbitrage opportunities (same base asset, different exchanges).
+ * From all collected funding rates, find delta-neutral arbitrage opportunities.
+ * Keep every profitable route instead of collapsing to one opportunity per asset.
  */
 export function findOpportunities(
   rates: FundingRate[],
@@ -12,94 +57,103 @@ export function findOpportunities(
   investmentUSDT = 1000,
   leverage = 5,
 ): ArbitrageOpportunity[] {
-  // Group by base asset
   const byAsset = new Map<string, FundingRate[]>();
-  for (const r of rates) {
-    const list = byAsset.get(r.baseAsset) ?? [];
-    list.push(r);
-    byAsset.set(r.baseAsset, list);
+  for (const rate of rates) {
+    const list = byAsset.get(rate.baseAsset) ?? [];
+    list.push(rate);
+    byAsset.set(rate.baseAsset, list);
   }
 
-  const opportunities: ArbitrageOpportunity[] = [];
+  const opportunities = new Map<string, ArbitrageOpportunity>();
 
   for (const [baseAsset, assetRates] of byAsset) {
     if (assetRates.length < 2) continue;
 
-    // Sort descending by rate
-    const sorted = [...assetRates].sort((a, b) => b.rate - a.rate);
-    const high = sorted[0]; // highest rate → go SHORT
-    const low = high
-      ? [...sorted].reverse().find((r) => r.exchange !== high.exchange)
-      : undefined; // lowest rate on a different exchange → go LONG
+    for (let shortIndex = 0; shortIndex < assetRates.length; shortIndex++) {
+      for (let longIndex = 0; longIndex < assetRates.length; longIndex++) {
+        if (shortIndex === longIndex) continue;
 
-    if (!high || !low) continue;
+        const shortCandidate = assetRates[shortIndex];
+        const longCandidate = assetRates[longIndex];
 
-    const spread = high.rate - low.rate;
-    if (spread <= 0) continue;
+        if (shortCandidate.exchange === longCandidate.exchange) continue;
 
-    // Both sides must have funded before we collect — use the later time (conservative)
-    const highFundingTime = high.nextFundingTime || Date.now() + 480 * 60000;
-    const lowFundingTime = low.nextFundingTime || Date.now() + 480 * 60000;
-    const nearestFunding = Math.max(highFundingTime, lowFundingTime);
+        const spread = shortCandidate.rate - longCandidate.rate;
+        if (spread <= 0) continue;
 
-    // 펀딩 시각 정렬 검증: 양쪽 펀딩 시각이 2분 이상 어긋나면 스나이프 불가
-    // (한쪽은 펀딩을 받고, 다른 쪽은 아직 → 가격 리스크 노출)
-    const fundingTimeDiffMs = Math.abs(highFundingTime - lowFundingTime);
-    if (fundingTimeDiffMs > 120_000) continue; // 2분 초과 차이 → 스킵
+        const shortFundingTime = shortCandidate.nextFundingTime || Date.now() + 480 * 60000;
+        const longFundingTime = longCandidate.nextFundingTime || Date.now() + 480 * 60000;
+        const fundingTimeDiffMs = Math.abs(shortFundingTime - longFundingTime);
+        if (fundingTimeDiffMs > FUNDING_ALIGNMENT_TOLERANCE_MS) continue;
 
-    // 펀딩 주기: 양쪽 중 더 긴 간격 사용 (보수적 ROI 계산)
-    const DEFAULT_INTERVAL_MS = 8 * 3600 * 1000;
-    const shortIntervalMs = (high.intervalHours || 8) * 3600 * 1000;
-    const longIntervalMs = (low.intervalHours || 8) * 3600 * 1000;
-    const fundingIntervalMs = Math.max(shortIntervalMs, longIntervalMs) || DEFAULT_INTERVAL_MS;
+        const shortIntervalMs = (shortCandidate.intervalHours || 8) * 3600 * 1000;
+        const longIntervalMs = (longCandidate.intervalHours || 8) * 3600 * 1000;
+        const fundingIntervalMs = Math.max(shortIntervalMs, longIntervalMs);
+        const nextFundingTime = Math.max(shortFundingTime, longFundingTime);
 
-    const notional = investmentUSDT * leverage;
-    // 거래소별 실제 수수료 적용 (taker 기준 — 보수적 추정, maker 성공 시 실제 비용은 더 낮음)
-    const roundTripFee = getHedgeFees(high.exchange as ExchangeId, low.exchange as ExchangeId, 'taker');
-    const netProfit = notional * spread - notional * roundTripFee;
+        const notional = investmentUSDT * leverage;
+        const roundTripFee = getHedgeFees(shortCandidate.exchange, longCandidate.exchange, 'taker');
+        const netProfit = notional * spread - notional * roundTripFee;
+        if (netProfit <= 0) continue;
 
-    // 수수료 차감 후 순수익이 0 이하면 리스팅에서 제거
-    if (netProfit <= 0) continue;
+        const candidate: ArbitrageOpportunity = {
+          id: makeOpportunityId(
+            baseAsset,
+            shortCandidate.exchange,
+            longCandidate.exchange,
+            fundingIntervalMs,
+          ),
+          baseAsset,
+          shortExchange: shortCandidate.exchange,
+          shortSymbol: shortCandidate.symbol,
+          shortRate: shortCandidate.rate,
+          shortRatePercent: shortCandidate.ratePercent,
+          shortMarkPrice: shortCandidate.markPrice,
+          longExchange: longCandidate.exchange,
+          longSymbol: longCandidate.symbol,
+          longRate: longCandidate.rate,
+          longRatePercent: longCandidate.ratePercent,
+          longMarkPrice: longCandidate.markPrice,
+          spread,
+          spreadPercent: spread * 100,
+          annualReturnPercent: calcAnnualReturn(spread, fundingIntervalMs),
+          nextFundingTime,
+          minutesToFunding: getMinutesToFunding(nextFundingTime),
+          fundingIntervalMs,
+          netProfit,
+        };
 
-    opportunities.push({
-      id: `${baseAsset}-${high.exchange}-${low.exchange}`,
-      baseAsset,
-      shortExchange: high.exchange,
-      shortSymbol: high.symbol,
-      shortRate: high.rate,
-      shortRatePercent: high.ratePercent,
-      shortMarkPrice: high.markPrice,
-      longExchange: low.exchange,
-      longSymbol: low.symbol,
-      longRate: low.rate,
-      longRatePercent: low.ratePercent,
-      longMarkPrice: low.markPrice,
-      spread,
-      spreadPercent: spread * 100,
-      annualReturnPercent: calcAnnualReturn(spread, fundingIntervalMs),
-      nextFundingTime: nearestFunding,
-      minutesToFunding: getMinutesToFunding(nearestFunding),
-      fundingIntervalMs,
-      netProfit,
-    });
+        const existing = opportunities.get(candidate.id);
+        if (
+          !existing
+          || getOpportunityHourlyNetProfit(candidate) > getOpportunityHourlyNetProfit(existing)
+          || (
+            getOpportunityHourlyNetProfit(candidate) === getOpportunityHourlyNetProfit(existing)
+            && candidate.nextFundingTime < existing.nextFundingTime
+          )
+        ) {
+          opportunities.set(candidate.id, candidate);
+        }
+      }
+    }
   }
 
-  // Sort by ROI per hour descending (accounts for funding interval: 1h > 8h)
-  return opportunities.sort((a, b) => {
-    const aIntervalH = (a.fundingIntervalMs ?? 8 * 3600000) / 3600000;
-    const bIntervalH = (b.fundingIntervalMs ?? 8 * 3600000) / 3600000;
-    const aRoiPerH = a.netProfit / aIntervalH;
-    const bRoiPerH = b.netProfit / bIntervalH;
-    return bRoiPerH - aRoiPerH;
-  }).slice(0, topN);
+  return Array.from(opportunities.values())
+    .sort((a, b) => {
+      const hourlyDiff = getOpportunityHourlyNetProfit(b) - getOpportunityHourlyNetProfit(a);
+      if (hourlyDiff !== 0) return hourlyDiff;
+      if (b.netProfit !== a.netProfit) return b.netProfit - a.netProfit;
+      return a.nextFundingTime - b.nextFundingTime;
+    })
+    .slice(0, topN);
 }
 
 export interface ProfitEstimate {
-  perFunding: number;       // 펀딩 수익 (수수료 전)
-  netPerFunding: number;    // 순수익 (1회 펀딩 기준, 수수료 후)
-  totalFees: number;        // 왕복 수수료 합계
+  perFunding: number;
+  netPerFunding: number;
+  totalFees: number;
   totalCapital: number;
-  actualPortfolio: number;  // 실제/시뮬 총 자산
+  actualPortfolio: number;
   per1h: number;
   per4h: number;
   perDay: number;
@@ -115,7 +169,7 @@ export interface ProfitEstimate {
   per3Month: number;
   per6Month: number;
   perYear: number;
-  roiPerFunding: number;    // 총 자산 대비 8h 수익률 (%)
+  roiPerFunding: number;
   roiPer1h: number;
   roiPer4h: number;
   roiPerDay: number;
@@ -148,28 +202,23 @@ export interface ProfitEstimate {
 }
 
 /**
- * 헷징용 수익 예측 — 스나이프 전략 (매 펀딩마다 진입/청산)
- * 수수료: 매 사이클 발생 (진입+청산 = 4 × 0.05% per cycle)
- * ROI 기준: 해당 쌍에 투입된 자본 = investmentUSDT × 2 (숏+롱)
+ * Estimate hedge profits for a funding arbitrage cycle.
  */
 export function estimateProfit(
   opportunity: ArbitrageOpportunity,
   investmentUSDT: number,
   leverage: number,
-  skipFees = false, // true면 spread에 이미 수수료 포함 (realSpread 사용 시)
+  skipFees = false,
 ): ProfitEstimate {
   const totalCapital = investmentUSDT * 2;
   const notional = investmentUSDT * leverage;
-  const intervalH = (opportunity.fundingIntervalMs ?? 8 * 3600000) / 3600000;
+  const intervalH = getOpportunityIntervalHours(opportunity);
   const fundingsPerDay = 24 / intervalH;
 
   const grossPerFunding = notional * opportunity.spread;
-
-  // skipFees=true면 spread에 이미 수수료+슬리피지 반영됨 → 이중 차감 방지
   const roundTripFee = skipFees ? 0 : getHedgeFees(opportunity.shortExchange, opportunity.longExchange, 'taker');
   const feesPerCycle = notional * roundTripFee;
 
-  // 순수익 = 펀딩 수익 - 해당 사이클 수수료
   const netPerFunding = grossPerFunding - feesPerCycle;
   const netPer1h = netPerFunding / intervalH;
   const netPer4h = netPer1h * 4;
@@ -187,7 +236,6 @@ export function estimateProfit(
   const netPer6Month = netPerDay * 180;
   const netPerYear = netPerDay * 365;
 
-  // ROI: 해당 쌍 투입 자본 대비
   const roiPerFunding = (netPerFunding / totalCapital) * 100;
   const roiPer1h = (netPer1h / totalCapital) * 100;
   const roiPer4h = (netPer4h / totalCapital) * 100;
@@ -196,15 +244,15 @@ export function estimateProfit(
   const roiPerMonth = (netPerMonth / totalCapital) * 100;
   const roiPerYear = (netPerYear / totalCapital) * 100;
 
-  // 복리: 수수료 차감 후 순수익률 기준 (펀딩 간격 미만은 선형)
   const netRatePerFunding = netPerFunding / totalCapital;
   const safeCompound = (periods: number) => {
     if (netRatePerFunding <= -1) return -totalCapital;
     const raw = totalCapital * (Math.pow(1 + netRatePerFunding, periods) - 1);
-    if (!isFinite(raw)) return totalCapital * 1e6; // overflow 방지
+    if (!isFinite(raw)) return totalCapital * 1e6;
     return Math.max(-totalCapital, raw);
   };
-  const compound1h = netPer1h; // 1h 내 복리 불가 — 선형
+
+  const compound1h = netPer1h;
   const compound4h = intervalH <= 4 ? safeCompound(4 / intervalH) : netPer4h;
   const compoundDay = safeCompound(fundingsPerDay);
   const compound2Day = safeCompound(fundingsPerDay * 2);
@@ -221,18 +269,55 @@ export function estimateProfit(
   const compoundYear = safeCompound(fundingsPerDay * 365);
 
   return {
-    perFunding: grossPerFunding, netPerFunding, totalFees: feesPerCycle, totalCapital, actualPortfolio: totalCapital,
-    per1h: netPer1h, per4h: netPer4h,
-    perDay: netPerDay, per2Day: netPer2Day, per3Day: netPer3Day, per4Day: netPer4Day, per5Day: netPer5Day, per6Day: netPer6Day,
-    perWeek: netPerWeek, per2Week: netPer2Week, per3Week: netPer3Week, perMonth: netPerMonth, per3Month: netPer3Month, per6Month: netPer6Month, perYear: netPerYear,
-    roiPerFunding, roiPer1h, roiPer4h, roiPerDay, roiPerWeek, roiPerMonth, roiPerYear,
+    perFunding: grossPerFunding,
+    netPerFunding,
+    totalFees: feesPerCycle,
+    totalCapital,
+    actualPortfolio: totalCapital,
+    per1h: netPer1h,
+    per4h: netPer4h,
+    perDay: netPerDay,
+    per2Day: netPer2Day,
+    per3Day: netPer3Day,
+    per4Day: netPer4Day,
+    per5Day: netPer5Day,
+    per6Day: netPer6Day,
+    perWeek: netPerWeek,
+    per2Week: netPer2Week,
+    per3Week: netPer3Week,
+    perMonth: netPerMonth,
+    per3Month: netPer3Month,
+    per6Month: netPer6Month,
+    perYear: netPerYear,
+    roiPerFunding,
+    roiPer1h,
+    roiPer4h,
+    roiPerDay,
+    roiPerWeek,
+    roiPerMonth,
+    roiPerYear,
     compound: {
-      per1h: compound1h, per4h: compound4h,
-      perDay: compoundDay, per2Day: compound2Day, per3Day: compound3Day, per4Day: compound4Day, per5Day: compound5Day, per6Day: compound6Day,
-      perWeek: compoundWeek, per2Week: compound2Week, per3Week: compound3Week, perMonth: compoundMonth, per3Month: compound3Month, per6Month: compound6Month, perYear: compoundYear,
-      roiPer1h: (compound1h / totalCapital) * 100, roiPer4h: (compound4h / totalCapital) * 100,
-      roiPerDay: (compoundDay / totalCapital) * 100, roiPerWeek: (compoundWeek / totalCapital) * 100,
-      roiPerMonth: (compoundMonth / totalCapital) * 100, roiPerYear: (compoundYear / totalCapital) * 100,
+      per1h: compound1h,
+      per4h: compound4h,
+      perDay: compoundDay,
+      per2Day: compound2Day,
+      per3Day: compound3Day,
+      per4Day: compound4Day,
+      per5Day: compound5Day,
+      per6Day: compound6Day,
+      perWeek: compoundWeek,
+      per2Week: compound2Week,
+      per3Week: compound3Week,
+      perMonth: compoundMonth,
+      per3Month: compound3Month,
+      per6Month: compound6Month,
+      perYear: compoundYear,
+      roiPer1h: (compound1h / totalCapital) * 100,
+      roiPer4h: (compound4h / totalCapital) * 100,
+      roiPerDay: (compoundDay / totalCapital) * 100,
+      roiPerWeek: (compoundWeek / totalCapital) * 100,
+      roiPerMonth: (compoundMonth / totalCapital) * 100,
+      roiPerYear: (compoundYear / totalCapital) * 100,
     },
   };
 }

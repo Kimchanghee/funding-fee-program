@@ -3,6 +3,7 @@ import type { ExchangeId, ApiConfig, ArbitrageOpportunity } from '@/lib/types';
 import { SUPPORTED_EXCHANGES, getHedgeFees } from '@/lib/types';
 import { openPositionExact, fetchMarketFillPrice, closePosition } from '@/lib/exchanges';
 import { loadAllServerApiConfigs } from '@/lib/serverKeyStore';
+import { makeServerPositionKey, upsertServerPositionMeta } from '@/lib/serverPositionMeta';
 
 function isValidApiConfig(config: unknown): config is ApiConfig {
   if (!config || typeof config !== 'object') return false;
@@ -18,9 +19,13 @@ export async function POST(req: NextRequest) {
       investmentUSDT: number;
       leverage: number;
       apiConfigs: Partial<Record<ExchangeId, ApiConfig>>;
+      pairId?: string;
     };
 
     const { opportunity, investmentUSDT, leverage, apiConfigs } = body;
+    const pairId = typeof body.pairId === 'string' && body.pairId.trim()
+      ? body.pairId.trim()
+      : `api-${Date.now()}-${opportunity?.baseAsset ?? 'pair'}`;
 
     // Runtime validation
     if (!opportunity?.shortExchange || !opportunity?.longExchange || !opportunity?.shortSymbol || !opportunity?.longSymbol) {
@@ -199,6 +204,33 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    if (shortOk && longOk) {
+      upsertServerPositionMeta([
+        {
+          key: makeServerPositionKey(opportunity.shortExchange, opportunity.shortSymbol, 'short'),
+          meta: {
+            pairId,
+            positionType: 'hedge_short',
+            openedAt: Date.now(),
+            entryFee: shortResult.value.estimatedFee,
+            entryOrderLiquidity: shortResult.value.liquidity,
+            entryFilledNotional: shortResult.value.filledNotional,
+          },
+        },
+        {
+          key: makeServerPositionKey(opportunity.longExchange, opportunity.longSymbol, 'long'),
+          meta: {
+            pairId,
+            positionType: 'hedge_long',
+            openedAt: Date.now(),
+            entryFee: longResult.value.estimatedFee,
+            entryOrderLiquidity: longResult.value.liquidity,
+            entryFilledNotional: longResult.value.filledNotional,
+          },
+        },
+      ]);
+    }
+
     return NextResponse.json({
       success: shortOk && longOk,
       short: shortOk
@@ -209,6 +241,7 @@ export async function POST(req: NextRequest) {
         : { success: false, error: (longResult.reason as Error).message },
       rollback: rollbackError,
       hedgeTrim: hedgeTrimNote,
+      pairId,
     });
   } catch (err) {
     return NextResponse.json(

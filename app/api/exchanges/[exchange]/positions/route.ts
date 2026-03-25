@@ -3,6 +3,7 @@ import type { ExchangeId } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { fetchPositions } from '@/lib/exchanges';
 import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
+import { loadAllServerPositionMeta, makeServerPositionKey } from '@/lib/serverPositionMeta';
 
 export async function GET(
   req: NextRequest,
@@ -22,7 +23,21 @@ export async function GET(
 
   try {
     const positions = await fetchPositions(id, config);
-    return NextResponse.json({ success: true, data: positions });
+    const serverMeta = loadAllServerPositionMeta();
+    const enriched = positions.map((position) => {
+      const meta = serverMeta[makeServerPositionKey(position.exchange, position.symbol, position.side)];
+      if (!meta) return position;
+      return {
+        ...position,
+        pairId: meta.pairId,
+        positionType: meta.positionType,
+        openedAt: meta.openedAt,
+        entryFee: meta.entryFee,
+        entryOrderLiquidity: meta.entryOrderLiquidity,
+        entryFilledNotional: meta.entryFilledNotional,
+      };
+    });
+    return NextResponse.json({ success: true, data: enriched });
   } catch (err) {
     return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });
   }

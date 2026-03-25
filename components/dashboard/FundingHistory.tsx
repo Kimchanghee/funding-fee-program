@@ -135,7 +135,7 @@ export default function FundingHistory() {
 
   const apiConfigKeys = Object.keys(apiConfigs).join(',');
   useEffect(() => {
-    if (!simulationMode && apiConfigKeys.length > 0) {
+    if (!simulationMode) {
       fetchFundingHistory();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

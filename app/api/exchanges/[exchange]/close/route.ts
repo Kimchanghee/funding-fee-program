@@ -3,6 +3,7 @@ import type { ExchangeId } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { closePosition } from '@/lib/exchanges';
 import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
+import { makeServerPositionKey, removeServerPositionMeta } from '@/lib/serverPositionMeta';
 
 export async function POST(
   req: NextRequest,
@@ -39,6 +40,7 @@ export async function POST(
     }
 
     const result = await closePosition(id, config, body.symbol, body.side, body.amount);
+    removeServerPositionMeta([makeServerPositionKey(id, body.symbol, body.side)]);
     return NextResponse.json({ success: true, data: result });
   } catch (err) {
     return NextResponse.json({ success: false, error: (err as Error).message }, { status: 500 });

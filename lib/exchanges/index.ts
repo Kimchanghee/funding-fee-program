@@ -82,6 +82,10 @@ function evictExchangeCache(id: ExchangeId, config?: ApiConfig): void {
   }
 }
 
+function isPerpetualUsdtSymbol(symbol: string): boolean {
+  return symbol.includes('USDT') && !/-\d{6}$/i.test(symbol);
+}
+
 function normalizeFr(id: ExchangeId, sym: string, fr: any): FundingRate | null {
   if (fr.fundingRate === undefined || fr.fundingRate === null) return null;
 
@@ -181,7 +185,7 @@ export async function fetchFundingRates(
     ]);
     const results: FundingRate[] = [];
     for (const [sym, fr] of Object.entries(frs)) {
-      if (!sym.includes('USDT')) continue;
+      if (!isPerpetualUsdtSymbol(sym)) continue;
       const base = sym.replace(/:.*$/, '');
       if (baseSet && !baseSet.has(base)) continue;
       const normalized = normalizeFr(id, sym, fr);
@@ -959,26 +963,30 @@ export async function fetchFundingHistory(
   limit = 20,
 ): Promise<import('../types').FundingPayment[]> {
   const ex = makeExchange(id, config);
-  try {
-    let history: any[] = [];
+  let history: any[] = [];
 
+  if (typeof ex.fetchFundingHistory !== 'function' && typeof ex.fetchIncome !== 'function') {
+    return [];
+  }
+
+  try {
     if (typeof ex.fetchFundingHistory === 'function') {
       history = await ex.fetchFundingHistory(symbol, undefined, limit);
     } else if (typeof ex.fetchIncome === 'function') {
       history = await ex.fetchIncome({ incomeType: 'FUNDING_FEE', limit });
     }
-
-    return history.slice(0, limit).map((item: any) => ({
-      exchange: id,
-      symbol: (item.symbol as string) || symbol || '',
-      amount: (item.amount as number) || 0,
-      rate: (item.fundingRate as number) || 0,
-      timestamp: (item.timestamp as number) || Date.now(),
-      side: ((item.side as string) || 'long') as 'long' | 'short',
-    }));
-  } catch {
-    return [];
+  } catch (err) {
+    throw new Error(`[${id}] fetchFundingHistory failed: ${(err as Error).message}`);
   }
+
+  return history.slice(0, limit).map((item: any) => ({
+    exchange: id,
+    symbol: (item.symbol as string) || symbol || '',
+    amount: (item.amount as number) || 0,
+    rate: (item.fundingRate as number) || 0,
+    timestamp: (item.timestamp as number) || Date.now(),
+    side: ((item.side as string) || 'long') as 'long' | 'short',
+  }));
 }
 
 /**

@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { X, DollarSign, TrendingUp, Info, Send } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { estimateProfit } from '@/lib/opportunities';
-import { fmtNum } from '@/lib/format';
+import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { getTelegramConfig, saveTelegramConfig, sendTelegramMessage } from '@/lib/telegram';
 
 export default function StrategyPanel() {
@@ -166,20 +166,20 @@ export default function StrategyPanel() {
                   <div key={label} style={{ background: 'var(--bg-accent)', borderRadius: 8, padding: '8px 12px' }}>
                     <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{label}</div>
                     <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: '#10b981' }}>
-                      ${fmtNum(value)}
+                      {fmtUsdOrInfinity(value, 2, { showPlus: false })}
                     </div>
                   </div>
                 ))}
                 <div style={{ gridColumn: '1 / -1', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 8, padding: '10px 12px', textAlign: 'center' }}>
                   <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>연 순수익</div>
                   <div className="mono" style={{ fontSize: 18, fontWeight: 800, color: '#10b981' }}>
-                    ${fmtNum(profit.perYear)}
+                    {fmtUsdOrInfinity(profit.perYear, 2, { showPlus: false })}
                   </div>
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 8 }}>
                 스프레드: <strong style={{ color: '#10b981' }}>+{fmtNum(effectiveBest?.spreadPercent ?? best.spreadPercent, 4)}%</strong>{hasRealSpread ? ' (실측)' : ''} •
-                연환산: <strong style={{ color: '#10b981' }}>{fmtNum(profit.roiPerYear, 1)}%</strong>
+                연환산: <strong style={{ color: '#10b981' }}>{fmtPctOrInfinity(profit.roiPerYear, 1, { showPlus: false, forceInfinity: isInfiniteProfitDisplay(profit.perYear) })}</strong>
               </div>
             </div>
           )}

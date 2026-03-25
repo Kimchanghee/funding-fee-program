@@ -3,9 +3,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Zap, Crosshair, Check, Clock, TrendingDown, TrendingUp, ChevronDown, ChevronUp, Settings } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportunity, type SimPosition } from '@/lib/types';
+import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportunity, type Position, type SimPosition } from '@/lib/types';
 import { estimateProfit } from '@/lib/opportunities';
-import { fmtNum } from '@/lib/format';
+import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
+import { buildManagedOpportunityItems, type ManagedOpportunityItem } from '@/lib/managedOpportunities';
 
 /* ─── Tiny countdown hook ─── */
 function useCountdown(targetMs: number) {
@@ -117,10 +118,10 @@ export default function OpportunityCard() {
     opportunities, strategyConfig, setShowStrategyPanel,
     apiConfigs, simulationMode, simPositions,
     simSnipeActive, realSnipeActive,
-    snipeTargets, scheduleAllSnipes, cancelSnipe,
+    snipeTargets, snipeAllocations, scheduleAllSnipes, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
-    simBalances, balances, enabledExchanges, fundingRates,
+    simBalances, balances, fundingRates,
   } = useFundingStore();
 
   const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
@@ -257,7 +258,28 @@ export default function OpportunityCard() {
   const canExecute = simulationMode ? true : hasShortConfig && hasLongConfig;
 
   // ── Build scheduled list: snipe targets + active positions mapped to opportunities ──
-  const scheduledCoins = useMemo(() => {
+  const scheduledCoins = useMemo(
+    () =>
+      buildManagedOpportunityItems({
+        opportunities,
+        snipeTargets,
+        snipeAllocations,
+        activePositions: (simulationMode ? simPositions : positions) as Array<Position | SimPosition>,
+        simulationMode,
+        defaultInvestmentUSDT: strategyConfig.investmentUSDT,
+        limit: 10,
+      }),
+    [
+      opportunities,
+      positions,
+      simulationMode,
+      simPositions,
+      snipeAllocations,
+      snipeTargets,
+      strategyConfig.investmentUSDT,
+    ],
+  );
+  useMemo(() => {
     const items: Array<{
       asset: string;
       opp: ArbitrageOpportunity;
@@ -337,7 +359,7 @@ export default function OpportunityCard() {
 
   // 실제 표시되는 항목 기준 카운트 (음수 수익으로 숨겨진 예약은 제외)
   const scheduledCount = scheduledCoins.filter(c => c.status === 'scheduled').length;
-  const activeCount = simulationMode ? simPositions.length : positions.length;
+  const activeCount = scheduledCoins.filter(c => c.status === 'active').length;
   const candidateCount = scheduledCoins.filter(c => c.status === 'opportunity').length;
 
   // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 전체 펀딩 가능 코인 수
@@ -635,14 +657,14 @@ export default function OpportunityCard() {
               const pendingReturns: { exchange: string; amount: number; fundingTime: number }[] = [];
 
               return scheduledCoins.map((item) => {
-              const isExpanded = expandedAsset === item.asset;
-              const realSpread = realSpreads[item.asset];
+              const isExpanded = expandedAsset === item.id;
+              const realSpread = realSpreads[item.id] ?? realSpreads[item.asset];
               const effectiveOpp: ArbitrageOpportunity = realSpread
                 ? { ...item.opp, spread: realSpread.effectiveSpread / 100, spreadPercent: realSpread.effectiveSpread }
                 : item.opp;
 
               // 순차 잔고 기반 투자금 계산 (복리: 이전 기회 마진 소진 반영)
-              let itemPerSide = perExchangeInvestment;
+              let itemPerSide = item.investmentUSDT ?? perExchangeInvestment;
               if (strategyConfig.compoundInvesting) {
                 // 새 펀딩 시간대로 넘어갈 때: 이전 시간대 스나이프 자금 복귀 반영
                 const currentWindow = item.fundingTime;
@@ -659,9 +681,11 @@ export default function OpportunityCard() {
                 }
                 lastFundingWindow = currentWindow;
 
-                const shortBal = remainingBal[item.opp.shortExchange] ?? 0;
-                const longBal = remainingBal[item.opp.longExchange] ?? 0;
-                itemPerSide = Math.max(0, Math.min(shortBal, longBal) * 0.9);
+                if (item.investmentUSDT == null || item.status === 'opportunity') {
+                  const shortBal = remainingBal[item.opp.shortExchange] ?? 0;
+                  const longBal = remainingBal[item.opp.longExchange] ?? 0;
+                  itemPerSide = Math.max(0, Math.min(shortBal, longBal) * 0.9);
+                }
                 // 이 기회가 사용할 마진을 잔고에서 순차 차감 + 복귀 예약
                 if (itemPerSide > 0) {
                   remainingBal[item.opp.shortExchange] = (remainingBal[item.opp.shortExchange] ?? 0) - itemPerSide;
@@ -698,11 +722,11 @@ export default function OpportunityCard() {
                     : intervalBg || 'transparent';
 
               return (
-                <div key={item.asset}>
+                <div key={item.id}>
                   {/* Main Row */}
                   <div
                     className="opp-table-row"
-                    onClick={() => setExpandedAsset(isExpanded ? null : item.asset)}
+                    onClick={() => setExpandedAsset(isExpanded ? null : item.id)}
                     style={{
                       display: 'grid',
                       gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 60px 80px',
@@ -840,13 +864,12 @@ export default function OpportunityCard() {
           <PortfolioSummaryRow
             label="헷징"
             labelColor="#10b981"
-            coins={scheduledCoins.map(c => ({ ...c, mode: 'hedge' as const }))}
+            coins={scheduledCoins}
             investmentUSDT={perExchangeInvestment}
             leverage={strategyConfig.leverage}
             compoundMode={compoundMode}
             setCompoundMode={setCompoundMode}
             realSpreads={realSpreads}
-            enabledExchangeCount={enabledExchanges.length}
           />
         )}
       </div>
@@ -855,21 +878,22 @@ export default function OpportunityCard() {
 }
 
 /* ─── Portfolio Profit Summary Row ─── */
-function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, compoundMode, setCompoundMode, realSpreads, enabledExchangeCount }: {
+function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, compoundMode, setCompoundMode, realSpreads }: {
   label: string;
   labelColor: string;
-  coins: Array<{ asset: string; opp: ArbitrageOpportunity; status: string; mode: 'hedge' }>;
+  coins: ManagedOpportunityItem[];
   investmentUSDT: number;
   leverage: number;
   compoundMode: boolean;
-  enabledExchangeCount: number;
   setCompoundMode: (v: boolean) => void;
   realSpreads?: Record<string, { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number }>;
 }) {
   const activeCoins = coins.filter(c => c.status === 'active' || c.status === 'scheduled');
 
-  const capitalPerPosition = investmentUSDT * 2;
-  const totalCapital = enabledExchangeCount * capitalPerPosition;
+  const totalCapital = activeCoins.reduce(
+    (sum, coin) => sum + ((coin.investmentUSDT ?? investmentUSDT) * 2),
+    0,
+  );
 
   const byInterval = useMemo(() => {
     const groups: Record<string, typeof activeCoins> = { '1h': [], '4h': [], '8h': [] };
@@ -888,14 +912,15 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
     let cWeek = 0, c2Week = 0, c3Week = 0, cMonth = 0, c3Month = 0, c6Month = 0;
 
     for (const c of activeCoins) {
-      const rs = realSpreads?.[c.asset];
+      const rs = realSpreads?.[c.id] ?? realSpreads?.[c.asset];
+      const perSideInvestment = c.investmentUSDT ?? investmentUSDT;
       // realSpread에 슬리피지+베이시스+수수료 모두 반영됨 → 수수료 0인 더미 거래소로 이중차감 방지
       const opp = rs
         ? { ...c.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread, shortExchange: c.opp.shortExchange, longExchange: c.opp.longExchange }
         : c.opp;
       const profit = rs
-        ? estimateProfit({ ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }, investmentUSDT, leverage, true)
-        : estimateProfit(opp, investmentUSDT, leverage);
+        ? estimateProfit({ ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }, perSideInvestment, leverage, true)
+        : estimateProfit(opp, perSideInvestment, leverage);
       perDay += profit.perDay; per2Day += profit.per2Day; per3Day += profit.per3Day;
       per4Day += profit.per4Day; per5Day += profit.per5Day; per6Day += profit.per6Day;
       perWeek += profit.perWeek; per2Week += profit.per2Week; per3Week += profit.per3Week; perMonth += profit.perMonth;
@@ -939,7 +964,7 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
           })}
         </div>
         <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
-          투입: ${totalCapital.toLocaleString()} ({enabledExchangeCount}개 거래소 × ${capitalPerPosition.toLocaleString()})
+          투입: ${totalCapital.toLocaleString()} ({activeCoins.length}쌍)
         </span>
         <div className="interval-badges" style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
           {Object.entries(byInterval).map(([interval, list]) => list.length > 0 && (
@@ -976,10 +1001,10 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
             }}>
               <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>{lb}</div>
               <div className="mono" style={{ fontSize: 14, fontWeight: 800, color: value >= 0 ? color : negColor }}>
-                {value >= 1_000_000_000 ? '+$∞' : `${value >= 0 ? '+' : ''}$${fmtNum(value)}`}
+                {fmtUsdOrInfinity(value)}
               </div>
               <div className="mono" style={{ fontSize: 10, color: roi >= 0 ? (compoundMode ? '#c4b5fd' : '#6ee7b7') : '#fca5a5', marginTop: 2 }}>
-                {roi >= 100_000_000 ? '+∞%' : `${roi >= 0 ? '+' : ''}${fmtNum(roi, 2)}%`}
+                {fmtPctOrInfinity(roi, 2, { forceInfinity: isInfiniteProfitDisplay(value) })}
               </div>
             </div>
           );
@@ -1006,10 +1031,10 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
             }}>
               <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>{lb}</div>
               <div className="mono" style={{ fontSize: 14, fontWeight: 800, color: value >= 0 ? color : negColor }}>
-                {value >= 1_000_000_000 ? '+$∞' : `${value >= 0 ? '+' : ''}$${fmtNum(value)}`}
+                {fmtUsdOrInfinity(value)}
               </div>
               <div className="mono" style={{ fontSize: 10, color: roi >= 0 ? (compoundMode ? '#c4b5fd' : '#6ee7b7') : '#fca5a5', marginTop: 2 }}>
-                {roi >= 100_000_000 ? '+∞%' : `${roi >= 0 ? '+' : ''}${fmtNum(roi, 2)}%`}
+                {fmtPctOrInfinity(roi, 2, { forceInfinity: isInfiniteProfitDisplay(value) })}
               </div>
             </div>
           );
@@ -1064,7 +1089,7 @@ function StatPill({ label, value, color, active }: { label: string; value: strin
 
 /* ─── Expanded Coin Detail ─── */
 function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions, realSpread }: {
-  item: { asset: string; opp: ArbitrageOpportunity; status: string };
+  item: ManagedOpportunityItem;
   profit: ReturnType<typeof estimateProfit>;
   compoundMode: boolean;
   setCompoundMode: (v: boolean) => void;
@@ -1072,7 +1097,11 @@ function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions,
   realSpread?: { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number } | null;
 }) {
   const opp = item.opp;
-  const activeSimPos = simPositions?.filter(p => p.baseAsset === item.asset) ?? [];
+  const activeSimPos = simPositions?.filter((position) => {
+    if (item.pairId && position.pairId) return position.pairId === item.pairId;
+    return position.baseAsset === item.asset
+      && (position.exchange === opp.shortExchange || position.exchange === opp.longExchange);
+  }) ?? [];
   const simShort = activeSimPos.find(p => p.side === 'short');
   const simLong = activeSimPos.find(p => p.side === 'long');
   const entryGap = simShort?.entryGapPercent ?? simLong?.entryGapPercent;
@@ -1179,10 +1208,10 @@ function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions,
             }}>
               <div style={{ fontSize: 9, color: 'var(--color-text-muted)' }}>{label}</div>
               <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: dv >= 0 ? (compoundMode ? '#a78bfa' : '#10b981') : '#ef4444' }}>
-                {dv >= 0 ? '+' : ''}${fmtNum(dv)}
+                {fmtUsdOrInfinity(dv)}
               </div>
               <div className="mono" style={{ fontSize: 9, color: dr >= 0 ? (compoundMode ? '#c4b5fd' : '#6ee7b7') : '#fca5a5' }}>
-                {dr >= 0 ? '+' : ''}{fmtNum(dr)}%
+                {fmtPctOrInfinity(dr, 2, { forceInfinity: isInfiniteProfitDisplay(dv) })}
               </div>
             </div>
           );
