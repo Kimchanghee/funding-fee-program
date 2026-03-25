@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
@@ -8,6 +8,59 @@ import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES, EXCHANGE_FEES, DE
 import StatusDot from '@/components/ui/StatusDot';
 import Header from '@/components/dashboard/Header';
 import ApiPanel from '@/components/dashboard/ApiPanel';
+
+/** 수수료 입력 — onBlur/Enter 시에만 커밋, 입력 중에는 로컬 state 사용 */
+function FeeInput({ label, defaultPct, currentPct, onCommit }: {
+  label: string;
+  defaultPct: number;
+  currentPct: number | null; // null = 기본값 사용 중
+  onCommit: (pct: number | null) => void;
+}) {
+  const [localVal, setLocalVal] = useState(currentPct !== null ? String(currentPct) : '');
+  const [focused, setFocused] = useState(false);
+
+  // 외부 상태가 바뀌면 (다른 경로에서 수정) 동기화 — 단, 포커스 중에는 무시
+  useEffect(() => {
+    if (!focused) {
+      setLocalVal(currentPct !== null ? String(currentPct) : '');
+    }
+  }, [currentPct, focused]);
+
+  const commit = useCallback(() => {
+    const trimmed = localVal.trim();
+    if (trimmed === '') {
+      onCommit(null); // 기본값으로 리셋
+      return;
+    }
+    const num = parseFloat(trimmed);
+    if (!Number.isFinite(num) || num < 0 || num > 10) {
+      // 유효하지 않으면 원래 값으로 복원
+      setLocalVal(currentPct !== null ? String(currentPct) : '');
+      return;
+    }
+    onCommit(num);
+  }, [localVal, currentPct, onCommit]);
+
+  return (
+    <div>
+      <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 2 }}>
+        {label} (기본 {defaultPct.toFixed(3)}%)
+      </label>
+      <input
+        className="input-field"
+        type="text"
+        inputMode="decimal"
+        placeholder={defaultPct.toFixed(3)}
+        value={localVal}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { setFocused(false); commit(); }}
+        onKeyDown={e => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+        onChange={e => setLocalVal(e.target.value)}
+        style={{ fontSize: 12, padding: '4px 8px' }}
+      />
+    </div>
+  );
+}
 
 export default function SettingsPage() {
   const {
@@ -259,7 +312,7 @@ export default function SettingsPage() {
               거래소별 수수료 설정
             </div>
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 16 }}>
-              실제 VIP 등급에 맞는 수수료를 입력하세요. 비워두면 기본값(VIP0)이 적용됩니다.
+              실제 VIP 등급에 맞는 수수료(%)를 입력하세요. 비워두면 기본값(VIP0)이 적용됩니다.
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
               {SUPPORTED_EXCHANGES.map(ex => {
@@ -277,68 +330,44 @@ export default function SettingsPage() {
                       {override && <span style={{ fontSize: 10, marginLeft: 6, color: '#10b981' }}>커스텀</span>}
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                      <div>
-                        <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 2 }}>
-                          Taker (기본 {(defaults.taker * 100).toFixed(3)}%)
-                        </label>
-                        <input
-                          className="input-field"
-                          type="number"
-                          step={0.001}
-                          min={0}
-                          max={0.5}
-                          placeholder={(defaults.taker * 100).toFixed(3)}
-                          value={override ? (override.taker * 100).toFixed(3) : ''}
-                          onChange={e => {
-                            const val = e.target.value;
-                            const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
-                            if (val === '' || val === '0') {
-                              const cur = currentOverrides[ex];
-                              if (cur && cur.maker !== defaults.maker) {
-                                currentOverrides[ex] = { ...cur, taker: defaults.taker };
-                              } else {
-                                delete currentOverrides[ex];
-                              }
-                            } else {
-                              const cur = currentOverrides[ex] ?? { ...defaults };
-                              currentOverrides[ex] = { ...cur, taker: Number(val) / 100 };
+                      <FeeInput
+                        label="Taker"
+                        defaultPct={defaults.taker * 100}
+                        currentPct={override ? override.taker * 100 : null}
+                        onCommit={(pct) => {
+                          const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
+                          if (pct === null) {
+                            const cur = currentOverrides[ex];
+                            if (cur) {
+                              currentOverrides[ex] = { ...cur, taker: defaults.taker };
+                              if (cur.maker === defaults.maker) delete currentOverrides[ex];
                             }
-                            setStrategyConfig({ feeOverrides: currentOverrides });
-                          }}
-                          style={{ fontSize: 12, padding: '4px 8px' }}
-                        />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'block', marginBottom: 2 }}>
-                          Maker (기본 {(defaults.maker * 100).toFixed(3)}%)
-                        </label>
-                        <input
-                          className="input-field"
-                          type="number"
-                          step={0.001}
-                          min={0}
-                          max={0.5}
-                          placeholder={(defaults.maker * 100).toFixed(3)}
-                          value={override ? (override.maker * 100).toFixed(3) : ''}
-                          onChange={e => {
-                            const val = e.target.value;
-                            const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
-                            if (val === '' || val === '0') {
-                              const cur = currentOverrides[ex];
-                              if (cur && cur.taker !== defaults.taker) {
-                                currentOverrides[ex] = { ...cur, maker: defaults.maker };
-                              } else {
-                                delete currentOverrides[ex];
-                              }
-                            } else {
-                              const cur = currentOverrides[ex] ?? { ...defaults };
-                              currentOverrides[ex] = { ...cur, maker: Number(val) / 100 };
+                          } else {
+                            const cur = currentOverrides[ex] ?? { ...defaults };
+                            currentOverrides[ex] = { ...cur, taker: pct / 100 };
+                          }
+                          setStrategyConfig({ feeOverrides: Object.keys(currentOverrides).length > 0 ? currentOverrides : undefined });
+                        }}
+                      />
+                      <FeeInput
+                        label="Maker"
+                        defaultPct={defaults.maker * 100}
+                        currentPct={override ? override.maker * 100 : null}
+                        onCommit={(pct) => {
+                          const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
+                          if (pct === null) {
+                            const cur = currentOverrides[ex];
+                            if (cur) {
+                              currentOverrides[ex] = { ...cur, maker: defaults.maker };
+                              if (cur.taker === defaults.taker) delete currentOverrides[ex];
                             }
-                            setStrategyConfig({ feeOverrides: currentOverrides });
-                          }}
-                          style={{ fontSize: 12, padding: '4px 8px' }}
-                        />
-                      </div>
+                          } else {
+                            const cur = currentOverrides[ex] ?? { ...defaults };
+                            currentOverrides[ex] = { ...cur, maker: pct / 100 };
+                          }
+                          setStrategyConfig({ feeOverrides: Object.keys(currentOverrides).length > 0 ? currentOverrides : undefined });
+                        }}
+                      />
                     </div>
                   </div>
                 );
