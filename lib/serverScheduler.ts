@@ -60,6 +60,7 @@ export interface SchedulerConfig {
   feeOverrides?: FeeOverrides;
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%)
+  minVolume24hUSD?: number; // 최소 24시간 거래량 (USD)
 }
 
 interface SchedulerStats {
@@ -400,6 +401,7 @@ class ServerScheduler {
         this.config.investmentUSDT,
         this.config.leverage,
         this.config.feeOverrides,
+        this.config.minVolume24hUSD,
       );
 
       const occupiedLegs = this.getOccupiedLegs();

@@ -109,7 +109,7 @@ function getOpportunityResultLimit(activeModes: {
 
 function buildOpportunitiesFromRates(
   rates: FundingRate[],
-  config: Pick<StrategyConfig, 'investmentUSDT' | 'leverage' | 'feeOverrides'>,
+  config: Pick<StrategyConfig, 'investmentUSDT' | 'leverage' | 'feeOverrides' | 'minVolume24hUSD'>,
   activeModes: {
     simSnipeActive: boolean;
     realSnipeActive: boolean;
@@ -121,6 +121,7 @@ function buildOpportunitiesFromRates(
     config.investmentUSDT,
     config.leverage,
     config.feeOverrides,
+    config.minVolume24hUSD,
   );
 }
 
@@ -176,6 +177,7 @@ function buildSchedulerConfig(
     maxConcurrentPairs: 5,
     feeOverrides: strategyConfig.feeOverrides,
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
+    minVolume24hUSD: strategyConfig.minVolume24hUSD,
   };
 }
 
@@ -1493,6 +1495,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                   investmentUSDT,
                   leverage,
                   s.strategyConfig.feeOverrides,
+                  s.strategyConfig.minVolume24hUSD,
                 );
 
                 // 시뮬 포지션 마크가격 업데이트
@@ -1557,6 +1560,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                   investmentUSDT,
                   leverage,
                   s.strategyConfig.feeOverrides,
+                  s.strategyConfig.minVolume24hUSD,
                 );
                 return {
                   fundingRates: merged, opportunities,
@@ -1600,6 +1604,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                   investmentUSDT,
                   leverage,
                   s.strategyConfig.feeOverrides,
+                  s.strategyConfig.minVolume24hUSD,
                 );
                 return {
                   fundingRates: merged, opportunities,

@@ -37,6 +37,7 @@ export interface FundingRate {
   nextFundingTime: number; // ms timestamp
   markPrice: number;
   intervalHours: number;  // 8
+  quoteVolume24h?: number; // 24h USDT trading volume
   updatedAt: number;    // ms timestamp
 }
 
@@ -116,6 +117,7 @@ export interface StrategyConfig {
   feeOverrides?: FeeOverrides; // 사용자 수수료 override
   timingConfig?: TimingConfig; // 스나이프/펀딩 검증 타이밍 설정
   maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%) — 이 이상이면 유동성 부족으로 필터링
+  minVolume24hUSD?: number; // 최소 24시간 거래량 (USD) — 기본 $7,500,000 (≈100억원)
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
@@ -192,7 +194,7 @@ export interface TimingConfig {
 
 export const DEFAULT_TIMING_CONFIG: TimingConfig = {
   entryLeadMs: 3_500,
-  closeDelayMs: 1_500,
+  closeDelayMs: 1_000,
   fundingVerifyRetryMs: 5_000,
   fundingVerifyAttempts: 3,
 };

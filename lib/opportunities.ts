@@ -54,15 +54,21 @@ export function getOpportunityTimeGroupKey(
  * From all collected funding rates, find delta-neutral arbitrage opportunities.
  * Keep every profitable route instead of collapsing to one opportunity per asset.
  */
+export const DEFAULT_MIN_VOLUME_24H_USD = 7_500_000; // ≈100억원
+
 export function findOpportunities(
   rates: FundingRate[],
   topN = 20,
   investmentUSDT = 1000,
   leverage = 5,
   feeOverrides?: FeeOverrides,
+  minVolume24hUSD?: number,
 ): ArbitrageOpportunity[] {
+  const volumeThreshold = minVolume24hUSD ?? DEFAULT_MIN_VOLUME_24H_USD;
   const byAsset = new Map<string, FundingRate[]>();
   for (const rate of rates) {
+    // 24h 거래량 필터: 최소 기준 미달 시 제외
+    if (volumeThreshold > 0 && rate.quoteVolume24h != null && rate.quoteVolume24h < volumeThreshold) continue;
     const list = byAsset.get(rate.baseAsset) ?? [];
     list.push(rate);
     byAsset.set(rate.baseAsset, list);

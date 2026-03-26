@@ -727,6 +727,13 @@ export default function OpportunityCard() {
                 skipFees: hasRealSpread,
                 feeOverrides: strategyConfig.feeOverrides,
               });
+              // 수수료 표시용: skipFees일 때도 실제 수수료 계산
+              const displayFees = hasRealSpread
+                ? estimateProfit(item.opp, itemPerSide, strategyConfig.leverage, {
+                    skipFees: false,
+                    feeOverrides: strategyConfig.feeOverrides,
+                  }).totalFees
+                : profit.totalFees;
               // 마이너스 순수익: 활성 포지션만 항상 표시, 예약/후보는 숨김
               if (profit.netPerFunding <= 0 && item.status !== 'active') return null;
 
@@ -838,7 +845,7 @@ export default function OpportunityCard() {
                         {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
                       </span>
                       <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
-                        수수료 -${fmtNum(profit.totalFees)}
+                        수수료 -${fmtNum(displayFees)}
                       </div>
                     </div>
 

@@ -244,6 +244,7 @@ export interface ServerSimSchedulerConfig {
   feeOverrides?: FeeOverrides;
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // maximum slippage percent (default 1.5%)
+  minVolume24hUSD?: number; // minimum 24h volume in USD
 }
 
 interface ScheduledSimEntry {
@@ -666,6 +667,7 @@ class ServerSimScheduler {
       this.config.investmentUSDT,
       this.config.leverage,
       this.config.feeOverrides,
+      this.config.minVolume24hUSD,
     );
     this.lastRatesUpdate = Date.now();
 

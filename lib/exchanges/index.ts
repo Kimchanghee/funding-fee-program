@@ -214,11 +214,20 @@ export async function fetchFundingRates(
   try {
     // ── Bulk fetch (1 API call) with 12s timeout ──
     console.log(`[CCXT] ${id}: fetchFundingRates 시작`);
-    const frs = await Promise.race([
-      ex.fetchFundingRates() as Promise<Record<string, any>>,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout (20s)`)), 20000),
-      ),
+    const [frs, tickers] = await Promise.all([
+      Promise.race([
+        ex.fetchFundingRates() as Promise<Record<string, any>>,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout (20s)`)), 20000),
+        ),
+      ]),
+      // 24h 거래량 가져오기 (실패해도 무시)
+      Promise.race([
+        ex.fetchTickers() as Promise<Record<string, any>>,
+        new Promise<Record<string, any>>((resolve) =>
+          setTimeout(() => resolve({}), 15000),
+        ),
+      ]).catch(() => ({} as Record<string, any>)),
     ]);
     const results: FundingRate[] = [];
     for (const [sym, fr] of Object.entries(frs)) {
@@ -226,7 +235,12 @@ export async function fetchFundingRates(
       const base = sym.replace(/:.*$/, '');
       if (baseSet && !baseSet.has(base)) continue;
       const normalized = normalizeFr(id, sym, fr);
-      if (normalized) results.push(normalized);
+      if (normalized) {
+        // 티커에서 24h 거래량(USDT) 병합
+        const ticker = tickers[sym] ?? tickers[base + '/USDT:USDT'] ?? tickers[base + '/USDT'];
+        if (ticker?.quoteVolume) normalized.quoteVolume24h = ticker.quoteVolume;
+        results.push(normalized);
+      }
     }
     return results;
   } catch {

@@ -186,6 +186,22 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              <div>
+                <label className="label-text">최소 24시간 거래량 (USD)</label>
+                <input
+                  className="input-field"
+                  type="number"
+                  min={0}
+                  max={100000000}
+                  step={1000000}
+                  value={strategyConfig.minVolume24hUSD ?? 7500000}
+                  onChange={e => setStrategyConfig({ minVolume24hUSD: Number(e.target.value) })}
+                />
+                <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                  거래량 필터 — 24시간 거래량이 이 값 미만이면 거래 제외 (기본 $7.5M ≈ 100억원, 0 = 비활성)
+                </div>
+              </div>
+
             </div>
 
             <div style={{ marginTop: 20 }}>
@@ -454,7 +470,7 @@ export default function SettingsPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
                 <span style={{ color: 'var(--color-text-muted)' }}>연결된 거래소</span>
-                <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{connectedExchanges.length} / 5</span>
+                <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{connectedExchanges.length} / {SUPPORTED_EXCHANGES.length}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
                 <span style={{ color: 'var(--color-text-muted)' }}>발견된 기회</span>
