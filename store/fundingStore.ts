@@ -151,18 +151,13 @@ function rebuildRealSpreadsForConfig(
       opportunity.longExchange,
       'taker',
     ) * 100;
-
-    const priceRatio = spread.longFillPrice / spread.shortFillPrice;
     next[key] = {
       ...spread,
       effectiveSpread: calcHedgedNetSpreadPercent(
-        opportunity.shortRatePercent,
-        opportunity.longRatePercent,
-        priceRatio,
-        opportunity.shortExchange,
-        opportunity.longExchange,
-        'taker',
-        strategyConfig.feeOverrides,
+        opportunity.spreadPercent,
+        spread.shortSlippage,
+        spread.longSlippage,
+        hedgeFeePct,
         0, // 표시용: 안전마진 미포함
       ),
     };
@@ -1826,16 +1821,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             // short(sell) fillPrice < midPrice, long(buy) fillPrice > midPrice
             // entryGapPct = (longFill - shortFill) / shortFill * 100 → 양수 = 진입 손실
             const entryGapPct = ((longJson.fillPrice - shortJson.fillPrice) / shortJson.fillPrice) * 100;
-            const priceRatio = longJson.fillPrice / shortJson.fillPrice;
-            // ★ 계약 수량 매칭 기반: 가격 괴리를 레버리지로 헷징, 실제 비용만 반영
-            const effectiveSpread = calcHedgedNetSpreadPercent(
-              opp.shortRatePercent,
-              opp.longRatePercent,
-              priceRatio,
+            const hedgeFeePct = getConfiguredHedgeFees(
+              strategyConfig,
               opp.shortExchange,
               opp.longExchange,
               'taker',
-              strategyConfig.feeOverrides,
+            ) * 100;
+            // ★ equal-notional 스나이프: 가격 괴리 무관, 슬리피지+수수료만 차감
+            const effectiveSpread = calcHedgedNetSpreadPercent(
+              opp.spreadPercent,
+              shortSlippage,
+              longSlippage,
+              hedgeFeePct,
               0, // 안전마진은 실행 시점에만 별도 적용
             );
             set(state => ({

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, getExchangeFee, calcHedgedNetSpreadPercent, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, getExchangeFee, getHedgeFeesWithOverrides, calcHedgedNetSpreadPercent, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
 import {
   openPositionExact,
   fetchMarketFillPrice,
@@ -148,30 +148,30 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2c. Pre-execution profitability gate — 계약 수량 매칭 기반 수익성 재검증
-    const execPriceRatio = longFill.fillPrice / shortFill.fillPrice;
+    // 2c. Pre-execution profitability gate — equal-notional 스나이프 수익성 재검증
+    const execHedgeFeePct = getHedgeFeesWithOverrides(
+      opportunity.shortExchange, opportunity.longExchange, 'taker', normalizedFeeOverrides,
+    ) * 100;
     const realNetSpread = calcHedgedNetSpreadPercent(
-      opportunity.shortRatePercent,
-      opportunity.longRatePercent,
-      execPriceRatio,
-      opportunity.shortExchange,
-      opportunity.longExchange,
-      'taker',
-      normalizedFeeOverrides,
+      opportunity.spreadPercent,
+      shortFill.slippagePercent,
+      longFill.slippagePercent,
+      execHedgeFeePct,
     );
 
     if (realNetSpread <= 0) {
       console.log(
         `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 실시간 수익성 미달: ` +
         `스프레드=${opportunity.spreadPercent.toFixed(4)}% 진입갭=${entryGapPct.toFixed(4)}% ` +
-        `priceRatio=${execPriceRatio.toFixed(6)} → 순수익=${realNetSpread.toFixed(4)}%`,
+        `shortSlip=${shortFill.slippagePercent.toFixed(4)}% longSlip=${longFill.slippagePercent.toFixed(4)}% → 순수익=${realNetSpread.toFixed(4)}%`,
       );
       return NextResponse.json({
         success: false,
         error: `실시간 수익성 미달: 순스프레드 ${realNetSpread.toFixed(4)}% ≤ 0 (진입갭 ${entryGapPct.toFixed(4)}%)`,
         reason: 'profitability_insufficient',
         entryGapPct,
-        priceRatio: execPriceRatio,
+        shortSlippage: shortFill.slippagePercent,
+        longSlippage: longFill.slippagePercent,
         realNetSpread,
       });
     }

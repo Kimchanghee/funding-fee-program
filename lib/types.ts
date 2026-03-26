@@ -369,39 +369,28 @@ export function calcNetSpreadPercent(
 }
 
 /**
- * ★ 계약 수량 매칭 기반 순수익 계산 — 거래소 간 가격 괴리를 레버리지로 헷징
+ * ★ Equal-notional 스나이프 순수익 계산
  *
- * 숏/롱 계약 수량을 동일하게 맞추면 가격 변동 헷징 100%.
- * 실제 비용은 롱 쪽 펀딩비가 가격비율만큼 증폭되는 것 + 수수료 뿐.
+ * 양쪽 동일 notional → 가격 변동 헷징 100%, 펀딩 = notional × spread.
+ * 거래소 간 가격 괴리(basis)는 같은 거래소에서 열고 닫으므로 비용 아님.
+ * 실제 비용: 개별 거래소 슬리피지(입출구) + 왕복 수수료.
  *
- * @param shortRatePercent - 숏 쪽 펀딩비 (%)
- * @param longRatePercent  - 롱 쪽 펀딩비 (%)
- * @param priceRatio       - longFillPrice / shortFillPrice (e.g., 1.05 = 5% gap)
- * @param shortEx          - 숏 거래소
- * @param longEx           - 롱 거래소
- * @param orderType        - 주문 타입
- * @param feeOverrides     - 수수료 오버라이드
- * @param safetyMarginPct  - 안전 마진 (%)
- * @returns 숏 쪽 notional 기준 순수익 (%)
+ * @param spreadPercent     - 명목 스프레드 (%)
+ * @param shortSlippagePct  - 숏 거래소 슬리피지 (%)
+ * @param longSlippagePct   - 롱 거래소 슬리피지 (%)
+ * @param hedgeFeePct       - 왕복 수수료 (%) — getHedgeFees * 100
+ * @param safetyMarginPct   - 안전 마진 (%)
  */
 export function calcHedgedNetSpreadPercent(
-  shortRatePercent: number,
-  longRatePercent: number,
-  priceRatio: number,
-  shortEx: ExchangeId,
-  longEx: ExchangeId,
-  orderType: 'taker' | 'maker' = 'taker',
-  feeOverrides?: FeeOverrides,
+  spreadPercent: number,
+  shortSlippagePct: number,
+  longSlippagePct: number,
+  hedgeFeePct: number,
   safetyMarginPct: number = SAFETY_MARGIN_PCT,
 ): number {
-  // 계약 수량 매칭: 숏 notional = N * P_s, 롱 notional = N * P_l
-  // 펀딩 수입 (숏 notional 기준 %): shortRate - priceRatio * longRate
-  const fundingSpreadPct = shortRatePercent - priceRatio * longRatePercent;
-  // 수수료 (숏 notional 기준 %): 숏 왕복 + 롱 왕복 * priceRatio
-  const shortFee = getExchangeFee(shortEx, orderType, feeOverrides);
-  const longFee = getExchangeFee(longEx, orderType, feeOverrides);
-  const totalFeePct = (shortFee * 2 + priceRatio * longFee * 2) * 100;
-  return fundingSpreadPct - totalFeePct - safetyMarginPct;
+  // 슬리피지: 입구+출구 양쪽 = × 2
+  const roundTripSlippagePct = (shortSlippagePct + longSlippagePct) * 2;
+  return spreadPercent - roundTripSlippagePct - hedgeFeePct - safetyMarginPct;
 }
 
 // Popular symbols to track (top coins by OI)
