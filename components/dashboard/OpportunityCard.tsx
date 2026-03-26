@@ -330,9 +330,10 @@ export default function OpportunityCard() {
   const canExecute = simulationMode ? true : hasShortConfig && hasLongConfig;
 
   // ── Build scheduled list: snipe targets + active positions mapped to opportunities ──
+  // ★ realSpreads 포함: 거래소 간 가격 괴리가 큰 항목은 memo 단계에서 즉시 제거
   const scheduledCoins = useMemo(
-    () =>
-      buildManagedOpportunityItems({
+    () => {
+      const items = buildManagedOpportunityItems({
         opportunities,
         snipeTargets,
         snipeAllocations,
@@ -340,7 +341,15 @@ export default function OpportunityCard() {
         simulationMode,
         defaultInvestmentUSDT: strategyConfig.investmentUSDT,
         limit: 10,
-      }),
+      });
+      // realSpread 기반 필터: effectiveSpread ≤ 0이면 헷징 불가 → 예약/후보 숨김
+      return items.filter(item => {
+        if (item.status === 'active') return true;
+        const rs = realSpreads[item.id] ?? realSpreads[item.asset];
+        if (rs && rs.effectiveSpread <= 0) return false;
+        return true;
+      });
+    },
     [
       opportunities,
       positions,
@@ -349,70 +358,9 @@ export default function OpportunityCard() {
       snipeAllocations,
       snipeTargets,
       strategyConfig.investmentUSDT,
+      realSpreads,
     ],
   );
-  useMemo(() => {
-    const items: Array<{
-      asset: string;
-      opp: ArbitrageOpportunity;
-      fundingTime: number;
-      status: 'scheduled' | 'active' | 'opportunity';
-    }> = [];
-
-    // Track by baseAsset only (for deduplication)
-    const seenAssets = new Set<string>();
-
-    // 1) Snipe targets (scheduled) — key is "sim:ASSET" or "real:ASSET"
-    for (const [snipeKey, time] of Object.entries(snipeTargets)) {
-      const colonIdx = snipeKey.indexOf(':');
-      const baseAsset = colonIdx >= 0 ? snipeKey.slice(colonIdx + 1) : snipeKey;
-      if (seenAssets.has(baseAsset)) continue;
-      const opp = opportunities.find(o => o.baseAsset === baseAsset);
-      if (!opp) continue;
-      items.push({ asset: baseAsset, opp, fundingTime: time, status: 'scheduled' });
-      seenAssets.add(baseAsset);
-    }
-
-    // 2) Active positions
-    const activePositions = simulationMode ? simPositions : positions;
-    for (const pos of activePositions) {
-      const opp = opportunities.find(o => o.baseAsset === pos.baseAsset);
-      if (!opp) continue;
-      const existing = items.find(i => i.asset === pos.baseAsset);
-      if (existing) {
-        existing.status = 'active';
-      } else {
-        items.push({ asset: pos.baseAsset, opp, fundingTime: opp.nextFundingTime, status: 'active' });
-        seenAssets.add(pos.baseAsset);
-      }
-    }
-
-    // 3) Top opportunities (not yet scheduled, show top 5)
-    for (const opp of opportunities) {
-      if (seenAssets.has(opp.baseAsset)) continue;
-      if (items.length >= 10) break;
-      items.push({ asset: opp.baseAsset, opp, fundingTime: opp.nextFundingTime, status: 'opportunity' });
-      seenAssets.add(opp.baseAsset);
-    }
-
-    // 마이너스 순수익 필터링 (예약/활성은 유지, 후보만 필터)
-    const profitable = items.filter(i => i.status === 'active' || i.status === 'scheduled' || i.opp.netProfit > 0);
-
-    // Sort: active first, then by 가장 빠른 시간 + 높은 수익률
-    return profitable.sort((a, b) => {
-      const priority = { active: 0, scheduled: 1, opportunity: 2 };
-      if (priority[a.status] !== priority[b.status]) return priority[a.status] - priority[b.status];
-      // 같은 상태면: 빠른 시간 우선, 같은 시간이면 수익률(spreadPercent) 높은 순
-      const timeDiff = a.fundingTime - b.fundingTime;
-      if (Math.abs(timeDiff) > 120_000) return timeDiff; // 2분 이상 차이나면 시간 우선
-      // 비슷한 시간이면: 시간당 순수익 기준 (1h 펀딩이 8h보다 우선, 수수료 반영)
-      const aIntervalH = (a.opp.fundingIntervalMs ?? 8 * 3600000) / 3600000;
-      const bIntervalH = (b.opp.fundingIntervalMs ?? 8 * 3600000) / 3600000;
-      const aRoiPerH = a.opp.netProfit / aIntervalH;
-      const bRoiPerH = b.opp.netProfit / bIntervalH;
-      return bRoiPerH - aRoiPerH;
-    });
-  }, [opportunities, snipeTargets, simPositions, positions, simulationMode]);
 
   // Nearest upcoming trade — 예약/활성 중 가장 빠른 것 (수익 무관)
   const nextTrade = useMemo(() => {
@@ -775,8 +723,8 @@ export default function OpportunityCard() {
                 skipFees: hasRealSpread,
                 feeOverrides: strategyConfig.feeOverrides,
               });
-              // 마이너스 순수익: 예약/활성은 항상 표시, 후보만 숨김
-              if (profit.netPerFunding <= 0 && item.status === 'opportunity') return null;
+              // 마이너스 순수익: 활성 포지션만 항상 표시, 예약/후보는 숨김
+              if (profit.netPerFunding <= 0 && item.status !== 'active') return null;
 
               visibleIdx++;
 
