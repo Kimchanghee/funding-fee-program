@@ -175,7 +175,7 @@ export function buildManagedOpportunityItems(params: {
   }
 
   return Array.from(items.values())
-    .filter((item) => item.status === 'active' || item.status === 'scheduled' || item.opp.netProfit > 0)
+    .filter((item) => item.status === 'active' || item.opp.netProfit > 0)
     .sort((a, b) => {
       const priority = { active: 0, scheduled: 1, opportunity: 2 };
       if (priority[a.status] !== priority[b.status]) {
