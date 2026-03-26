@@ -69,14 +69,14 @@ export default function DashboardPage() {
         {/* Funding History — 펀딩피 수령 내역 */}
         <FundingHistory />
 
+        {/* Trade History — 페어별 숏/롱 손익 추적 */}
+        <TradeHistory />
+
         {/* Funding Rate Table */}
         <FundingRateTable />
 
         {/* Positions */}
         <PositionsTable />
-
-        {/* Trade History — 페어별 숏/롱 손익 추적 */}
-        <TradeHistory />
 
         {/* Logs */}
         <LogPanel />
