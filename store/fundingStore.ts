@@ -1013,7 +1013,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   strategyConfig: {
     investmentUSDT: 1000,
     leverage: 5,
-    minSpreadPercent: 0.20,
+    minSpreadPercent: 0.08,
     autoExecute: false,
     compoundInvesting: true,
     timingConfig: { ...DEFAULT_TIMING_CONFIG },

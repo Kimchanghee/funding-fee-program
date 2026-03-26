@@ -497,11 +497,11 @@ class ServerScheduler {
     }
 
     const secondsUntilFunding = (targetFundingTime - Date.now()) / 1000;
-    if (secondsUntilFunding < -10) {
+    if (secondsUntilFunding < -30) {
       this.log('warning', `entry skipped due to stale timing | asset=${asset} lateBy=${Math.abs(secondsUntilFunding).toFixed(0)}s`);
       return;
     }
-    if (secondsUntilFunding > 30) {
+    if (secondsUntilFunding > 60) {
       this.log('warning', `entry skipped due to early timing | asset=${asset} secondsUntilFunding=${secondsUntilFunding.toFixed(0)}`);
       return;
     }
