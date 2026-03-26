@@ -38,7 +38,7 @@ import {
 const DATA_DIR = join(process.cwd(), 'data');
 const STATE_FILE = join(DATA_DIR, 'sim-scheduler-state.json');
 const LOOP_INTERVAL_MS = 1_000;
-const RATES_REFRESH_INTERVAL_MS = 8_000;
+const RATES_REFRESH_INTERVAL_MS = 5_000;
 const MAX_FUNDING_HISTORY = 500;
 
 function ensureDataDir() {

@@ -670,6 +670,7 @@ interface FundingState {
   _ratesInterval: ReturnType<typeof setInterval> | null;
   _positionsInterval: ReturnType<typeof setInterval> | null;
   _snipeCheckInterval: ReturnType<typeof setInterval> | null;
+  _simSyncInterval: ReturnType<typeof setInterval> | null;
 
   // Actions
   init: () => void;
@@ -1035,6 +1036,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   _ratesInterval: null,
   _positionsInterval: null,
   _snipeCheckInterval: null,
+  _simSyncInterval: null,
 
   // ── Init ──────────────────────────────────────
   init() {
@@ -1884,7 +1886,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }, 1000);
     }
 
-    // 8초 간격 펀딩률 + 오더북 폴링 (거래소 API rate limit 고려)
+    // 5초 간격 펀딩률 + 오더북 폴링 (기회 탐지 속도 향상)
     const ratesInterval = setInterval(() => {
       get().refreshRates();
       if (get().simSnipeActive || get().realSnipeActive) {
@@ -1896,7 +1898,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           saveSimMode(snapshot.simulationMode);
         })
         .catch(() => {});
-    }, 8_000);
+    }, 5_000);
 
     // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)
     const snipeCheckInterval = setInterval(() => {
@@ -1904,6 +1906,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         get().revalidateScheduledSnipes();
         get().scheduleAllSnipes();
       }
+    }, 1_000);
+
+    // 3초 간격 SIM 서버 상태 동기화 (API 호출 — 매초는 과도)
+    const simSyncInterval = setInterval(() => {
       if (get().simSnipeActive || get().simulationMode) {
         void fetchServerSimSchedulerStatus()
           .then((status) => {
@@ -1926,7 +1932,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           })
           .catch(() => {});
       }
-    }, 1_000);
+    }, 3_000);
 
     const positionsInterval = setInterval(() => {
       get().refreshPositions();
@@ -1945,18 +1951,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }, 15_000);
 
-    set({ _ratesInterval: ratesInterval, _positionsInterval: positionsInterval, _snipeCheckInterval: snipeCheckInterval });
+    set({ _ratesInterval: ratesInterval, _positionsInterval: positionsInterval, _snipeCheckInterval: snipeCheckInterval, _simSyncInterval: simSyncInterval });
   },
 
   stopPolling() {
-    const { _ratesInterval, _positionsInterval, _snipeCheckInterval, _snipeTimers, _snipeCloseTimers } = get();
+    const { _ratesInterval, _positionsInterval, _snipeCheckInterval, _simSyncInterval, _snipeTimers, _snipeCloseTimers } = get();
     if (_ratesInterval) clearInterval(_ratesInterval);
     if (_positionsInterval) clearInterval(_positionsInterval);
     if (_snipeCheckInterval) clearInterval(_snipeCheckInterval);
+    if (_simSyncInterval) clearInterval(_simSyncInterval);
     // 모든 코인별 스나이핑 타이머 정리
     for (const t of Object.values(_snipeTimers)) clearTimeout(t);
     for (const t of Object.values(_snipeCloseTimers)) clearTimeout(t);
-    set({ _ratesInterval: null, _positionsInterval: null, _snipeCheckInterval: null, _snipeTimers: {}, _snipeCloseTimers: {}, snipeTargets: {}, snipeAllocations: {} });
+    set({ _ratesInterval: null, _positionsInterval: null, _snipeCheckInterval: null, _simSyncInterval: null, _snipeTimers: {}, _snipeCloseTimers: {}, snipeTargets: {}, snipeAllocations: {} });
     flushLogs();
     flushTrades();
   },
