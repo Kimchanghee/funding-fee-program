@@ -368,6 +368,42 @@ export function calcNetSpreadPercent(
   return spreadPercent - entryGapPct * 1.1 - hedgeFeePct - safetyMarginPct;
 }
 
+/**
+ * ★ 계약 수량 매칭 기반 순수익 계산 — 거래소 간 가격 괴리를 레버리지로 헷징
+ *
+ * 숏/롱 계약 수량을 동일하게 맞추면 가격 변동 헷징 100%.
+ * 실제 비용은 롱 쪽 펀딩비가 가격비율만큼 증폭되는 것 + 수수료 뿐.
+ *
+ * @param shortRatePercent - 숏 쪽 펀딩비 (%)
+ * @param longRatePercent  - 롱 쪽 펀딩비 (%)
+ * @param priceRatio       - longFillPrice / shortFillPrice (e.g., 1.05 = 5% gap)
+ * @param shortEx          - 숏 거래소
+ * @param longEx           - 롱 거래소
+ * @param orderType        - 주문 타입
+ * @param feeOverrides     - 수수료 오버라이드
+ * @param safetyMarginPct  - 안전 마진 (%)
+ * @returns 숏 쪽 notional 기준 순수익 (%)
+ */
+export function calcHedgedNetSpreadPercent(
+  shortRatePercent: number,
+  longRatePercent: number,
+  priceRatio: number,
+  shortEx: ExchangeId,
+  longEx: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+  feeOverrides?: FeeOverrides,
+  safetyMarginPct: number = SAFETY_MARGIN_PCT,
+): number {
+  // 계약 수량 매칭: 숏 notional = N * P_s, 롱 notional = N * P_l
+  // 펀딩 수입 (숏 notional 기준 %): shortRate - priceRatio * longRate
+  const fundingSpreadPct = shortRatePercent - priceRatio * longRatePercent;
+  // 수수료 (숏 notional 기준 %): 숏 왕복 + 롱 왕복 * priceRatio
+  const shortFee = getExchangeFee(shortEx, orderType, feeOverrides);
+  const longFee = getExchangeFee(longEx, orderType, feeOverrides);
+  const totalFeePct = (shortFee * 2 + priceRatio * longFee * 2) * 100;
+  return fundingSpreadPct - totalFeePct - safetyMarginPct;
+}
+
 // Popular symbols to track (top coins by OI)
 export const TRACKED_SYMBOLS = [
   'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'ADA', 'AVAX', 'DOT', 'LINK',

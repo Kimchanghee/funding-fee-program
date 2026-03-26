@@ -12,6 +12,7 @@ import {
 } from './opportunities';
 import {
   calcNetSpreadPercent,
+  calcHedgedNetSpreadPercent,
   getExchangeFee,
   getHedgeFeesWithOverrides,
   getResolvedTimingConfig,
@@ -588,14 +589,16 @@ class ServerSimScheduler {
           fetchMarketFillPrice(entry.opportunity.longExchange, entry.opportunity.longSymbol, 'buy', notional),
         ]);
 
-        const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
-        const hedgeFeePct = getHedgeFeesWithOverrides(
+        const priceRatio = longFill.fillPrice / shortFill.fillPrice;
+        const realNetSpread = calcHedgedNetSpreadPercent(
+          entry.opportunity.shortRatePercent,
+          entry.opportunity.longRatePercent,
+          priceRatio,
           entry.opportunity.shortExchange,
           entry.opportunity.longExchange,
           'taker',
           this.config.feeOverrides,
-        ) * 100;
-        const realNetSpread = calcNetSpreadPercent(entry.opportunity.spreadPercent, entryGapPct, hedgeFeePct);
+        );
 
         if (realNetSpread <= 0) {
           // 湲곗〈 ?덉빟???뚯닔硫?諛섎? 諛⑺뼢??利됱떆 ?ш?利앺븳??
@@ -605,14 +608,16 @@ class ServerSimScheduler {
               fetchMarketFillPrice(flipped.shortExchange, flipped.shortSymbol, 'sell', notional),
               fetchMarketFillPrice(flipped.longExchange, flipped.longSymbol, 'buy', notional),
             ]);
-            const flipEntryGapPct = ((flipLongFill.fillPrice - flipShortFill.fillPrice) / flipShortFill.fillPrice) * 100;
-            const flipHedgeFeePct = getHedgeFeesWithOverrides(
+            const flipPriceRatio = flipLongFill.fillPrice / flipShortFill.fillPrice;
+            const flippedNetSpread = calcHedgedNetSpreadPercent(
+              flipped.shortRatePercent,
+              flipped.longRatePercent,
+              flipPriceRatio,
               flipped.shortExchange,
               flipped.longExchange,
               'taker',
               this.config.feeOverrides,
-            ) * 100;
-            const flippedNetSpread = calcNetSpreadPercent(flipped.spreadPercent, flipEntryGapPct, flipHedgeFeePct);
+            );
             if (flippedNetSpread > 0) {
               toReplace.set(opportunityId, {
                 ...entry,
@@ -1086,13 +1091,16 @@ class ServerSimScheduler {
       adjustedLongNotional = notional * (longFillPrice / shortFillPrice);
     }
 
-    const hedgeFeePct = getHedgeFeesWithOverrides(
+    const execPriceRatio = longFillPrice / shortFillPrice;
+    const realNetSpread = calcHedgedNetSpreadPercent(
+      opportunity.shortRatePercent,
+      opportunity.longRatePercent,
+      execPriceRatio,
       opportunity.shortExchange,
       opportunity.longExchange,
       'taker',
       this.config.feeOverrides,
-    ) * 100;
-    const realNetSpread = calcNetSpreadPercent(opportunity.spreadPercent, entryGapPercent, hedgeFeePct);
+    );
     if (realNetSpread <= 0) {
       return { success: false, error: 'real net spread not profitable' };
     }

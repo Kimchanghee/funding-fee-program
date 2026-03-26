@@ -25,8 +25,7 @@ import {
 import { sendTelegramMessage } from './telegram';
 import {
   getExchangeFee,
-  getHedgeFeesWithOverrides,
-  calcNetSpreadPercent,
+  calcHedgedNetSpreadPercent,
   getResolvedTimingConfig,
   sanitizeFeeOverrides,
   sanitizeTimingConfig,
@@ -575,18 +574,21 @@ class ServerScheduler {
         }]);
         return;
       }
-      const hedgeFeePct = getHedgeFeesWithOverrides(
+      const execPriceRatio = longFill.fillPrice / shortFill.fillPrice;
+      const realNetSpread = calcHedgedNetSpreadPercent(
+        opportunity.shortRatePercent,
+        opportunity.longRatePercent,
+        execPriceRatio,
         opportunity.shortExchange,
         opportunity.longExchange,
         'taker',
         this.config.feeOverrides,
-      ) * 100;
-      const realNetSpread = calcNetSpreadPercent(opportunity.spreadPercent, entryGapPct, hedgeFeePct);
+      );
 
       if (realNetSpread <= 0) {
         this.log(
           'warning',
-          `entry blocked by profitability gate | asset=${asset} netSpread=${realNetSpread.toFixed(4)}% entryGap=${entryGapPct.toFixed(4)}% fees=${hedgeFeePct.toFixed(3)}%`,
+          `entry blocked by profitability gate | asset=${asset} netSpread=${realNetSpread.toFixed(4)}% entryGap=${entryGapPct.toFixed(4)}% priceRatio=${execPriceRatio.toFixed(6)}`,
         );
         this.recordTrades([{
           timestamp: Date.now(),
@@ -598,7 +600,7 @@ class ServerScheduler {
           spread: opportunity.spread,
           spreadPercent: opportunity.spreadPercent,
           reason: 'profitability_insufficient',
-          detail: `realNetSpread:${realNetSpread.toFixed(6)} entryGapPct:${entryGapPct.toFixed(6)} hedgeFeePct:${hedgeFeePct.toFixed(6)}`,
+          detail: `realNetSpread:${realNetSpread.toFixed(6)} entryGapPct:${entryGapPct.toFixed(6)} priceRatio:${execPriceRatio.toFixed(6)}`,
         }]);
         return;
       }

@@ -35,6 +35,7 @@ import {
   getHedgeFeesWithOverrides,
   getExchangeFee,
   calcNetSpreadPercent,
+  calcHedgedNetSpreadPercent,
   SAFETY_MARGIN_PCT,
   getResolvedTimingConfig,
   sanitizeFeeOverrides,
@@ -151,12 +152,17 @@ function rebuildRealSpreadsForConfig(
       'taker',
     ) * 100;
 
+    const priceRatio = spread.longFillPrice / spread.shortFillPrice;
     next[key] = {
       ...spread,
-      effectiveSpread: calcNetSpreadPercent(
-        opportunity.spreadPercent,
-        spread.entryGapPct,
-        hedgeFeePct,
+      effectiveSpread: calcHedgedNetSpreadPercent(
+        opportunity.shortRatePercent,
+        opportunity.longRatePercent,
+        priceRatio,
+        opportunity.shortExchange,
+        opportunity.longExchange,
+        'taker',
+        strategyConfig.feeOverrides,
         0, // 표시용: 안전마진 미포함
       ),
     };
@@ -1820,14 +1826,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             // short(sell) fillPrice < midPrice, long(buy) fillPrice > midPrice
             // entryGapPct = (longFill - shortFill) / shortFill * 100 → 양수 = 진입 손실
             const entryGapPct = ((longJson.fillPrice - shortJson.fillPrice) / shortJson.fillPrice) * 100;
-            const hedgeFeePct = getConfiguredHedgeFees(
-              strategyConfig,
+            const priceRatio = longJson.fillPrice / shortJson.fillPrice;
+            // ★ 계약 수량 매칭 기반: 가격 괴리를 레버리지로 헷징, 실제 비용만 반영
+            const effectiveSpread = calcHedgedNetSpreadPercent(
+              opp.shortRatePercent,
+              opp.longRatePercent,
+              priceRatio,
               opp.shortExchange,
               opp.longExchange,
               'taker',
-            ) * 100;
-            // ★ 표시용: 진입갭×1.5 + 수수료 반영 (안전마진은 실행 시점에만 별도 적용)
-            const effectiveSpread = calcNetSpreadPercent(opp.spreadPercent, entryGapPct, hedgeFeePct, 0);
+              strategyConfig.feeOverrides,
+              0, // 안전마진은 실행 시점에만 별도 적용
+            );
             set(state => ({
               realSpreads: {
                 ...state.realSpreads,

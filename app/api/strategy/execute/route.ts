@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, getHedgeFeesWithOverrides, getExchangeFee, calcNetSpreadPercent, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, getExchangeFee, calcHedgedNetSpreadPercent, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
 import {
   openPositionExact,
   fetchMarketFillPrice,
@@ -148,27 +148,30 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2c. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증 (통합 계산식)
-    const hedgeFeePct = getHedgeFeesWithOverrides(
+    // 2c. Pre-execution profitability gate — 계약 수량 매칭 기반 수익성 재검증
+    const execPriceRatio = longFill.fillPrice / shortFill.fillPrice;
+    const realNetSpread = calcHedgedNetSpreadPercent(
+      opportunity.shortRatePercent,
+      opportunity.longRatePercent,
+      execPriceRatio,
       opportunity.shortExchange,
       opportunity.longExchange,
       'taker',
       normalizedFeeOverrides,
-    ) * 100;
-    const realNetSpread = calcNetSpreadPercent(opportunity.spreadPercent, entryGapPct, hedgeFeePct);
+    );
 
     if (realNetSpread <= 0) {
       console.log(
         `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 실시간 수익성 미달: ` +
         `스프레드=${opportunity.spreadPercent.toFixed(4)}% 진입갭=${entryGapPct.toFixed(4)}% ` +
-        `수수료=${hedgeFeePct.toFixed(3)}% → 순수익=${realNetSpread.toFixed(4)}%`,
+        `priceRatio=${execPriceRatio.toFixed(6)} → 순수익=${realNetSpread.toFixed(4)}%`,
       );
       return NextResponse.json({
         success: false,
-        error: `실시간 수익성 미달: 순스프레드 ${realNetSpread.toFixed(4)}% ≤ 0 (진입갭 ${entryGapPct.toFixed(4)}%, 수수료 ${hedgeFeePct.toFixed(3)}%)`,
+        error: `실시간 수익성 미달: 순스프레드 ${realNetSpread.toFixed(4)}% ≤ 0 (진입갭 ${entryGapPct.toFixed(4)}%)`,
         reason: 'profitability_insufficient',
         entryGapPct,
-        hedgeFeePct,
+        priceRatio: execPriceRatio,
         realNetSpread,
       });
     }
