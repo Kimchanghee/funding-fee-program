@@ -488,6 +488,7 @@ class ServerSimScheduler {
           const markedState = this.updatePositionMarks(this.getState());
           this.setState(markedState);
         }
+        await this.revalidateScheduledByOrderbook();
         await this.executeDueEntries();
         await this.processFunding();
         await this.processPendingAutoCloses();
@@ -495,6 +496,52 @@ class ServerSimScheduler {
       });
     } finally {
       this.ticking = false;
+    }
+  }
+
+  /** ★ 오더북 기반 예약 재검증 — 실측 수익성 미달 시 예약 해제 */
+  private async revalidateScheduledByOrderbook() {
+    if (this.scheduledEntries.size === 0) return;
+
+    const now = Date.now();
+    const toRemove: string[] = [];
+
+    // 펀딩 60초 이상 남은 예약만 재검증 (직전은 executeDueEntries에서 처리)
+    const candidates = Array.from(this.scheduledEntries.entries())
+      .filter(([, entry]) => entry.targetTime - now > 60_000);
+
+    // 최대 3개씩 배치로 오더북 조회 (API 부하 제한)
+    const batch = candidates.slice(0, 3);
+
+    await Promise.allSettled(batch.map(async ([opportunityId, entry]) => {
+      try {
+        const notional = entry.investmentUSDT * this.config.leverage;
+        if (notional <= 0) return;
+
+        const [shortFill, longFill] = await Promise.all([
+          fetchMarketFillPrice(entry.opportunity.shortExchange, entry.opportunity.shortSymbol, 'sell', notional),
+          fetchMarketFillPrice(entry.opportunity.longExchange, entry.opportunity.longSymbol, 'buy', notional),
+        ]);
+
+        const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
+        const hedgeFeePct = getHedgeFeesWithOverrides(
+          entry.opportunity.shortExchange,
+          entry.opportunity.longExchange,
+          'taker',
+          this.config.feeOverrides,
+        ) * 100;
+        const realNetSpread = calcNetSpreadPercent(entry.opportunity.spreadPercent, entryGapPct, hedgeFeePct);
+
+        if (realNetSpread <= 0) {
+          toRemove.push(opportunityId);
+        }
+      } catch {
+        // 오더북 조회 실패 시 유지 (실행 시점에서 다시 검증)
+      }
+    }));
+
+    for (const id of toRemove) {
+      this.scheduledEntries.delete(id);
     }
   }
 
