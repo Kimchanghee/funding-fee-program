@@ -156,6 +156,7 @@ function rebuildRealSpreadsForConfig(
         opportunity.spreadPercent,
         spread.entryGapPct,
         hedgeFeePct,
+        0, // 표시용: 안전마진 미포함
       ),
     };
   }
@@ -1793,8 +1794,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               opp.longExchange,
               'taker',
             ) * 100;
-            // ★ 통합 계산식: 진입갭×1.5 + 수수료 + 안전마진(3bps) 모두 반영
-            const effectiveSpread = calcNetSpreadPercent(opp.spreadPercent, entryGapPct, hedgeFeePct);
+            // ★ 표시용: 진입갭×1.5 + 수수료 반영 (안전마진은 실행 시점에만 별도 적용)
+            const effectiveSpread = calcNetSpreadPercent(opp.spreadPercent, entryGapPct, hedgeFeePct, 0);
             set(state => ({
               realSpreads: {
                 ...state.realSpreads,
@@ -1998,12 +1999,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         ) * strategyConfig.leverage;
       }
     })();
-    // 실측 스프레드 기반 수익성 검증 (슬리피지+수수료+안전마진 모두 calcNetSpreadPercent에서 반영됨)
+    // 실측 스프레드 기반 수익성 검증 (effectiveSpread는 표시용 — 안전마진 별도 적용)
     const rs = getRealSpreadForOpportunity(get().realSpreads, opportunity);
     const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
     if (hasRS) {
-      // ★ effectiveSpread에 이미 안전마진 3bps 포함 (calcNetSpreadPercent 통합식)
-      const realNetProfit = notionalEst * (rs.effectiveSpread / 100);
+      // ★ effectiveSpread에는 안전마진 미포함 → 실행 시 별도 차감
+      const realNetProfit = notionalEst * ((rs.effectiveSpread - SAFETY_MARGIN_PCT) / 100);
       if (realNetProfit <= 0) {
         get().addLog('warning',
           `[실측 수익성 실패] ${opportunity.baseAsset} 실측 순스프레드 ${fmtNum(rs.effectiveSpread, 4)}% ≤ 0 — 진입 스킵`,
@@ -3240,8 +3241,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         isSim,
         scheduledInvestmentUSDT,
       );
-      // realSpread는 슬리피지(수수료 포함) 반영 완료 → 추가 수수료 불필요
-      const liveNetProfit = oppNotional * (effectiveSpreadPercent / 100);
+      // effectiveSpread는 표시용(안전마진 미포함) → 실행 판단 시 안전마진 별도 차감
+      const liveNetProfit = oppNotional * ((effectiveSpreadPercent - SAFETY_MARGIN_PCT) / 100);
 
       // 순수익 ≤ 0 시 해제 — 진입 기준(3bps)과 동일한 안전마진 적용
       if (liveNetProfit <= 0) {
@@ -3360,6 +3361,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // effectiveSpread는 이미 수수료/슬리피지 차감 완료값이므로 minSpread(수수료 포함)와 비교하면 이중 필터
       const rs = getRealSpreadForOpportunity(preFilterRealSpreads, o);
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
+      // ★ 유동성 필터: 슬리피지가 maxSlippagePercent 이상이면 차단
+      const maxSlip = strategyConfig.maxSlippagePercent ?? 1.5;
+      if (hasRS && (rs.shortSlippage > maxSlip || rs.longSlippage > maxSlip)) { filterReasons.noProfit++; return false; }
       if (!hasRS && o.spreadPercent < effectiveMinPercent) { filterReasons.lowSpread++; return false; }
       if (o.netProfit <= 0) { filterReasons.noProfit++; return false; }
       return true;
@@ -3391,10 +3395,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const rs = getRealSpreadForOpportunity(currentRealSpreads, o);
       const hasRealSpread = rs && Date.now() - rs.updatedAt < 30_000;
       if (hasRealSpread) {
-        // ★ effectiveSpread에 이미 수수료+안전마진 모두 포함 (calcNetSpreadPercent 통합식)
-        return n * (rs.effectiveSpread / 100);
+        // ★ effectiveSpread는 표시용(안전마진 미포함) → 스케줄링 시 안전마진 별도 차감
+        return n * ((rs.effectiveSpread - SAFETY_MARGIN_PCT) / 100);
       }
-      // 실측 없으면 이론 기반 보수적 계산
+      // 실측 없으면 이론 기반 보수적 계산 (안전마진 포함)
       const hedgeFeePct = getConfiguredHedgeFees(
         strategyConfig,
         o.shortExchange,

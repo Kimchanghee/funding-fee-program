@@ -115,6 +115,7 @@ export interface StrategyConfig {
   compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (단리)
   feeOverrides?: FeeOverrides; // 사용자 수수료 override
   timingConfig?: TimingConfig; // 스나이프/펀딩 검증 타이밍 설정
+  maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%) — 이 이상이면 유동성 부족으로 필터링
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';

@@ -168,6 +168,24 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
+                  최대 슬리피지 (%)
+                </label>
+                <input
+                  className="input-field"
+                  type="number"
+                  min={0.1}
+                  max={5}
+                  step={0.1}
+                  value={strategyConfig.maxSlippagePercent ?? 1.5}
+                  onChange={e => setStrategyConfig({ maxSlippagePercent: Number(e.target.value) })}
+                />
+                <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                  유동성 필터 — 슬리피지가 이 값 이상이면 진입 차단
+                </div>
+              </div>
+
             </div>
 
             <div style={{ marginTop: 20 }}>

@@ -59,6 +59,7 @@ export interface SchedulerConfig {
   maxConcurrentPairs: number;
   feeOverrides?: FeeOverrides;
   timingConfig?: TimingConfig;
+  maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%)
 }
 
 interface SchedulerStats {
@@ -526,8 +527,8 @@ class ServerScheduler {
         fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
       ]);
 
-      // ── Slippage guard: 1.5% 이상이면 거래 차단 ──
-      const MAX_SLIPPAGE_PCT = 1.5;
+      // ── Slippage guard: 설정값 이상이면 거래 차단 (기본 1.5%) ──
+      const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
       if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
         const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
         const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;

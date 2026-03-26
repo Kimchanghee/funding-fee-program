@@ -211,6 +211,7 @@ export interface ServerSimSchedulerConfig {
   enabledExchanges: ExchangeId[];
   feeOverrides?: FeeOverrides;
   timingConfig?: TimingConfig;
+  maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%)
 }
 
 interface ScheduledSimEntry {
@@ -945,8 +946,8 @@ class ServerSimScheduler {
         fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
       ]);
 
-      // ★ 슬리피지 하드캡 — execute route와 동일 기준 (1.5%)
-      const MAX_SLIPPAGE_PCT = 1.5;
+      // ★ 슬리피지 하드캡 — 설정값 사용 (기본 1.5%)
+      const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
       if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
         return {
           success: false,

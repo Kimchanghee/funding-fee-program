@@ -246,7 +246,7 @@ export function estimateProfit(
   const feesPerCycle = notional * (roundTripFeePct / 100);
   const netPerFunding = skipFees
     ? grossPerFunding
-    : notional * (calcNetSpreadPercent(opportunity.spreadPercent, 0, roundTripFeePct) / 100);
+    : notional * (calcNetSpreadPercent(opportunity.spreadPercent, 0, roundTripFeePct, 0) / 100);
   const netPer1h = netPerFunding / intervalH;
   const netPer4h = netPer1h * 4;
   const netPerDay = netPerFunding * fundingsPerDay;
