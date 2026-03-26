@@ -348,14 +348,14 @@ export function getHedgeFeesWithOverrides(
 /**
  * ★ 통합 순수익 계산식 — 모든 진입 판단/표시에 이 함수를 사용
  *
- * netSpreadPct = spreadPct - entryGapPct*1.5 - hedgeFeePct - safetyMarginPct
+ * netSpreadPct = spreadPct - entryGapPct*1.1 - hedgeFeePct - safetyMarginPct
  *
  * @param spreadPercent   - 명목 스프레드 (%)
  * @param entryGapPct     - 진입 가격 갭 (%) — 양수 = 진입 손실
  * @param hedgeFeePct     - 왕복 수수료 (%) — getHedgeFees * 100
- * @param safetyMarginPct - 안전 마진 (%) — 기본 0.03 (3bps)
+ * @param safetyMarginPct - 안전 마진 (%) — 기본 0.015 (1.5bps)
  */
-export const SAFETY_MARGIN_PCT = 0.03; // 3bps — 전역 상수
+export const SAFETY_MARGIN_PCT = 0.015; // 1.5bps — 전역 상수 (슬리피지 가드가 별도 보호)
 
 export function calcNetSpreadPercent(
   spreadPercent: number,
@@ -363,7 +363,7 @@ export function calcNetSpreadPercent(
   hedgeFeePct: number,
   safetyMarginPct: number = SAFETY_MARGIN_PCT,
 ): number {
-  return spreadPercent - entryGapPct * 1.5 - hedgeFeePct - safetyMarginPct;
+  return spreadPercent - entryGapPct * 1.1 - hedgeFeePct - safetyMarginPct;
 }
 
 // Popular symbols to track (top coins by OI)

@@ -102,7 +102,7 @@ export function findOpportunities(
           'taker',
           feeOverrides,
         ) * 100;
-        // ★ 통합 계산식: 수수료 + 안전마진(3bps) 반영 (entryGap은 탐색 단계에서 0)
+        // ★ 통합 계산식: 수수료 + 안전마진(1.5bps) 반영 (entryGap은 탐색 단계에서 0)
         const netSpreadPct = calcNetSpreadPercent(spread * 100, 0, roundTripFeePct);
         const netProfit = notional * (netSpreadPct / 100);
         if (netProfit <= 0) continue;
