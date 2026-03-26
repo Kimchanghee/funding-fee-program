@@ -775,8 +775,8 @@ export default function OpportunityCard() {
                 skipFees: hasRealSpread,
                 feeOverrides: strategyConfig.feeOverrides,
               });
-              // 마이너스 순수익: 후보만 숨김 (예약/활성은 항상 표시)
-              if (profit.netPerFunding <= 0 && item.status === 'opportunity') return null;
+              // 마이너스 순수익: 활성 포지션만 항상 표시, 나머지(예약/후보)는 숨김
+              if (profit.netPerFunding <= 0 && item.status !== 'active') return null;
 
               visibleIdx++;
 

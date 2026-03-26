@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import {
   SUPPORTED_EXCHANGES,
@@ -10,6 +10,8 @@ import {
 
 const DATA_DIR = join(process.cwd(), 'data');
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
+const SIM_STATE_BACKUP = join(DATA_DIR, 'sim-state.backup.json');
+const SIM_STATE_TMP = join(DATA_DIR, 'sim-state.tmp.json');
 const MAX_FUNDING_HISTORY = 500;
 
 function ensureDataDir() {
@@ -152,15 +154,55 @@ export function sanitizeSimStateSnapshot(raw: unknown): SimStateSnapshot | null 
   };
 }
 
-export function loadServerSimState(): SimStateSnapshot | null {
+/** 상태가 실질적 데이터를 갖고 있는지 (기본값이 아닌지) 판별 */
+function hasRealData(state: SimStateSnapshot): boolean {
+  return state.simPositions.length > 0
+    || state.fundingHistory.length > 0
+    || state.simTotalFundingEarned !== 0
+    || state.simTotalFees !== 0
+    || state.simTotalClosedPnl !== 0;
+}
+
+/** 파일 하나를 안전하게 파싱 시도 */
+function tryLoadFile(filePath: string): SimStateSnapshot | null {
   try {
-    if (!existsSync(SIM_STATE_FILE)) return null;
-    return sanitizeSimStateSnapshot(JSON.parse(readFileSync(SIM_STATE_FILE, 'utf-8')));
+    if (!existsSync(filePath)) return null;
+    const raw = readFileSync(filePath, 'utf-8');
+    if (!raw || raw.trim().length === 0) return null;
+    return sanitizeSimStateSnapshot(JSON.parse(raw));
   } catch {
     return null;
   }
 }
 
+/**
+ * 서버 sim 상태 로드 — 메인 파일 실패 시 백업에서 복구
+ */
+export function loadServerSimState(): SimStateSnapshot | null {
+  // 1) 메인 파일 시도
+  const main = tryLoadFile(SIM_STATE_FILE);
+  if (main) return main;
+
+  // 2) 메인 실패 → 백업에서 복구
+  const backup = tryLoadFile(SIM_STATE_BACKUP);
+  if (backup) {
+    // 백업이 유효하면 메인 파일로 복원
+    try {
+      ensureDataDir();
+      writeFileSync(SIM_STATE_FILE, JSON.stringify(backup, null, 2), 'utf-8');
+    } catch {
+      // 복원 실패해도 메모리에는 반환
+    }
+    console.warn('[SimState] 메인 파일 손상 → 백업에서 복구됨');
+    return backup;
+  }
+
+  return null;
+}
+
+/**
+ * 서버 sim 상태 저장 — 원자적 쓰기 (tmp → rename) + 백업 유지
+ */
 export function saveServerSimState(state: SimStateSnapshot): SimStateSnapshot {
   ensureDataDir();
   const normalized = sanitizeSimStateSnapshot(state) ?? state;
@@ -168,18 +210,49 @@ export function saveServerSimState(state: SimStateSnapshot): SimStateSnapshot {
     ...normalized,
     updatedAt: Date.now(),
   };
-  writeFileSync(SIM_STATE_FILE, JSON.stringify(nextState, null, 2), 'utf-8');
+  const json = JSON.stringify(nextState, null, 2);
+
+  try {
+    // 1) 기존 메인 파일이 있고 실제 데이터가 있으면 백업
+    const existingMain = tryLoadFile(SIM_STATE_FILE);
+    if (existingMain && hasRealData(existingMain)) {
+      try {
+        writeFileSync(SIM_STATE_BACKUP, JSON.stringify(existingMain, null, 2), 'utf-8');
+      } catch {
+        // 백업 실패는 무시 — 메인 쓰기는 진행
+      }
+    }
+
+    // 2) 원자적 쓰기: tmp 파일에 쓰고 rename (Windows: 기존 파일 삭제 필요)
+    writeFileSync(SIM_STATE_TMP, json, 'utf-8');
+    try { unlinkSync(SIM_STATE_FILE); } catch { /* may not exist */ }
+    renameSync(SIM_STATE_TMP, SIM_STATE_FILE);
+  } catch {
+    // rename 실패 시 직접 쓰기 (fallback)
+    try {
+      writeFileSync(SIM_STATE_FILE, json, 'utf-8');
+    } catch {
+      // 최종 실패 — 데이터 유실 방지를 위해 최소한 tmp에라도 남김
+    }
+    // tmp 정리
+    try { unlinkSync(SIM_STATE_TMP); } catch { /* ignore */ }
+  }
+
   return nextState;
 }
 
+/**
+ * 기존 상태 로드 또는 기본값 생성
+ * ★ 기본값 생성 시 디스크에 저장하지 않음 — 실제 mutation 시에만 저장
+ */
 export function getOrCreateServerSimState(
   enabledExchanges: ExchangeId[],
   investmentUSDT: number,
 ): SimStateSnapshot {
   const existing = loadServerSimState();
   if (existing) return existing;
-  const created = createDefaultSimState(enabledExchanges, investmentUSDT);
-  return saveServerSimState(created);
+  // ★ 기본값은 메모리에만 반환 — 빈 상태가 디스크의 기존 데이터를 덮어쓰는 것을 방지
+  return createDefaultSimState(enabledExchanges, investmentUSDT);
 }
 
 export function resetServerSimState(

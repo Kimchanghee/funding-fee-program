@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { create } from 'zustand';
 import type {
@@ -41,13 +41,13 @@ import {
   sanitizeTimingConfig,
 } from '@/lib/types';
 
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 // Fee constants (fallback for contexts without exchange info)
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 const TAKER_FEE_FALLBACK = 0.0006; // 0.06% worst-case fallback (bitget taker)
-let _lastScheduleDiagAt = 0; // 진단 로그 스팸 방지
+let _lastScheduleDiagAt = 0; // 吏꾨떒 濡쒓렇 ?ㅽ뙵 諛⑹?
 
-/** 서버 스케줄러 정지 — 재시도 2회, 실패 시 경고 로그 */
+/** ?쒕쾭 ?ㅼ?以꾨윭 ?뺤? ???ъ떆??2?? ?ㅽ뙣 ??寃쎄퀬 濡쒓렇 */
 async function stopServerScheduler(addLog?: (level: LogLevel, msg: string, exchange?: ExchangeId, detail?: string) => void): Promise<boolean> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -60,12 +60,12 @@ async function stopServerScheduler(addLog?: (level: LogLevel, msg: string, excha
     } catch { /* retry */ }
     if (attempt < 2) await new Promise(r => setTimeout(r, 1_000));
   }
-  addLog?.('error', '[스케줄러] 서버 스케줄러 정지 실패 (3회 재시도) — 수동 확인 필요');
+  addLog?.('error', '[?ㅼ?以꾨윭] ?쒕쾭 ?ㅼ?以꾨윭 ?뺤? ?ㅽ뙣 (3???ъ떆?? ???섎룞 ?뺤씤 ?꾩슂');
   return false;
 }
-let _lastBalanceWarnAt = 0;  // 텔레그램 잔고 경고 쿨다운 (30분)
-// 최소 스프레드는 사용자 설정값을 그대로 쓰고,
-// 실제 수익성 판단은 거래소별 수수료 override를 반영한 계산식으로 처리한다.
+let _lastBalanceWarnAt = 0;  // ?붾젅洹몃옩 ?붽퀬 寃쎄퀬 荑⑤떎??(30遺?
+// 理쒖냼 ?ㅽ봽?덈뱶???ъ슜???ㅼ젙媛믪쓣 洹몃?濡??곌퀬,
+// ?ㅼ젣 ?섏씡???먮떒? 嫄곕옒?뚮퀎 ?섏닔猷?override瑜?諛섏쁺??怨꾩궛?앹쑝濡?泥섎━?쒕떎.
 function getEffectiveMinSpread(config: { minSpreadPercent: number }): number {
   return Math.max(0, config.minSpreadPercent);
 }
@@ -156,8 +156,7 @@ function rebuildRealSpreadsForConfig(
         opportunity.spreadPercent,
         spread.entryGapPct,
         hedgeFeePct,
-        0, // 표시용: 안전마진 미포함
-      ),
+        0, // ?쒖떆?? ?덉쟾留덉쭊 誘명룷??      ),
     };
   }
 
@@ -201,7 +200,7 @@ async function syncServerSchedulerConfig(
   } catch (error) {
     addLog(
       'error',
-      '[스케줄러] 설정 동기화 실패',
+      '[?ㅼ?以꾨윭] ?ㅼ젙 ?숆린???ㅽ뙣',
       undefined,
       (error as Error).message,
     );
@@ -245,7 +244,7 @@ async function syncServerSimSchedulerConfig(
   } catch (error) {
     addLog(
       'error',
-      '[SIM Scheduler] 설정 동기화 실패',
+      '[SIM Scheduler] ?ㅼ젙 ?숆린???ㅽ뙣',
       undefined,
       (error as Error).message,
     );
@@ -274,22 +273,48 @@ function buildEmptySimState(): SimStateSnapshot {
   };
 }
 
+/** ?쒕쾭 state媛 ?ㅼ쭏???곗씠?곕? 媛吏怨??덈뒗吏 ?먮퀎 */
+function snapshotHasRealData(state: SimStateSnapshot): boolean {
+  return state.simPositions.length > 0
+    || state.fundingHistory.length > 0
+    || state.simTotalFundingEarned !== 0
+    || state.simTotalFees !== 0
+    || state.simTotalClosedPnl !== 0;
+}
+
 function applyServerSimStateSnapshot(
   setState: (partial: Partial<FundingState>) => void,
   snapshot?: SimStateSnapshot | null,
+  options?: { force?: boolean; getState?: () => FundingState },
 ) {
-  const state = snapshot ?? buildEmptySimState();
+  if (!snapshot) return; // null/undefined ??鍮?state濡???뼱?곗? ?딆쓬
+
+  // ???대쭅 ??鍮??쒕쾭 state媛 濡쒖뺄 ?곗씠?곕? ??뼱?곕뒗 寃껋쓣 諛⑹?
+  // force=true (?섎룞 close/reset ??紐낆떆??mutation ?묐떟)????긽 ?곸슜
+  if (!options?.force && options?.getState) {
+    const local = options.getState();
+    const localHasData = local.simPositions.length > 0
+      || local.fundingHistory.length > 0
+      || local.simTotalFundingEarned !== 0
+      || local.simTotalFees !== 0
+      || local.simTotalClosedPnl !== 0;
+    if (localHasData && !snapshotHasRealData(snapshot)) {
+      // 濡쒖뺄???곗씠?곌? ?덈뒗???쒕쾭媛 鍮?state瑜?蹂대궡硫?臾댁떆
+      return;
+    }
+  }
+
   setState({
-    simBalances: state.simBalances,
-    simInitialBalances: state.simInitialBalances,
-    simPositions: state.simPositions,
-    simTotalFundingEarned: state.simTotalFundingEarned,
-    simTotalTopUps: state.simTotalTopUps,
-    simTotalFees: state.simTotalFees,
-    simTotalClosedPnl: state.simTotalClosedPnl,
-    simClosedPnlPerExchange: state.simClosedPnlPerExchange as Partial<Record<ExchangeId, number>>,
-    simClosedFeesPerExchange: state.simClosedFeesPerExchange as Partial<Record<ExchangeId, number>>,
-    fundingHistory: state.fundingHistory,
+    simBalances: snapshot.simBalances,
+    simInitialBalances: snapshot.simInitialBalances,
+    simPositions: snapshot.simPositions,
+    simTotalFundingEarned: snapshot.simTotalFundingEarned,
+    simTotalTopUps: snapshot.simTotalTopUps,
+    simTotalFees: snapshot.simTotalFees,
+    simTotalClosedPnl: snapshot.simTotalClosedPnl,
+    simClosedPnlPerExchange: snapshot.simClosedPnlPerExchange as Partial<Record<ExchangeId, number>>,
+    simClosedFeesPerExchange: snapshot.simClosedFeesPerExchange as Partial<Record<ExchangeId, number>>,
+    fundingHistory: snapshot.fundingHistory,
   });
 }
 
@@ -318,7 +343,7 @@ async function fetchServerSimSchedulerStatus() {
   }>;
 }
 
-/** 복리/단리에 따른 실제 notional 계산 */
+/** 蹂듬━/?⑤━???곕Ⅸ ?ㅼ젣 notional 怨꾩궛 */
 function getEffectiveNotional(
   opp: { shortExchange: ExchangeId; longExchange: ExchangeId },
   config: { investmentUSDT: number; leverage: number; compoundInvesting: boolean },
@@ -589,18 +614,18 @@ function planWindowAllocations(
     .filter((candidate) => candidate.investmentUSDT >= minAllocation);
 }
 
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 // Snipe key helpers (mode-prefixed)
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 const mkSnipeKey = (sim: boolean, opportunityId: string) => `${sim ? 'sim' : 'real'}:${opportunityId}`;
 const parseSnipeKey = (key: string) => ({
   isSim: key.startsWith('sim:'),
   opportunityId: key.slice(key.indexOf(':') + 1),
 });
 
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 // State shape
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 interface FundingState {
   // Data
   fundingRates: FundingRate[];
@@ -624,7 +649,7 @@ interface FundingState {
   lastPositionsUpdate: number | null;
   ratesStatus: 'idle' | 'loading' | 'success' | 'error';
   ratesError: string | null;
-  consecutiveAllFailCount: number;  // 전 거래소 연속 실패 횟수
+  consecutiveAllFailCount: number;  // ??嫄곕옒???곗냽 ?ㅽ뙣 ?잛닔
 
   // Exchange toggle
   enabledExchanges: ExchangeId[];
@@ -633,7 +658,7 @@ interface FundingState {
   exchangeFetchStatus: Partial<Record<ExchangeId, 'ok' | 'error' | 'loading'>>;
   exchangeFetchErrors: Partial<Record<ExchangeId, string>>;
 
-  // Simulation (헷징 전용 잔고 풀)
+  // Simulation (?룹쭠 ?꾩슜 ?붽퀬 ?)
   simulationMode: boolean;
   realPositionMeta: Record<string, RealPositionMeta>;
   simBalances: Record<ExchangeId, number>;
@@ -646,15 +671,15 @@ interface FundingState {
   simClosedPnlPerExchange: Partial<Record<ExchangeId, number>>;
   simClosedFeesPerExchange: Partial<Record<ExchangeId, number>>;
 
-  // Snipe mode (모드별 독립 — sim/real 동시 실행 가능)
-  simSnipeActive: boolean;           // SIM 모드 스나이프 활성
-  realSnipeActive: boolean;          // REAL 모드 스나이프 활성
-  simSnipeStartCapital: number;      // SIM 자동투자 ON 시점의 총 투입 자본
-  realSnipeStartCapital: number;     // REAL 자동투자 ON 시점의 총 투입 자본
-  snipeTargets: Record<string, number>;  // mode-prefixed opportunity key → targetFundingTime
+  // Snipe mode (紐⑤뱶蹂??낅┰ ??sim/real ?숈떆 ?ㅽ뻾 媛??
+  simSnipeActive: boolean;           // SIM 紐⑤뱶 ?ㅻ굹?댄봽 ?쒖꽦
+  realSnipeActive: boolean;          // REAL 紐⑤뱶 ?ㅻ굹?댄봽 ?쒖꽦
+  simSnipeStartCapital: number;      // SIM ?먮룞?ъ옄 ON ?쒖젏??珥??ъ엯 ?먮낯
+  realSnipeStartCapital: number;     // REAL ?먮룞?ъ옄 ON ?쒖젏??珥??ъ엯 ?먮낯
+  snipeTargets: Record<string, number>;  // mode-prefixed opportunity key ??targetFundingTime
   snipeAllocations: Record<string, number>;
-  _snipeTimers: Record<string, ReturnType<typeof setTimeout>>;      // mode-prefixed key → 진입 타이머
-  _snipeCloseTimers: Record<string, ReturnType<typeof setTimeout>>; // mode-prefixed key → 청산 타이머
+  _snipeTimers: Record<string, ReturnType<typeof setTimeout>>;      // mode-prefixed key ??吏꾩엯 ??대㉧
+  _snipeCloseTimers: Record<string, ReturnType<typeof setTimeout>>; // mode-prefixed key ??泥?궛 ??대㉧
 
   // UI state
   showApiPanel: boolean;
@@ -663,7 +688,7 @@ interface FundingState {
   exchangeFilter: ExchangeId[];
   positionToClose: Position | null;
 
-  // Real orderbook spreads (keyed by baseAsset) — effectiveSpread에 슬리피지+베이시스+수수료 모두 반영
+  // Real orderbook spreads (keyed by baseAsset) ??effectiveSpread???щ━?쇱?+踰좎씠?쒖뒪+?섏닔猷?紐⑤몢 諛섏쁺
   realSpreads: Record<string, RealSpreadSnapshot>;
 
   // Polling interval handles
@@ -706,7 +731,7 @@ interface FundingState {
   closeSimPosition: (simId: string) => Promise<{ netPnl: number; funding: number } | null>;
   tickSimFunding: () => void;
 
-  // Snipe actions (모드별 독립 스나이핑)
+  // Snipe actions (紐⑤뱶蹂??낅┰ ?ㅻ굹?댄븨)
   scheduleAllSnipes: () => void;
   _scheduleSnipesForMode: (isSim: boolean) => void;
   scheduleSnipeForAsset: (
@@ -730,9 +755,9 @@ interface FundingState {
   redistributeBalances: () => void;
 }
 
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 // Helpers
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 function makeApiHeaders(config: ApiConfig): Record<string, string> {
   const h: Record<string, string> = {
     'x-api-key': config.apiKey,
@@ -848,9 +873,9 @@ function makeSyntheticClosePosition(
   };
 }
 
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 // File persistence: batch log/trade sending
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 interface PendingLog {
   timestamp: number;
   level: string;
@@ -874,14 +899,14 @@ let tradeFlushTimer: ReturnType<typeof setTimeout> | null = null;
 function queueLog(level: string, message: string, exchange?: string, detail?: string) {
   logBatch.push({ timestamp: Date.now(), level, message, exchange, detail });
   if (!logFlushTimer) {
-    logFlushTimer = setTimeout(flushLogs, 2000); // 2초마다 배치 전송
+    logFlushTimer = setTimeout(flushLogs, 2000); // 2珥덈쭏??諛곗튂 ?꾩넚
   }
 }
 
 function queueTrade(event: PendingTrade) {
   tradeBatch.push(event);
   if (!tradeFlushTimer) {
-    tradeFlushTimer = setTimeout(flushTrades, 1000); // 거래는 1초마다 즉시 전송
+    tradeFlushTimer = setTimeout(flushTrades, 1000); // 嫄곕옒??1珥덈쭏??利됱떆 ?꾩넚
   }
 }
 
@@ -894,7 +919,7 @@ function flushLogs() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ entries }),
-  }).catch(() => { /* silent — don't break UI for log persistence */ });
+  }).catch(() => { /* silent ??don't break UI for log persistence */ });
 }
 
 function flushTrades() {
@@ -918,6 +943,7 @@ interface StoredTradeEventFundingShape {
   fundingRate?: number;
   side?: string;
   simulation?: boolean;
+  pairId?: string;
 }
 
 function makeFundingHistoryKey(payment: FundingPayment): string {
@@ -953,32 +979,52 @@ async function loadFundingHistoryFromTradeLog(simulation: boolean): Promise<Fund
     }),
   );
 
-  const payments: FundingPayment[] = [];
+  const explicitFundingPayments: FundingPayment[] = [];
+  const exitFallbackPayments: FundingPayment[] = [];
   for (const result of results) {
     for (const event of result.events ?? []) {
-      if (event.type !== 'funding') continue;
       if (!!event.simulation !== simulation) continue;
       if (!event.exchange || !event.symbol) continue;
       const amount = event.fundingAmount ?? 0;
       if (Math.abs(amount) <= 0.0000001) continue;
 
-      payments.push({
+      const payment: FundingPayment = {
         exchange: event.exchange as ExchangeId,
         symbol: event.symbol,
         amount,
         rate: event.fundingRate ?? 0,
         timestamp: event.timestamp,
         side: (event.side === 'short' ? 'short' : 'long'),
-      });
+      };
+
+      if (event.type === 'funding') {
+        explicitFundingPayments.push(payment);
+        continue;
+      }
+
+      if (event.type === 'exit' || event.type === 'snipe_exit' || event.type === 'auto_exit') {
+        exitFallbackPayments.push(payment);
+      }
     }
   }
 
-  return mergeFundingHistory([], payments);
+  // fallback: funding ?대깽?멸? ?꾨씫?섍퀬 exit/snipe_exit??fundingAmount留??⑥? 濡쒓렇 蹂듭썝
+  const dedupedFallback = exitFallbackPayments.filter((candidate) => {
+    return !explicitFundingPayments.some((payment) =>
+      payment.exchange === candidate.exchange
+      && payment.symbol === candidate.symbol
+      && payment.side === candidate.side
+      && Math.abs(payment.amount - candidate.amount) <= 0.0000001
+      && Math.abs(payment.timestamp - candidate.timestamp) <= 10 * 60 * 1000,
+    );
+  });
+
+  return mergeFundingHistory([], [...explicitFundingPayments, ...dedupedFallback]);
 }
 
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 // Store
-// ─────────────────────────────────────────────
+// ?????????????????????????????????????????????
 export const useFundingStore = create<FundingState>((set, get) => ({
   fundingRates: [],
   opportunities: [],
@@ -997,8 +1043,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   fundingHistory: [],
   simulationMode: true,
   realPositionMeta: {},
-  simBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000, htx: 2000 },
-  simInitialBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000, htx: 2000 },
+  simBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
+  simInitialBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
   simPositions: [],
   simTotalFundingEarned: 0,
   simTotalTopUps: 0,
@@ -1038,13 +1084,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   _snipeCheckInterval: null,
   _simSyncInterval: null,
 
-  // ── Init ──────────────────────────────────────
+  // ?? Init ??????????????????????????????????????
   init() {
     try {
-      // React 18 Strict Mode / HMR에서 상태 초기화
-      set({ isLoadingRates: false, simSnipeActive: false, realSnipeActive: false, snipeTargets: {}, snipeAllocations: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
+      // React 18 Strict Mode / HMR?먯꽌 ?곹깭 珥덇린??      set({ isLoadingRates: false, simSnipeActive: false, realSnipeActive: false, snipeTargets: {}, snipeAllocations: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
 
-      // ── 1회성 데이터 정리: 시뮬 초기화 (v3 마이그레이션) ──
+      // ?? 1?뚯꽦 ?곗씠???뺣━: ?쒕? 珥덇린??(v3 留덉씠洹몃젅?댁뀡) ??
       const MIGRATION_KEY = 'funding_fee_migration_v3';
       if (typeof window !== 'undefined' && !localStorage.getItem(MIGRATION_KEY)) {
         localStorage.removeItem('funding_fee_history');
@@ -1053,43 +1098,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         localStorage.setItem(MIGRATION_KEY, '1');
       }
 
-      // 저장된 로그 & 펀딩 히스토리 복원 (HMR/새로고침에서도 유지)
+      // ??λ맂 濡쒓렇 & ????덉뒪?좊━ 蹂듭썝 (HMR/?덈줈怨좎묠?먯꽌???좎?)
       const savedLogs = loadLogs();
       const savedHistory = loadFundingHistory();
       if (savedLogs.length > 0) set({ logs: savedLogs });
       if (savedHistory !== null && savedHistory.length > 0) {
         set({ fundingHistory: savedHistory });
-      } else if (savedHistory === null) {
-        // localStorage에 키 자체가 없을 때만 서버에서 복원 (명시적 초기화 후엔 스킵)
-        fetch('/api/trades/list?list=true').then(r => r.json()).then((res: { dates?: string[] }) => {
-          if (!res.dates || res.dates.length === 0) return;
-          // 최근 7일치 펀딩 기록 복원
-          const dates = res.dates.slice(0, 7);
-          Promise.all(dates.map(d => fetch(`/api/trades/list?date=${d}`).then(r => r.json()))).then(results => {
-            const fundingRecords: FundingPayment[] = [];
-            for (const res of results) {
-              if (!res.events) continue;
-              for (const e of res.events as Array<{ type: string; timestamp: number; exchange: string; symbol: string; fundingAmount: number; fundingRate: number; side: string; simulation: boolean }>) {
-                if (e.type === 'funding' && e.simulation && e.fundingAmount && Math.abs(e.fundingAmount) > 0.0001) {
-                  fundingRecords.push({
-                    exchange: e.exchange as ExchangeId,
-                    symbol: e.symbol || '',
-                    amount: e.fundingAmount,
-                    rate: e.fundingRate || 0,
-                    timestamp: e.timestamp,
-                    side: (e.side as 'long' | 'short') || 'long',
-                  });
-                }
-              }
-            }
-            if (fundingRecords.length > 0) {
-              fundingRecords.sort((a, b) => b.timestamp - a.timestamp);
-              set({ fundingHistory: fundingRecords });
-              saveFundingHistory(fundingRecords);
-              get().addLog('info', `[복원] 로컬 파일에서 펀딩 수령 내역 ${fundingRecords.length}건 복원`);
-            }
-          });
-        }).catch(() => { /* silent */ });
+      } else {
+        // localStorage key가 없을 때만 거래 로그로 복원 (명시적 초기화 상태는 유지)
+        void loadFundingHistoryFromTradeLog(true)
+          .then((fundingRecords) => {
+            if (fundingRecords.length === 0) return;
+            set({ fundingHistory: fundingRecords });
+            saveFundingHistory(fundingRecords);
+            get().addLog('info', [복원] 로컬 파일에서 펀딩 수령 내역 건 복원);
+          })
+          .catch(() => { /* silent */ });
       }
 
       const saved = loadApiConfigs();
@@ -1097,7 +1121,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const connected = Object.keys(saved) as ExchangeId[];
       set({ connectedExchanges: connected });
 
-      // 저장된 전략 설정 로드
+      // ??λ맂 ?꾨왂 ?ㅼ젙 濡쒕뱶
       const savedStrategy = loadStrategyConfig();
       if (savedStrategy) {
         set({
@@ -1112,7 +1136,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         });
       }
 
-      // 저장된 거래소 ON/OFF 설정 로드
+      // ??λ맂 嫄곕옒??ON/OFF ?ㅼ젙 濡쒕뱶
       const savedEnabled = loadEnabledExchanges();
       if (savedEnabled && savedEnabled.length > 0) {
         const valid = savedEnabled.filter(e => SUPPORTED_EXCHANGES.includes(e as ExchangeId)) as ExchangeId[];
@@ -1121,25 +1145,25 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }
       }
 
-      // 저장된 모드 복원 (SIM/REAL)
+      // ??λ맂 紐⑤뱶 蹂듭썝 (SIM/REAL)
       const savedMode = loadSimMode();
       if (savedMode !== null) {
         set({ simulationMode: savedMode });
       }
 
-      // 저장된 REAL 포지션 메타 복원
+      // ??λ맂 REAL ?ъ???硫뷀? 蹂듭썝
       const savedRealMeta = loadRealPositionMeta();
       if (savedRealMeta) {
         set({ realPositionMeta: savedRealMeta as Record<string, RealPositionMeta> });
       }
 
-      // 서버에 저장된 자동투자 상태 복원 (PC↔모바일 동기화)
+      // ?쒕쾭????λ맂 ?먮룞?ъ옄 ?곹깭 蹂듭썝 (PC?붾え諛붿씪 ?숆린??
       fetchSharedSnipeStateSnapshot().then(async (sharedState) => {
         applySharedSnipeStateSnapshot(set, sharedState);
         saveSimMode(sharedState.simulationMode);
         const { realSnipeActive: savedReal } = sharedState;
 
-        // REAL: 서버 스케줄러가 실제로 돌고 있는지 확인 후에만 UI 상태를 ON으로
+        // REAL: ?쒕쾭 ?ㅼ?以꾨윭媛 ?ㅼ젣濡??뚭퀬 ?덈뒗吏 ?뺤씤 ?꾩뿉留?UI ?곹깭瑜?ON?쇰줈
         let realConfirmed = false;
         if (savedReal) {
           try {
@@ -1148,11 +1172,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               const schedulerData = await schedulerRes.json() as { active?: boolean };
               realConfirmed = !!schedulerData.active;
             }
-          } catch { /* 확인 불가 → OFF 유지 */ }
+          } catch { /* ?뺤씤 遺덇? ??OFF ?좎? */ }
           if (!realConfirmed) {
-            // 서버 스케줄러가 안 돌고 있으면 snipe-state도 정정
+            // ?쒕쾭 ?ㅼ?以꾨윭媛 ???뚭퀬 ?덉쑝硫?snipe-state???뺤젙
             void updateSharedSnipeStateSnapshot({ realSnipeActive: false }).catch(() => {});
-            get().addLog('warning', '[복원] REAL 자동투자 상태 OFF — 서버 스케줄러 미실행');
+            get().addLog('warning', '[蹂듭썝] REAL ?먮룞?ъ옄 ?곹깭 OFF ???쒕쾭 ?ㅼ?以꾨윭 誘몄떎??);
           }
         }
 
@@ -1163,14 +1187,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             get().enabledExchanges,
             get().addLog,
           );
-          get().addLog('info', '[복원] 자동투자 상태 복원 — REAL');
+          get().addLog('info', '[蹂듭썝] ?먮룞?ъ옄 ?곹깭 蹂듭썝 ??REAL');
         }
       }).catch(() => { /* silent */ });
 
-      // 저장된 시뮬레이션 상태 복원 (잔고, 포지션, 누적 펀딩)
+      // ??λ맂 ?쒕??덉씠???곹깭 蹂듭썝 (?붽퀬, ?ъ??? ?꾩쟻 ???
       const savedSim = loadSimState();
       if (savedSim) {
-        // 잔고가 거래소당 기준(투자금×2)보다 낮으면 보정 (숏/롱 양쪽 참여 가능하도록)
+        // ?붽퀬媛 嫄곕옒?뚮떦 湲곗?(?ъ옄湲댠?)蹂대떎 ??쑝硫?蹂댁젙 (??濡??묒そ 李몄뿬 媛?ν븯?꾨줉)
         const minBal = get().strategyConfig.investmentUSDT * 2;
         const restoredBal = savedSim.simBalances as Record<ExchangeId, number>;
         const restoredInitial = (savedSim.simInitialBalances as Record<ExchangeId, number> | undefined)
@@ -1196,7 +1220,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           simClosedFeesPerExchange: (savedSim.simClosedFeesPerExchange ?? {}) as Partial<Record<ExchangeId, number>>,
         });
       } else {
-        // 최초 실행: 활성 거래소 기준으로 초기 잔고 설정 (거래소당 투자금×2 — 숏/롱 양쪽 참여 가능)
+        // 理쒖큹 ?ㅽ뻾: ?쒖꽦 嫄곕옒??湲곗??쇰줈 珥덇린 ?붽퀬 ?ㅼ젙 (嫄곕옒?뚮떦 ?ъ옄湲댠? ????濡??묒そ 李몄뿬 媛??
         const enabled = get().enabledExchanges;
         const perExchange = get().strategyConfig.investmentUSDT * 2;
         const newBal = {} as Record<ExchangeId, number>;
@@ -1208,7 +1232,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       void fetchServerSimSchedulerStatus()
         .then((simScheduler) => {
-          applyServerSimStateSnapshot(set, simScheduler.state);
+          applyServerSimStateSnapshot(set, simScheduler.state, { force: true });
           set({
             simSnipeActive: !!simScheduler.active,
             snipeTargets: simScheduler.snipeTargets ?? {},
@@ -1234,7 +1258,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             .then(r => r.json())
             .then((migrated: { success?: boolean; data?: SimStateSnapshot }) => {
               if (migrated.success && migrated.data) {
-                applyServerSimStateSnapshot(set, migrated.data);
+                applyServerSimStateSnapshot(set, migrated.data, { force: true });
                 return;
               }
               applyServerSimStateSnapshot(set, {
@@ -1242,7 +1266,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 ...savedSim,
                 fundingHistory: loadFundingHistory() ?? [],
                 updatedAt: Date.now(),
-              });
+              }, { force: true });
             })
             .catch(() => {
               applyServerSimStateSnapshot(set, {
@@ -1250,13 +1274,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 ...savedSim,
                 fundingHistory: loadFundingHistory() ?? [],
                 updatedAt: Date.now(),
-              });
+              }, { force: true });
             });
         });
 
       const enabled = get().enabledExchanges;
-      get().addLog('info', '펀딩피 프로그램 초기화 완료', undefined,
-        `활성 거래소: ${enabled.map(e => e.toUpperCase()).join(', ')} (${enabled.length}개)`);
+      get().addLog('info', '??⑺뵾 ?꾨줈洹몃옩 珥덇린???꾨즺', undefined,
+        `?쒖꽦 嫄곕옒?? ${enabled.map(e => e.toUpperCase()).join(', ')} (${enabled.length}媛?`);
       set({ ratesStatus: 'loading' });
       get().refreshRates().catch((err) => {
         console.error('[init] refreshRates failed:', err);
@@ -1264,26 +1288,25 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
       get().startPolling();
     } catch (err) {
-      console.error('[init] 초기화 실패:', err);
-      set({ ratesStatus: 'error', ratesError: `초기화 실패: ${(err as Error).message}`, isLoadingRates: false });
+      console.error('[init] 珥덇린???ㅽ뙣:', err);
+      set({ ratesStatus: 'error', ratesError: `珥덇린???ㅽ뙣: ${(err as Error).message}`, isLoadingRates: false });
     }
   },
 
-  // ── API config ────────────────────────────────
+  // ?? API config ????????????????????????????????
   setApiConfig(exchange, config) {
     const prev = get().apiConfigs;
     const next = { ...prev, [exchange]: config };
     set({ apiConfigs: next });
     saveApiConfigs(next);
-    // 서버 측 암호화 저장소에도 저장
-    fetch('/api/keys', {
+    // ?쒕쾭 痢??뷀샇????μ냼?먮룄 ???    fetch('/api/keys', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ exchange, config }),
     }).catch(() => {});
     const connected = Object.keys(next) as ExchangeId[];
     set({ connectedExchanges: connected });
-    get().addLog('success', `${exchange.toUpperCase()} API 키 저장됨 (서버 암호화)`, exchange);
+    get().addLog('success', `${exchange.toUpperCase()} API ????λ맖 (?쒕쾭 ?뷀샇??`, exchange);
   },
 
   removeApiConfig(exchange) {
@@ -1292,7 +1315,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     delete next[exchange];
     set({ apiConfigs: next });
     saveApiConfigs(next);
-    // 서버 측에서도 삭제
+    // ?쒕쾭 痢≪뿉?쒕룄 ??젣
     fetch('/api/keys', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
@@ -1300,7 +1323,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }).catch(() => {});
     const connected = Object.keys(next) as ExchangeId[];
     set({ connectedExchanges: connected });
-    get().addLog('warning', `${exchange.toUpperCase()} API 키 삭제됨`, exchange);
+    get().addLog('warning', `${exchange.toUpperCase()} API ????젣??, exchange);
   },
 
   setStrategyConfig(config) {
@@ -1348,7 +1371,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       saveStrategyConfig(next);
 
-      // investmentUSDT 변경 시 시뮬 잔고 동기화 (포지션 없을 때만)
+      // investmentUSDT 蹂寃????쒕? ?붽퀬 ?숆린??(?ъ????놁쓣 ?뚮쭔)
       if (investmentChanged && s.simulationMode && s.simPositions.length === 0) {
         const newBal = {} as Record<ExchangeId, number>;
         for (const ex of SUPPORTED_EXCHANGES) {
@@ -1391,7 +1414,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         .then(r => r.json())
         .then((res: { success?: boolean; data?: SimStateSnapshot }) => {
           if (res.success && res.data) {
-            applyServerSimStateSnapshot(set, res.data);
+            applyServerSimStateSnapshot(set, res.data, { force: true });
           }
         })
         .catch(() => {});
@@ -1412,7 +1435,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       );
       void fetchServerSimSchedulerStatus()
         .then((status) => {
-          applyServerSimStateSnapshot(set, status.state);
+          applyServerSimStateSnapshot(set, status.state, { force: true });
           set({
             simSnipeActive: !!status.active,
             snipeTargets: status.snipeTargets ?? {},
@@ -1423,10 +1446,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
   },
 
-  // ── Refresh rates (거래소별 개별 비동기 — 응답 즉시 UI 업데이트) ──
+  // ?? Refresh rates (嫄곕옒?뚮퀎 媛쒕퀎 鍮꾨룞湲????묐떟 利됱떆 UI ?낅뜲?댄듃) ??
   async refreshRates() {
     if (get().isLoadingRates) {
-      console.log('[refreshRates] skip — already loading');
+      console.log('[refreshRates] skip ??already loading');
       return;
     }
     set({ isLoadingRates: true, ratesStatus: get().lastRatesUpdate ? get().ratesStatus : 'loading', ratesError: null });
@@ -1434,12 +1457,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const enabled = get().enabledExchanges;
     console.log('[refreshRates] start:', enabled.join(','));
 
-    // 비활성 거래소 데이터 제거 (OFF한 거래소가 기회 계산에 남는 것 방지)
+    // 鍮꾪솢??嫄곕옒???곗씠???쒓굅 (OFF??嫄곕옒?뚭? 湲고쉶 怨꾩궛???⑤뒗 寃?諛⑹?)
     set(s => ({
       fundingRates: s.fundingRates.filter(r => enabled.includes(r.exchange)),
     }));
 
-    // 거래소별 개별 fetch — 먼저 응답 오는 거래소부터 즉시 반영
+    // 嫄곕옒?뚮퀎 媛쒕퀎 fetch ??癒쇱? ?묐떟 ?ㅻ뒗 嫄곕옒?뚮???利됱떆 諛섏쁺
     await Promise.allSettled(
       enabled.map(async (exchangeId) => {
         set(s => ({ exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'loading' } }));
@@ -1455,9 +1478,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           };
 
           if (json.success && json.data.rates.length > 0) {
-            console.log(`[refreshRates] ${exchangeId}: ${json.data.rates.length}개 수신`);
-            // 이 거래소 데이터를 기존 데이터에 머지 → 즉시 기회 재계산
-            try {
+            console.log(`[refreshRates] ${exchangeId}: ${json.data.rates.length}媛??섏떊`);
+            // ??嫄곕옒???곗씠?곕? 湲곗〈 ?곗씠?곗뿉 癒몄? ??利됱떆 湲고쉶 ?ш퀎??            try {
               set(s => {
                 const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
                 const merged = [...otherRates, ...json.data.rates];
@@ -1470,7 +1492,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                   s.strategyConfig.feeOverrides,
                 );
 
-                // 시뮬 포지션 마크가격 업데이트
+                // ?쒕? ?ъ???留덊겕媛寃??낅뜲?댄듃
                 let updatedSimPositions = s.simPositions;
                 if (s.simPositions.length > 0) {
                   updatedSimPositions = s.simPositions.map(pos => {
@@ -1499,8 +1521,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 };
               });
             } catch (setErr) {
-              console.error(`[refreshRates] ${exchangeId} set() 실패:`, setErr);
-              // set() 실패해도 최소한 상태는 업데이트
+              console.error(`[refreshRates] ${exchangeId} set() ?ㅽ뙣:`, setErr);
+              // set() ?ㅽ뙣?대룄 理쒖냼???곹깭???낅뜲?댄듃
               set({
                 lastRatesUpdate: Date.now(),
                 ratesStatus: 'success',
@@ -1510,18 +1532,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
             if (json.data.errors?.length > 0) {
               for (const e of json.data.errors) {
-                get().addLog('warning', `${(e.exchange || '?').toUpperCase()} 펀딩률 오류`, e.exchange, e.error);
+                get().addLog('warning', `${(e.exchange || '?').toUpperCase()} ??⑸쪧 ?ㅻ쪟`, e.exchange, e.error);
               }
             }
           } else {
-            // success:false 또는 데이터 0건 → 5초 후 재시도
-            const errMsg = json.error || '데이터 없음';
-            console.warn(`[refreshRates] ${exchangeId} 1차 실패(응답): ${errMsg} — 5초 후 재시도`);
+            // success:false ?먮뒗 ?곗씠??0嫄???5珥????ъ떆??            const errMsg = json.error || '?곗씠???놁쓬';
+            console.warn(`[refreshRates] ${exchangeId} 1李??ㅽ뙣(?묐떟): ${errMsg} ??5珥????ъ떆??);
             await new Promise(r => setTimeout(r, 5000));
             const retryRes2 = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, { signal: AbortSignal.timeout(30000) });
             const retryJson2 = await retryRes2.json() as typeof json;
             if (retryJson2.success && retryJson2.data.rates.length > 0) {
-              console.log(`[refreshRates] ${exchangeId} 재시도 성공: ${retryJson2.data.rates.length}개`);
+              console.log(`[refreshRates] ${exchangeId} ?ъ떆???깃났: ${retryJson2.data.rates.length}媛?);
               set(s => {
                 const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
                 const merged = [...otherRates, ...retryJson2.data.rates];
@@ -1542,7 +1563,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 };
               });
             } else {
-              console.warn(`[refreshRates] ${exchangeId} 재시도도 실패: ${retryJson2.error || '데이터 없음'}`);
+              console.warn(`[refreshRates] ${exchangeId} ?ъ떆?꾨룄 ?ㅽ뙣: ${retryJson2.error || '?곗씠???놁쓬'}`);
               set(s => ({
                 exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'error' },
                 exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: retryJson2.error || errMsg },
@@ -1550,8 +1571,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             }
           }
         } catch (err) {
-          // 네트워크/타임아웃 에러 → 5초 후 재시도
-          console.warn(`[refreshRates] ${exchangeId} 1차 실패(네트워크) — 5초 후 재시도:`, (err as Error).message);
+          // ?ㅽ듃?뚰겕/??꾩븘???먮윭 ??5珥????ъ떆??          console.warn(`[refreshRates] ${exchangeId} 1李??ㅽ뙣(?ㅽ듃?뚰겕) ??5珥????ъ떆??`, (err as Error).message);
           try {
             await new Promise(r => setTimeout(r, 5000));
             const retryRes = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, {
@@ -1564,7 +1584,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               timestamp: number;
             };
             if (retryJson.success && retryJson.data.rates.length > 0) {
-              console.log(`[refreshRates] ${exchangeId} 재시도 성공: ${retryJson.data.rates.length}개`);
+              console.log(`[refreshRates] ${exchangeId} ?ъ떆???깃났: ${retryJson.data.rates.length}媛?);
               set(s => {
                 const otherRates = s.fundingRates.filter(r => r.exchange !== exchangeId);
                 const merged = [...otherRates, ...retryJson.data.rates];
@@ -1585,10 +1605,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                 };
               });
             } else {
-              throw new Error(retryJson.error || '재시도 데이터 없음');
+              throw new Error(retryJson.error || '?ъ떆???곗씠???놁쓬');
             }
           } catch (retryErr) {
-            console.warn(`[refreshRates] ${exchangeId} 재시도도 실패:`, (retryErr as Error).message);
+            console.warn(`[refreshRates] ${exchangeId} ?ъ떆?꾨룄 ?ㅽ뙣:`, (retryErr as Error).message);
             set(s => ({
               exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'error' },
               exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: (retryErr as Error).message },
@@ -1598,31 +1618,31 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }),
     );
 
-    // 모든 거래소 완료 후 — 이번 라운드에서 하나도 성공 못했으면 에러
+    // 紐⑤뱺 嫄곕옒???꾨즺 ?????대쾲 ?쇱슫?쒖뿉???섎굹???깃났 紐삵뻽?쇰㈃ ?먮윭
     const anyOk = enabled.some(ex => get().exchangeFetchStatus[ex] === 'ok');
-    console.log('[refreshRates] done — anyOk:', anyOk, 'lastUpdate:', get().lastRatesUpdate);
+    console.log('[refreshRates] done ??anyOk:', anyOk, 'lastUpdate:', get().lastRatesUpdate);
     if (!anyOk) {
       const failCount = get().consecutiveAllFailCount + 1;
-      set({ ratesStatus: 'error', ratesError: '모든 거래소에서 데이터 조회 실패', consecutiveAllFailCount: failCount });
+      set({ ratesStatus: 'error', ratesError: '紐⑤뱺 嫄곕옒?뚯뿉???곗씠??議고쉶 ?ㅽ뙣', consecutiveAllFailCount: failCount });
 
-      // 5회 연속 전체 실패 (~40초) → 경고 로그 + 텔레그램
+      // 5???곗냽 ?꾩껜 ?ㅽ뙣 (~40珥? ??寃쎄퀬 濡쒓렇 + ?붾젅洹몃옩
       if (failCount === 5) {
-        const msg = `⚠️ API 전체 장애: 모든 거래소 데이터 조회가 ${failCount}회 연속 실패했습니다. 서버 상태를 확인하세요. (.next 캐시 손상 가능 → 서버 재시작 필요)`;
+        const msg = `?좑툘 API ?꾩껜 ?μ븷: 紐⑤뱺 嫄곕옒???곗씠??議고쉶媛 ${failCount}???곗냽 ?ㅽ뙣?덉뒿?덈떎. ?쒕쾭 ?곹깭瑜??뺤씤?섏꽭?? (.next 罹먯떆 ?먯긽 媛?????쒕쾭 ?ъ떆???꾩슂)`;
         get().addLog('warning', msg);
         sendTelegramMessage(msg).catch(() => {});
       }
-      // 30회 연속 (~4분) → 스나이프 자동 중단
+      // 30???곗냽 (~4遺? ???ㅻ굹?댄봽 ?먮룞 以묐떒
       if (failCount === 30 && (get().simSnipeActive || get().realSnipeActive)) {
-        get().addLog('warning', `🛑 API 장애 지속 (${failCount}회 연속 실패) — 스나이프 자동 중단`);
+        get().addLog('warning', `?썞 API ?μ븷 吏??(${failCount}???곗냽 ?ㅽ뙣) ???ㅻ굹?댄봽 ?먮룞 以묐떒`);
         get().cancelSnipe('all');
-        sendTelegramMessage(`🛑 API 전체 장애 ${failCount}회 연속 → 자동 투자 긴급 중단. 서버 재시작 필요.`).catch(() => {});
+        sendTelegramMessage(`?썞 API ?꾩껜 ?μ븷 ${failCount}???곗냽 ???먮룞 ?ъ옄 湲닿툒 以묐떒. ?쒕쾭 ?ъ떆???꾩슂.`).catch(() => {});
       }
 
       if (!get().lastRatesUpdate) {
         setTimeout(() => get().refreshRates(), 3000);
       }
     } else {
-      // 성공 시 카운터 리셋
+      // ?깃났 ??移댁슫??由ъ뀑
       if (get().consecutiveAllFailCount > 0) {
         set({ consecutiveAllFailCount: 0 });
       }
@@ -1630,7 +1650,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ isLoadingRates: false });
   },
 
-  // ── Refresh positions (활성 거래소만) ─────────────
+  // ?? Refresh positions (?쒖꽦 嫄곕옒?뚮쭔) ?????????????
   async refreshPositions() {
     const configs = get().apiConfigs;
     const enabled = get().enabledExchanges;
@@ -1653,7 +1673,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const metaMap = get().realPositionMeta;
 
-    // 기존 포지션의 positionType / 메타 보존 (exchange+symbol+side 기준 매칭)
+    // 湲곗〈 ?ъ??섏쓽 positionType / 硫뷀? 蹂댁〈 (exchange+symbol+side 湲곗? 留ㅼ묶)
     const prevPositions = get().positions;
     for (const pos of allPositions) {
       const meta = metaMap[makePositionKey(pos.exchange, pos.symbol, pos.side)];
@@ -1682,10 +1702,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ positions: allPositions, isLoadingPositions: false, lastPositionsUpdate: Date.now() });
   },
 
-  // refreshPositions 후 새로 생긴 포지션에만 positionType 세팅
-  // (기존에 있던 manual 포지션은 건드리지 않음)
+  // refreshPositions ???덈줈 ?앷릿 ?ъ??섏뿉留?positionType ?명똿
+  // (湲곗〈???덈뜕 manual ?ъ??섏? 嫄대뱶由ъ? ?딆쓬)
   async refreshAndStampPositions(baseAsset: string, exchanges: ExchangeId[]) {
-    // refresh 전 기존 포지션 스냅샷 (exchange+symbol+side 키)
+    // refresh ??湲곗〈 ?ъ????ㅻ깄??(exchange+symbol+side ??
     const beforeKeys = new Set(
       get().positions.map(p => `${p.exchange}:${p.symbol}:${p.side}`),
     );
@@ -1694,11 +1714,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const updated = s.positions.map(p => {
         if (p.baseAsset !== baseAsset) return p;
         if (!exchanges.includes(p.exchange)) return p;
-        if (p.positionType !== 'manual') return p; // 이미 타입이 있으면 유지
-        // refresh 전에 이미 있던 포지션이면 스킵 (사용자 기존 포지션)
+        if (p.positionType !== 'manual') return p; // ?대? ??낆씠 ?덉쑝硫??좎?
+        // refresh ?꾩뿉 ?대? ?덈뜕 ?ъ??섏씠硫??ㅽ궢 (?ъ슜??湲곗〈 ?ъ???
         const key = `${p.exchange}:${p.symbol}:${p.side}`;
         if (beforeKeys.has(key)) return p;
-        // hedge: 숏/롱 구분
+        // hedge: ??濡?援щ텇
         return {
           ...p,
           positionType: (p.side === 'short' ? 'hedge_short' : 'hedge_long') as Position['positionType'],
@@ -1708,7 +1728,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     });
   },
 
-  // ── Refresh balances (활성 거래소만) ──────────────
+  // ?? Refresh balances (?쒖꽦 嫄곕옒?뚮쭔) ??????????????
   async refreshBalances() {
     const configs = get().apiConfigs;
     const enabled = get().enabledExchanges;
@@ -1731,13 +1751,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ balances: next });
   },
 
-  // ── Refresh real orderbook spreads for scheduled coins ──
+  // ?? Refresh real orderbook spreads for scheduled coins ??
   async refreshRealSpreads() {
     const { snipeTargets, snipeAllocations, opportunities, strategyConfig, realSpreads, simBalances, balances: realBalances, simulationMode } = get();
     const now = Date.now();
     const STALE_MS = 5_000;
 
-    // Collect from scheduled targets + near-term opportunities (route key 기준)
+    // Collect from scheduled targets + near-term opportunities (route key 湲곗?)
     const opportunityIds = new Set<string>();
     const previewInvestmentByOpportunityId = new Map<string, number>();
     for (const key of Object.keys(snipeTargets)) {
@@ -1749,7 +1769,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         previewInvestmentByOpportunityId.set(opportunityId, plannedInvestmentUSDT);
       }
     }
-    // 5시간 이내 펀딩 기회 사전 조회 (스케줄링 시 이론값 fallback 방지)
+    // 5?쒓컙 ?대궡 ???湲고쉶 ?ъ쟾 議고쉶 (?ㅼ?以꾨쭅 ???대줎媛?fallback 諛⑹?)
     const LOOKAHEAD_MS = 5 * 60 * 60 * 1000;
     for (const opp of opportunities) {
       if (opp.nextFundingTime - Date.now() <= LOOKAHEAD_MS) {
@@ -1768,7 +1788,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (existing && now - existing.updatedAt < STALE_MS) return;
 
         try {
-          // 양쪽 모드 중 큰 notional 사용 — 슬리피지는 주문 크기에 비례하므로 보수적 추정
+          // ?묒そ 紐⑤뱶 以???notional ?ъ슜 ???щ━?쇱???二쇰Ц ?ш린??鍮꾨??섎?濡?蹂댁닔??異붿젙
           const previewInvestmentUSDT = previewInvestmentByOpportunityId.get(opportunityId);
           const simNotional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, true, previewInvestmentUSDT);
           const realNotional = getEffectiveNotional(opp, strategyConfig, simBalances, realBalances, false, previewInvestmentUSDT);
@@ -1786,9 +1806,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           if (shortJson.success && longJson.success) {
             const shortSlippage = shortJson.slippagePercent;
             const longSlippage = longJson.slippagePercent;
-            // ★ 핵심: fillPrice로 진입 가격 갭 직접 계산 (슬리피지 + 거래소 간 베이시스 모두 포착)
+            // ???듭떖: fillPrice濡?吏꾩엯 媛寃?媛?吏곸젒 怨꾩궛 (?щ━?쇱? + 嫄곕옒??媛?踰좎씠?쒖뒪 紐⑤몢 ?ъ갑)
             // short(sell) fillPrice < midPrice, long(buy) fillPrice > midPrice
-            // entryGapPct = (longFill - shortFill) / shortFill * 100 → 양수 = 진입 손실
+            // entryGapPct = (longFill - shortFill) / shortFill * 100 ???묒닔 = 吏꾩엯 ?먯떎
             const entryGapPct = ((longJson.fillPrice - shortJson.fillPrice) / shortJson.fillPrice) * 100;
             const hedgeFeePct = getConfiguredHedgeFees(
               strategyConfig,
@@ -1796,7 +1816,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               opp.longExchange,
               'taker',
             ) * 100;
-            // ★ 표시용: 진입갭×1.5 + 수수료 반영 (안전마진은 실행 시점에만 별도 적용)
+            // ???쒖떆?? 吏꾩엯媛??.5 + ?섏닔猷?諛섏쁺 (?덉쟾留덉쭊? ?ㅽ뻾 ?쒖젏?먮쭔 蹂꾨룄 ?곸슜)
             const effectiveSpread = calcNetSpreadPercent(opp.spreadPercent, entryGapPct, hedgeFeePct, 0);
             set(state => ({
               realSpreads: {
@@ -1810,13 +1830,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             }));
           }
         } catch {
-          // Silent — real spread just won't be shown
+          // Silent ??real spread just won't be shown
         }
       }),
     );
   },
 
-  // ── Balance redistribution ────────────────────
+  // ?? Balance redistribution ????????????????????
   redistributeBalances() {
     const { simBalances, simPositions, enabledExchanges, strategyConfig } = get();
     const threshold = strategyConfig.investmentUSDT * 0.5;
@@ -1865,28 +1885,28 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         remaining -= transfer;
 
         get().addLog('info',
-          `[SIM] 잔고 재분배: ${donor.toUpperCase()} → ${target.toUpperCase()} $${fmtNum(transfer, 0)}`,
+          `[SIM] ?붽퀬 ?щ텇諛? ${donor.toUpperCase()} ??${target.toUpperCase()} $${fmtNum(transfer, 0)}`,
           target,
-          `${donor.toUpperCase()} 여유잔고 → ${target.toUpperCase()} (임계값 $${fmtNum(threshold, 0)} 미만 감지)`,
+          `${donor.toUpperCase()} ?ъ쑀?붽퀬 ??${target.toUpperCase()} (?꾧퀎媛?$${fmtNum(threshold, 0)} 誘몃쭔 媛먯?)`,
         );
       }
     }
   },
 
-  // ── Polling ───────────────────────────────────
+  // ?? Polling ???????????????????????????????????
   startPolling() {
     const s = get();
     if (s._ratesInterval) clearInterval(s._ratesInterval);
     if (s._positionsInterval) clearInterval(s._positionsInterval);
 
-    // 첫 데이터가 아직 없으면 1초 후 즉시 재시도 (init 실패 보완)
+    // 泥??곗씠?곌? ?꾩쭅 ?놁쑝硫?1珥???利됱떆 ?ъ떆??(init ?ㅽ뙣 蹂댁셿)
     if (!get().lastRatesUpdate) {
       setTimeout(() => {
         if (!get().lastRatesUpdate) get().refreshRates();
       }, 1000);
     }
 
-    // 5초 간격 펀딩률 + 오더북 폴링 (기회 탐지 속도 향상)
+    // 5珥?媛꾧꺽 ??⑸쪧 + ?ㅻ뜑遺??대쭅 (湲고쉶 ?먯? ?띾룄 ?μ긽)
     const ratesInterval = setInterval(() => {
       get().refreshRates();
       if (get().simSnipeActive || get().realSnipeActive) {
@@ -1900,7 +1920,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         .catch(() => {});
     }, 3_000);
 
-    // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)
+    // 1珥?媛꾧꺽 ?ш?利?+ ?ㅼ?以꾨쭅 (濡쒖뺄 ?곗씠?곕쭔 ?ъ슜, API ?몄텧 ?놁쓬)
     const snipeCheckInterval = setInterval(() => {
       if (get().realSnipeActive) {
         get().revalidateScheduledSnipes();
@@ -1908,12 +1928,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }, 1_000);
 
-    // 3초 간격 SIM 서버 상태 동기화 (API 호출 — 매초는 과도)
+    // 3珥?媛꾧꺽 SIM ?쒕쾭 ?곹깭 ?숆린??(API ?몄텧 ??留ㅼ큹??怨쇰룄)
     const simSyncInterval = setInterval(() => {
       if (get().simSnipeActive || get().simulationMode) {
         void fetchServerSimSchedulerStatus()
           .then((status) => {
-            applyServerSimStateSnapshot(set, status.state);
+            applyServerSimStateSnapshot(set, status.state, { getState: get });
             set({
               simSnipeActive: !!status.active,
               snipeTargets: {
@@ -1940,12 +1960,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       get().fetchFundingHistory();
       if (get().simulationMode || get().simSnipeActive) {
         void fetchServerSimStateSnapshot()
-          .then((snapshot) => applyServerSimStateSnapshot(set, snapshot))
+          .then((snapshot) => applyServerSimStateSnapshot(set, snapshot, { getState: get }))
           .catch(() => {});
       } else {
         get().tickSimFunding();
       }
-      // 잔고 재분배: 잔고 부족 거래소에 여유 거래소에서 균등 분배
+      // ?붽퀬 ?щ텇諛? ?붽퀬 遺議?嫄곕옒?뚯뿉 ?ъ쑀 嫄곕옒?뚯뿉??洹좊벑 遺꾨같
       if (get().simulationMode && !get().simSnipeActive) {
         get().redistributeBalances();
       }
@@ -1960,7 +1980,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     if (_positionsInterval) clearInterval(_positionsInterval);
     if (_snipeCheckInterval) clearInterval(_snipeCheckInterval);
     if (_simSyncInterval) clearInterval(_simSyncInterval);
-    // 모든 코인별 스나이핑 타이머 정리
+    // 紐⑤뱺 肄붿씤蹂??ㅻ굹?댄븨 ??대㉧ ?뺣━
     for (const t of Object.values(_snipeTimers)) clearTimeout(t);
     for (const t of Object.values(_snipeCloseTimers)) clearTimeout(t);
     set({ _ratesInterval: null, _positionsInterval: null, _snipeCheckInterval: null, _simSyncInterval: null, _snipeTimers: {}, _snipeCloseTimers: {}, snipeTargets: {}, snipeAllocations: {} });
@@ -1968,7 +1988,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     flushTrades();
   },
 
-  // ── Execute strategy (hedge only) ─────────────
+  // ?? Execute strategy (hedge only) ?????????????
   async executeStrategy(opportunity, simModeOverride?, investmentOverrideUSDT?) {
     const { apiConfigs, strategyConfig, simBalances, balances } = get();
     const simulationMode = simModeOverride ?? get().simulationMode;
@@ -1978,20 +1998,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const effectiveMinSpread = getEffectiveMinSpread(strategyConfig);
     if (opportunity.spreadPercent < effectiveMinSpread) {
       get().addLog('warning',
-        `스프레드 ${fmtNum(opportunity.spreadPercent, 4)}%가 최소 기준 ${effectiveMinSpread}% 미만 — 진입 스킵`,
+        `?ㅽ봽?덈뱶 ${fmtNum(opportunity.spreadPercent, 4)}%媛 理쒖냼 湲곗? ${effectiveMinSpread}% 誘몃쭔 ??吏꾩엯 ?ㅽ궢`,
         undefined,
-        `${opportunity.baseAsset} ${opportunity.shortExchange}↔${opportunity.longExchange}`,
+        `${opportunity.baseAsset} ${opportunity.shortExchange}??{opportunity.longExchange}`,
       );
       queueTrade({
         timestamp: Date.now(), type: 'guard_block', simulation: simulationMode,
         baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
-        spreadPercent: opportunity.spreadPercent, reason: `스프레드 ${opportunity.spreadPercent.toFixed(4)}% < 최소 ${effectiveMinSpread}%`,
+        spreadPercent: opportunity.spreadPercent, reason: `?ㅽ봽?덈뱶 ${opportunity.spreadPercent.toFixed(4)}% < 理쒖냼 ${effectiveMinSpread}%`,
       });
       return { success: false };
     }
 
-    // Guard: 순수익 검증
-    const notionalEst = (() => {
+    // Guard: ?쒖닔??寃利?    const notionalEst = (() => {
       if (investmentOverrideUSDT != null) return plannedInvestmentUSDT * strategyConfig.leverage;
       if (!strategyConfig.compoundInvesting) return plannedInvestmentUSDT * strategyConfig.leverage;
       if (simulationMode) {
@@ -2006,27 +2025,27 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         ) * strategyConfig.leverage;
       }
     })();
-    // 실측 스프레드 기반 수익성 검증 (effectiveSpread는 표시용 — 안전마진 별도 적용)
+    // ?ㅼ륫 ?ㅽ봽?덈뱶 湲곕컲 ?섏씡??寃利?(effectiveSpread???쒖떆?????덉쟾留덉쭊 蹂꾨룄 ?곸슜)
     const rs = getRealSpreadForOpportunity(get().realSpreads, opportunity);
     const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
     if (hasRS) {
-      // ★ effectiveSpread에는 안전마진 미포함 → 실행 시 별도 차감
+      // ??effectiveSpread?먮뒗 ?덉쟾留덉쭊 誘명룷?????ㅽ뻾 ??蹂꾨룄 李④컧
       const realNetProfit = notionalEst * ((rs.effectiveSpread - SAFETY_MARGIN_PCT) / 100);
       if (realNetProfit <= 0) {
         get().addLog('warning',
-          `[실측 수익성 실패] ${opportunity.baseAsset} 실측 순스프레드 ${fmtNum(rs.effectiveSpread, 4)}% ≤ 0 — 진입 스킵`,
+          `[?ㅼ륫 ?섏씡???ㅽ뙣] ${opportunity.baseAsset} ?ㅼ륫 ?쒖뒪?꾨젅??${fmtNum(rs.effectiveSpread, 4)}% ??0 ??吏꾩엯 ?ㅽ궢`,
           undefined,
-          `진입갭: ${fmtNum(rs.entryGapPct, 4)}% | 슬리피지: 숏${fmtNum(rs.shortSlippage, 3)}% 롱${fmtNum(rs.longSlippage, 3)}%`,
+          `吏꾩엯媛? ${fmtNum(rs.entryGapPct, 4)}% | ?щ━?쇱?: ??{fmtNum(rs.shortSlippage, 3)}% 濡?{fmtNum(rs.longSlippage, 3)}%`,
         );
         queueTrade({
           timestamp: Date.now(), type: 'guard_block', simulation: simulationMode,
           baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
-          spreadPercent: opportunity.spreadPercent, reason: `실측 수익성 실패: 순스프레드 ${rs.effectiveSpread.toFixed(4)}% ≤ 0 (안전마진 포함)`,
+          spreadPercent: opportunity.spreadPercent, reason: `?ㅼ륫 ?섏씡???ㅽ뙣: ?쒖뒪?꾨젅??${rs.effectiveSpread.toFixed(4)}% ??0 (?덉쟾留덉쭊 ?ы븿)`,
         });
         return { success: false };
       }
     } else {
-      // realSpread 없으면 이론값 기반 보수적 검증 (기존 로직)
+      // realSpread ?놁쑝硫??대줎媛?湲곕컲 蹂댁닔??寃利?(湲곗〈 濡쒖쭅)
       const estFundingRevenue = notionalEst * opportunity.spread;
       const estRoundTripFee = getConfiguredHedgeFees(
         strategyConfig,
@@ -2037,20 +2056,20 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const estTotalFees = notionalEst * estRoundTripFee;
       if (estFundingRevenue <= estTotalFees) {
         get().addLog('warning',
-          `[수익성 검증 실패] ${opportunity.baseAsset} 펀딩수익 $${fmtNum(estFundingRevenue)} ≤ 수수료 $${fmtNum(estTotalFees)} — 진입 스킵`,
+          `[?섏씡??寃利??ㅽ뙣] ${opportunity.baseAsset} ??⑹닔??$${fmtNum(estFundingRevenue)} ???섏닔猷?$${fmtNum(estTotalFees)} ??吏꾩엯 ?ㅽ궢`,
           undefined,
-          `스프레드: ${fmtNum(opportunity.spreadPercent, 4)}% | 필요 최소: ${(estRoundTripFee * 100).toFixed(3)}%`,
+          `?ㅽ봽?덈뱶: ${fmtNum(opportunity.spreadPercent, 4)}% | ?꾩슂 理쒖냼: ${(estRoundTripFee * 100).toFixed(3)}%`,
         );
         queueTrade({
           timestamp: Date.now(), type: 'guard_block', simulation: simulationMode,
           baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
-          spreadPercent: opportunity.spreadPercent, reason: `수익성 실패: 펀딩 $${estFundingRevenue.toFixed(2)} ≤ 수수료 $${estTotalFees.toFixed(2)}`,
+          spreadPercent: opportunity.spreadPercent, reason: `?섏씡???ㅽ뙣: ???$${estFundingRevenue.toFixed(2)} ???섏닔猷?$${estTotalFees.toFixed(2)}`,
         });
         return { success: false };
       }
     }
 
-    // Guard: duplicate position — 같은 코인 중복 진입 방지
+    // Guard: duplicate position ??媛숈? 肄붿씤 以묐났 吏꾩엯 諛⑹?
     if (simulationMode) {
       const opportunityLegs = new Set(getOpportunityLegKeys(opportunity));
       const existingPair = get().simPositions.find((position) =>
@@ -2058,15 +2077,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       );
       if (existingPair) {
         get().addLog('warning',
-          `[SIM] ${opportunity.baseAsset} 이미 헷징 포지션 보유 중 — 중복 진입 스킵`,
+          `[SIM] ${opportunity.baseAsset} ?대? ?룹쭠 ?ъ???蹂댁쑀 以???以묐났 吏꾩엯 ?ㅽ궢`,
           undefined,
-          `기존 포지션: ${existingPair.side.toUpperCase()} @ ${existingPair.exchange.toUpperCase()}`,
+          `湲곗〈 ?ъ??? ${existingPair.side.toUpperCase()} @ ${existingPair.exchange.toUpperCase()}`,
         );
         return { success: false };
       }
     }
 
-    // ── Simulation branch ──────────────────────
+    // ?? Simulation branch ??????????????????????
     if (simulationMode) {
       try {
         const response = await fetch('/api/sim-execute', {
@@ -2084,15 +2103,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         } | null;
         if (!response.ok || !payload?.success) {
           const errorMessage = payload?.error || `HTTP ${response.status}`;
-          get().addLog('warning', `[SIM] ${opportunity.baseAsset} 서버 시뮬 진입 실패`, undefined, errorMessage);
+          get().addLog('warning', `[SIM] ${opportunity.baseAsset} ?쒕쾭 ?쒕? 吏꾩엯 ?ㅽ뙣`, undefined, errorMessage);
           return { success: false, error: errorMessage };
         }
 
-        applyServerSimStateSnapshot(set, payload.state);
+        applyServerSimStateSnapshot(set, payload.state, { force: true });
         return { success: true };
       } catch (error) {
         const errorMessage = (error as Error).message;
-        get().addLog('error', `[SIM] ${opportunity.baseAsset} 서버 시뮬 진입 오류`, undefined, errorMessage);
+        get().addLog('error', `[SIM] ${opportunity.baseAsset} ?쒕쾭 ?쒕? 吏꾩엯 ?ㅻ쪟`, undefined, errorMessage);
         return { success: false, error: errorMessage };
       }
 
@@ -2106,9 +2125,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (opportunity.shortMarkPrice <= 0 || opportunity.longMarkPrice <= 0) {
         get().addLog(
           'warning',
-          `[SIM] ${opportunity.baseAsset} 진입 스킵: 유효하지 않은 마크가격`,
+          `[SIM] ${opportunity.baseAsset} 吏꾩엯 ?ㅽ궢: ?좏슚?섏? ?딆? 留덊겕媛寃?,
           undefined,
-          `숏 ${opportunity.shortExchange.toUpperCase()}: ${opportunity.shortMarkPrice}, 롱 ${opportunity.longExchange.toUpperCase()}: ${opportunity.longMarkPrice}`,
+          `??${opportunity.shortExchange.toUpperCase()}: ${opportunity.shortMarkPrice}, 濡?${opportunity.longExchange.toUpperCase()}: ${opportunity.longMarkPrice}`,
         );
         return { success: false };
       }
@@ -2117,20 +2136,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const shortEntryFee = notional * getConfiguredExchangeFee(strategyConfig, shortExchange, 'taker');
       const shortCostPerSide = margin + shortEntryFee;
 
-      // ── 잔고 부족 시 여유 거래소에서 내부 이체 (최소 $1,400 유지) ──
-      const MIN_BALANCE = plannedInvestmentUSDT; // 거래소당 최소 유지 잔고
+      // ?? ?붽퀬 遺議????ъ쑀 嫄곕옒?뚯뿉???대? ?댁껜 (理쒖냼 $1,400 ?좎?) ??
+      const MIN_BALANCE = plannedInvestmentUSDT; // 嫄곕옒?뚮떦 理쒖냼 ?좎? ?붽퀬
       const needsTransfer: { target: ExchangeId; needed: number }[] = [];
       for (const ex of [shortExchange, longExchange]) {
         const bal = simBalances[ex] ?? 0;
         if (bal < shortCostPerSide) {
-          // 최소 유지 잔고 + 거래 비용 확보 (진입 전이므로 보수적으로 short 기준 사용)
+          // 理쒖냼 ?좎? ?붽퀬 + 嫄곕옒 鍮꾩슜 ?뺣낫 (吏꾩엯 ?꾩씠誘濡?蹂댁닔?곸쑝濡?short 湲곗? ?ъ슜)
           const needed = Math.max(shortCostPerSide - bal, MIN_BALANCE - bal);
           needsTransfer.push({ target: ex, needed });
         }
       }
       for (const { target, needed } of needsTransfer) {
-        // 여유 거래소 찾기: 현재 포지션 마진 제외한 실 가용잔고가 최소잔고 이상인 거래소
-        const currentBalances = get().simBalances;
+        // ?ъ쑀 嫄곕옒??李얘린: ?꾩옱 ?ъ???留덉쭊 ?쒖쇅????媛?⑹옍怨좉? 理쒖냼?붽퀬 ?댁긽??嫄곕옒??        const currentBalances = get().simBalances;
         const currentPositions = get().simPositions;
         const donors = Object.entries(currentBalances)
           .filter(([exId]) => exId !== target)
@@ -2154,25 +2172,25 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             },
           }));
           get().addLog('info',
-            `[SIM] 내부 이체: ${donor.exId.toUpperCase()} → ${(target as string).toUpperCase()} $${fmtNum(transfer, 0)}`,
+            `[SIM] ?대? ?댁껜: ${donor.exId.toUpperCase()} ??${(target as string).toUpperCase()} $${fmtNum(transfer, 0)}`,
             target,
-            `${donor.exId.toUpperCase()} 여유: $${fmtNum(donor.surplus, 0)} → 이체 후 ${(target as string).toUpperCase()} 잔고 확보`,
+            `${donor.exId.toUpperCase()} ?ъ쑀: $${fmtNum(donor.surplus, 0)} ???댁껜 ??${(target as string).toUpperCase()} ?붽퀬 ?뺣낫`,
           );
           remaining -= transfer;
         }
 
-        // 이체 후에도 여전히 부족하면 진입 스킵
+        // ?댁껜 ?꾩뿉???ъ쟾??遺議깊븯硫?吏꾩엯 ?ㅽ궢
         if (remaining > 0) {
           get().addLog('warning',
-            `[SIM] ${opportunity.baseAsset} 진입 스킵: ${(target as string).toUpperCase()} 잔고 부족`,
+            `[SIM] ${opportunity.baseAsset} 吏꾩엯 ?ㅽ궢: ${(target as string).toUpperCase()} ?붽퀬 遺議?,
             target,
-            `필요: $${fmtNum(shortCostPerSide, 0)} | 가용: $${fmtNum((get().simBalances[target] ?? 0), 0)} | 이체 가능한 여유 거래소 없음`,
+            `?꾩슂: $${fmtNum(shortCostPerSide, 0)} | 媛?? $${fmtNum((get().simBalances[target] ?? 0), 0)} | ?댁껜 媛?ν븳 ?ъ쑀 嫄곕옒???놁쓬`,
           );
           return { success: false };
         }
       }
 
-      // ── 실제 호가창 기반 체결가 계산 (슬리피지 반영) ──
+      // ?? ?ㅼ젣 ?멸?李?湲곕컲 泥닿껐媛 怨꾩궛 (?щ━?쇱? 諛섏쁺) ??
       let shortFillPrice = opportunity.shortMarkPrice;
       let longFillPrice = opportunity.longMarkPrice;
       try {
@@ -2184,27 +2202,27 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         ]);
         if (shortOB.success) {
           shortFillPrice = shortOB.fillPrice;
-          get().addLog('info', `[SIM] ${opportunity.baseAsset} 숏 체결가: $${fmtNum(shortFillPrice, 2)} (슬리피지: ${fmtNum(shortOB.slippagePercent, 4)}%)`, shortExchange);
+          get().addLog('info', `[SIM] ${opportunity.baseAsset} ??泥닿껐媛: $${fmtNum(shortFillPrice, 2)} (?щ━?쇱?: ${fmtNum(shortOB.slippagePercent, 4)}%)`, shortExchange);
         }
         if (longOB.success) {
           longFillPrice = longOB.fillPrice;
-          get().addLog('info', `[SIM] ${opportunity.baseAsset} 롱 체결가: $${fmtNum(longFillPrice, 2)} (슬리피지: ${fmtNum(longOB.slippagePercent, 4)}%)`, longExchange);
+          get().addLog('info', `[SIM] ${opportunity.baseAsset} 濡?泥닿껐媛: $${fmtNum(longFillPrice, 2)} (?щ━?쇱?: ${fmtNum(longOB.slippagePercent, 4)}%)`, longExchange);
         }
       } catch (err) {
-        get().addLog('warning', `[SIM] ${opportunity.baseAsset} 호가창 조회 실패 — 마크가격 사용`, undefined, (err as Error).message);
+        get().addLog('warning', `[SIM] ${opportunity.baseAsset} ?멸?李?議고쉶 ?ㅽ뙣 ??留덊겕媛寃??ъ슜`, undefined, (err as Error).message);
       }
 
-      // ── 진입 갭 계산 및 롱 노셔널 조정 ──
+      // ?? 吏꾩엯 媛?怨꾩궛 諛?濡??몄뀛??議곗젙 ??
       const entryGapPercent = ((shortFillPrice - longFillPrice) / ((shortFillPrice + longFillPrice) / 2)) * 100;
-      get().addLog('info', `[SIM] ${opportunity.baseAsset} 진입 갭: ${entryGapPercent.toFixed(4)}% (숏:$${fmtNum(shortFillPrice, 2)} 롱:$${fmtNum(longFillPrice, 2)})`);
-      // Gap > 0.1% → 롱 노셔널 조정으로 양쪽 수량(계약 수) 일치 → 델타 중립
+      get().addLog('info', `[SIM] ${opportunity.baseAsset} 吏꾩엯 媛? ${entryGapPercent.toFixed(4)}% (??$${fmtNum(shortFillPrice, 2)} 濡?$${fmtNum(longFillPrice, 2)})`);
+      // Gap > 0.1% ??濡??몄뀛??議곗젙?쇰줈 ?묒そ ?섎웾(怨꾩빟 ?? ?쇱튂 ???명? 以묐┰
       let adjustedLongNotional = notional;
       if (Math.abs(entryGapPercent) > 0.1) {
         adjustedLongNotional = notional * (longFillPrice / shortFillPrice);
-        get().addLog('info', `[SIM] ${opportunity.baseAsset} 롱 노셔널 조정: $${fmtNum(notional, 2)} → $${fmtNum(adjustedLongNotional, 2)} (수량 균등화)`);
+        get().addLog('info', `[SIM] ${opportunity.baseAsset} 濡??몄뀛??議곗젙: $${fmtNum(notional, 2)} ??$${fmtNum(adjustedLongNotional, 2)} (?섎웾 洹좊벑??`);
       }
 
-      // ── 양쪽 별도 수수료/마진/비용 계산 ──
+      // ?? ?묒そ 蹂꾨룄 ?섏닔猷?留덉쭊/鍮꾩슜 怨꾩궛 ??
       const longEntryFee = adjustedLongNotional * getConfiguredExchangeFee(strategyConfig, longExchange, 'taker');
       const longMargin = adjustedLongNotional / leverage;
       const longCostPerSide = longMargin + longEntryFee;
@@ -2271,7 +2289,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         entryGapPercent,
       };
 
-      // 펀딩 수익: 각 다리의 실제 노셔널 기준으로 계산
+      // ????섏씡: 媛??ㅻ━???ㅼ젣 ?몄뀛??湲곗??쇰줈 怨꾩궛
       const perFunding = notional * opportunity.shortRate - adjustedLongNotional * opportunity.longRate;
       set(s => ({
         simPositions: [...s.simPositions, shortPos, longPos],
@@ -2286,12 +2304,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const st1 = get();
       saveSimState({ simBalances: st1.simBalances, simInitialBalances: st1.simInitialBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simTotalClosedPnl: st1.simTotalClosedPnl, simClosedPnlPerExchange: st1.simClosedPnlPerExchange, simClosedFeesPerExchange: st1.simClosedFeesPerExchange });
       const totalRoundTripFees = notional * getConfiguredExchangeFee(strategyConfig, shortExchange, 'taker') * 2
-        + adjustedLongNotional * getConfiguredExchangeFee(strategyConfig, longExchange, 'taker') * 2; // 진입+청산 보수적 추정
+        + adjustedLongNotional * getConfiguredExchangeFee(strategyConfig, longExchange, 'taker') * 2; // 吏꾩엯+泥?궛 蹂댁닔??異붿젙
       const netProfit = perFunding - totalRoundTripFees;
       get().addLog('success',
-        `[SIM] ${opportunity.baseAsset} 헷징 진입 완료 (${isSnipe ? '스나이프' : '홀딩'})`,
+        `[SIM] ${opportunity.baseAsset} ?룹쭠 吏꾩엯 ?꾨즺 (${isSnipe ? '?ㅻ굹?댄봽' : '???})`,
         undefined,
-        `숏:${shortExchange.toUpperCase()} 롱:${longExchange.toUpperCase()} | isSnipe:${isSnipe} | pairId:${pairId} | 마진:$${fmtNum(margin)} | 레버리지:${leverage}x | 스프레드:${fmtNum(opportunity.spreadPercent, 4)}% | 다음펀딩:${new Date(opportunity.nextFundingTime).toLocaleTimeString('ko-KR')} | 8h순수익: $${fmtNum(netProfit)} (펀딩: $${fmtNum(perFunding)} - 수수료: $${fmtNum(totalRoundTripFees)})`,
+        `??${shortExchange.toUpperCase()} 濡?${longExchange.toUpperCase()} | isSnipe:${isSnipe} | pairId:${pairId} | 留덉쭊:$${fmtNum(margin)} | ?덈쾭由ъ?:${leverage}x | ?ㅽ봽?덈뱶:${fmtNum(opportunity.spreadPercent, 4)}% | ?ㅼ쓬???${new Date(opportunity.nextFundingTime).toLocaleTimeString('ko-KR')} | 8h?쒖닔?? $${fmtNum(netProfit)} (??? $${fmtNum(perFunding)} - ?섏닔猷? $${fmtNum(totalRoundTripFees)})`,
       );
       // Persist trade event
       queueTrade({
@@ -2315,17 +2333,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return { success: true };
     }
 
-    // ── Real trading branch ────────────────────
+    // ?? Real trading branch ????????????????????
     const shortConfig = apiConfigs[opportunity.shortExchange];
     const longConfig = apiConfigs[opportunity.longExchange];
 
     if (!shortConfig) {
-      get().addLog('error', `${opportunity.shortExchange.toUpperCase()} API 키 없음`, opportunity.shortExchange);
-      return { success: false, error: `${opportunity.shortExchange.toUpperCase()} API 키 없음` };
+      get().addLog('error', `${opportunity.shortExchange.toUpperCase()} API ???놁쓬`, opportunity.shortExchange);
+      return { success: false, error: `${opportunity.shortExchange.toUpperCase()} API ???놁쓬` };
     }
     if (!longConfig) {
-      get().addLog('error', `${opportunity.longExchange.toUpperCase()} API 키 없음`, opportunity.longExchange);
-      return { success: false, error: `${opportunity.longExchange.toUpperCase()} API 키 없음` };
+      get().addLog('error', `${opportunity.longExchange.toUpperCase()} API ???놁쓬`, opportunity.longExchange);
+      return { success: false, error: `${opportunity.longExchange.toUpperCase()} API ???놁쓬` };
     }
 
     let realInvestment = plannedInvestmentUSDT;
@@ -2334,11 +2352,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const longBal = balances[opportunity.longExchange]?.availableUSDT ?? 0;
       realInvestment = Math.min(shortBal, longBal) * 0.9;
       if (realInvestment < plannedInvestmentUSDT) {
-        // 잔고 부족 시 진입 스킵 (폴백 없음 — 잔고 재분배로 해결해야 함)
-        get().addLog('warning', `[복리] 실잔고 부족 — 진입 스킵`,
+        // ?붽퀬 遺議???吏꾩엯 ?ㅽ궢 (?대갚 ?놁쓬 ???붽퀬 ?щ텇諛곕줈 ?닿껐?댁빞 ??
+        get().addLog('warning', `[蹂듬━] ?ㅼ옍怨?遺議???吏꾩엯 ?ㅽ궢`,
           undefined,
-          `숏(${opportunity.shortExchange.toUpperCase()}): $${fmtNum(shortBal, 0)} | 롱(${opportunity.longExchange.toUpperCase()}): $${fmtNum(longBal, 0)} | 필요: $${fmtNum(plannedInvestmentUSDT, 0)}`);
-        return { success: false, error: '실잔고 부족 — 거래소 간 잔고 재분배 필요' };
+          `??${opportunity.shortExchange.toUpperCase()}): $${fmtNum(shortBal, 0)} | 濡?${opportunity.longExchange.toUpperCase()}): $${fmtNum(longBal, 0)} | ?꾩슂: $${fmtNum(plannedInvestmentUSDT, 0)}`);
+        return { success: false, error: '?ㅼ옍怨?遺議???嫄곕옒??媛??붽퀬 ?щ텇諛??꾩슂' };
       }
     }
 
@@ -2346,16 +2364,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       feeOverrides: strategyConfig.feeOverrides,
     });
     get().addLog('info',
-      `전략 실행 시작: ${opportunity.baseAsset} | 숏:${opportunity.shortExchange.toUpperCase()} 롱:${opportunity.longExchange.toUpperCase()}`,
+      `?꾨왂 ?ㅽ뻾 ?쒖옉: ${opportunity.baseAsset} | ??${opportunity.shortExchange.toUpperCase()} 濡?${opportunity.longExchange.toUpperCase()}`,
       undefined,
-      `투자금: $${fmtNum(realInvestment, 0)} | 예상 8h순수익: $${fmtNum(previewProfit.netPerFunding)} (수수료: -$${fmtNum(previewProfit.totalFees)})`,
+      `?ъ옄湲? $${fmtNum(realInvestment, 0)} | ?덉긽 8h?쒖닔?? $${fmtNum(previewProfit.netPerFunding)} (?섏닔猷? -$${fmtNum(previewProfit.totalFees)})`,
     );
 
     const pairId = `pair-${Date.now()}-${opportunity.baseAsset}`;
     set({ strategyRunning: true });
 
     try {
-      // ── 헷징 실거래: 숏+롱 동시 진입 ──
+      // ?? ?룹쭠 ?ㅺ굅?? ??濡??숈떆 吏꾩엯 ??
       const res = await fetch('/api/strategy/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2365,14 +2383,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           leverage: strategyConfig.leverage,
           pairId,
           feeOverrides: strategyConfig.feeOverrides,
-          // apiConfigs는 서버 측 암호화 저장소에서 로드 (클라이언트 전송 X)
+          // apiConfigs???쒕쾭 痢??뷀샇????μ냼?먯꽌 濡쒕뱶 (?대씪?댁뼵???꾩넚 X)
         }),
       });
 
       const json = await res.json() as ExecuteStrategyResult;
       const result: ExecuteStrategyResult = { ...json, pairId: json.pairId ?? pairId };
 
-      // Guard 차단 응답 처리 (슬리피지 초과, 수익성 미달 등)
+      // Guard 李⑤떒 ?묐떟 泥섎━ (?щ━?쇱? 珥덇낵, ?섏씡??誘몃떖 ??
       if (!result.success && !result.short && !result.long) {
         const { reason, error: errorMsg } = result;
         const detailParts: string[] = [];
@@ -2399,7 +2417,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           );
         }
         get().addLog('warning',
-          `${opportunity.baseAsset} 진입 차단: ${errorMsg || '사전 검증 실패'}`,
+          `${opportunity.baseAsset} 吏꾩엯 李⑤떒: ${errorMsg || '?ъ쟾 寃利??ㅽ뙣'}`,
           undefined,
           `reason: ${reason || 'unknown'}${detailParts.length > 0 ? ` | ${detailParts.join(' | ')}` : ''}`,
         );
@@ -2416,13 +2434,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       if (result.short?.success) {
         get().addLog('success',
-          `${opportunity.shortExchange.toUpperCase()} 숏 포지션 진입 성공`,
+          `${opportunity.shortExchange.toUpperCase()} ???ъ???吏꾩엯 ?깃났`,
           opportunity.shortExchange,
           `${opportunity.baseAsset} Short @${fmtNum(result.short.data?.price ?? opportunity.shortMarkPrice, 4)} | fee -$${fmtNum(result.short.data?.estimatedFee ?? 0, 4)} | ${result.short.data?.liquidity ?? 'unknown'}`,
         );
       } else {
         get().addLog('error',
-          `${opportunity.shortExchange.toUpperCase()} 숏 포지션 진입 실패`,
+          `${opportunity.shortExchange.toUpperCase()} ???ъ???吏꾩엯 ?ㅽ뙣`,
           opportunity.shortExchange,
           result.short?.error,
         );
@@ -2430,13 +2448,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       if (result.long?.success) {
         get().addLog('success',
-          `${opportunity.longExchange.toUpperCase()} 롱 포지션 진입 성공`,
+          `${opportunity.longExchange.toUpperCase()} 濡??ъ???吏꾩엯 ?깃났`,
           opportunity.longExchange,
           `${opportunity.baseAsset} Long @${fmtNum(result.long.data?.price ?? opportunity.longMarkPrice, 4)} | fee -$${fmtNum(result.long.data?.estimatedFee ?? 0, 4)} | ${result.long.data?.liquidity ?? 'unknown'}`,
         );
       } else {
         get().addLog('error',
-          `${opportunity.longExchange.toUpperCase()} 롱 포지션 진입 실패`,
+          `${opportunity.longExchange.toUpperCase()} 濡??ъ???吏꾩엯 ?ㅽ뙣`,
           opportunity.longExchange,
           result.long?.error,
         );
@@ -2508,7 +2526,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
       return result;
     } catch (err) {
-      get().addLog('error', '전략 실행 중 오류 발생', undefined, (err as Error).message);
+      get().addLog('error', '?꾨왂 ?ㅽ뻾 以??ㅻ쪟 諛쒖깮', undefined, (err as Error).message);
       queueTrade({
         timestamp: Date.now(), type: 'error', simulation: false,
         baseAsset: opportunity.baseAsset, reason: (err as Error).message,
@@ -2519,16 +2537,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
   },
 
-  // ── Close position ────────────────────────────
+  // ?? Close position ????????????????????????????
   async closePosition(position) {
     const { apiConfigs } = get();
     const config = apiConfigs[position.exchange];
     if (!config) {
-      get().addLog('error', `${position.exchange.toUpperCase()} API 키 없음`, position.exchange);
-      throw new Error(`${position.exchange.toUpperCase()} API 키 없음`);
+      get().addLog('error', `${position.exchange.toUpperCase()} API ???놁쓬`, position.exchange);
+      throw new Error(`${position.exchange.toUpperCase()} API ???놁쓬`);
     }
 
-    get().addLog('info', `포지션 청산 시도: ${position.displaySymbol} ${position.side}`, position.exchange);
+    get().addLog('info', `?ъ???泥?궛 ?쒕룄: ${position.displaySymbol} ${position.side}`, position.exchange);
 
     try {
       const res = await fetch(`/api/exchanges/${position.exchange}/close`, {
@@ -2567,7 +2585,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         };
 
         get().addLog('success',
-          `${position.displaySymbol} ${position.side.toUpperCase()} 청산 완료`,
+          `${position.displaySymbol} ${position.side.toUpperCase()} 泥?궛 ?꾨즺`,
           position.exchange,
           `exit @${fmtNum(json.data.price, 4)} | pricePnL ${pricePnl >= 0 ? '+' : ''}$${fmtNum(pricePnl, 4)} | fees -$${fmtNum(entryFee + exitFee, 4)}`,
         );
@@ -2598,21 +2616,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         setTimeout(() => get().refreshPositions(), 2000);
         return closeResult;
       } else {
-        get().addLog('error', `청산 실패: ${json.error}`, position.exchange);
-        throw new Error(`청산 실패: ${json.error}`);
+        get().addLog('error', `泥?궛 ?ㅽ뙣: ${json.error}`, position.exchange);
+        throw new Error(`泥?궛 ?ㅽ뙣: ${json.error}`);
       }
     } catch (err) {
-      get().addLog('error', '청산 중 오류', position.exchange, (err as Error).message);
+      get().addLog('error', '泥?궛 以??ㅻ쪟', position.exchange, (err as Error).message);
       throw err;
     }
   },
 
-  // ── Test connection ───────────────────────────
+  // ?? Test connection ???????????????????????????
   async testConnection(exchange) {
     const config = get().apiConfigs[exchange];
     if (!config) return false;
 
-    get().addLog('info', `${exchange.toUpperCase()} 연결 테스트 중...`, exchange);
+    get().addLog('info', `${exchange.toUpperCase()} ?곌껐 ?뚯뒪??以?..`, exchange);
 
     try {
       const res = await fetch(`/api/exchanges/${exchange}/test`, {
@@ -2622,18 +2640,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const json = await res.json() as { success: boolean; error?: string };
 
       if (json.success) {
-        get().addLog('success', `${exchange.toUpperCase()} 연결 성공`, exchange);
+        get().addLog('success', `${exchange.toUpperCase()} ?곌껐 ?깃났`, exchange);
       } else {
-        get().addLog('error', `${exchange.toUpperCase()} 연결 실패`, exchange, json.error);
+        get().addLog('error', `${exchange.toUpperCase()} ?곌껐 ?ㅽ뙣`, exchange, json.error);
       }
       return json.success;
     } catch (err) {
-      get().addLog('error', `${exchange.toUpperCase()} 연결 오류`, exchange, (err as Error).message);
+      get().addLog('error', `${exchange.toUpperCase()} ?곌껐 ?ㅻ쪟`, exchange, (err as Error).message);
       return false;
     }
   },
 
-  // ── Logs ──────────────────────────────────────
+  // ?? Logs ??????????????????????????????????????
   addLog(level, message, exchange, detail) {
     set((s) => {
       const newLogs = [makeLog(level, message, exchange, detail), ...s.logs].slice(0, 500);
@@ -2649,14 +2667,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     saveLogs([]);
   },
 
-  // ── Simulation ────────────────────────────────
+  // ?? Simulation ????????????????????????????????
   async toggleSimulationMode() {
     const current = get().simulationMode;
     const next = !current;
-    // 모드 전환 시 스나이프를 취소하지 않음 — 각 모드가 독립적으로 동시 실행
+    // 紐⑤뱶 ?꾪솚 ???ㅻ굹?댄봽瑜?痍⑥냼?섏? ?딆쓬 ??媛?紐⑤뱶媛 ?낅┰?곸쑝濡??숈떆 ?ㅽ뻾
     set({ simulationMode: next });
-    // 모드 상태 영속화
-    saveSimMode(next);
+    // 紐⑤뱶 ?곹깭 ?곸냽??    saveSimMode(next);
     try {
       const sharedState = await updateSharedSnipeStateSnapshot({ simulationMode: next });
       applySharedSnipeStateSnapshot(set, sharedState);
@@ -2675,7 +2692,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   resetSimulation() {
-    const perExchange = get().strategyConfig.investmentUSDT * 2; // 거래소당 투자금×2 (숏/롱 양쪽)
+    const perExchange = get().strategyConfig.investmentUSDT * 2; // 嫄곕옒?뚮떦 ?ъ옄湲댠? (??濡??묒そ)
     const enabled = get().enabledExchanges;
     const newBal = {} as Record<ExchangeId, number>;
     for (const ex of SUPPORTED_EXCHANGES) {
@@ -2704,13 +2721,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }),
     }).then(r => r.json()).then((res: { success?: boolean; data?: SimStateSnapshot }) => {
       if (res.success && res.data) {
-        applyServerSimStateSnapshot(set, res.data);
+        applyServerSimStateSnapshot(set, res.data, { force: true });
       }
     }).catch(() => {});
-    // 서버 측 거래내역 + 로그도 초기화
-    fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
+    // ?쒕쾭 痢?嫄곕옒?댁뿭 + 濡쒓렇??珥덇린??    fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
     fetch('/api/logs/clear', { method: 'DELETE' }).catch(() => {});
-    get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${perExchange} 리셋`);
+    get().addLog('info', `[SIM] 珥덇린???꾨즺 ??媛?嫄곕옒??$${perExchange} 由ъ뀑`);
   },
 
   clearSimFundingHistory() {
@@ -2721,7 +2737,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'clearFundingHistory' }),
     }).catch(() => {});
-    get().addLog('info', '[SIM] 펀딩 수령 내역 초기화 완료');
+    get().addLog('info', '[SIM] ????섎졊 ?댁뿭 珥덇린???꾨즺');
   },
 
   async closeSimPosition(simId) {
@@ -2738,7 +2754,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         error?: string;
       } | null;
       if (response.ok && payload?.success) {
-        applyServerSimStateSnapshot(set, payload.state);
+        applyServerSimStateSnapshot(set, payload.state, { force: true });
         return payload.result ?? null;
       }
     } catch {
@@ -2748,41 +2764,40 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const pos = get().simPositions.find(p => p.simId === simId);
     if (!pos) return null;
 
-    // ── 실제 호가창 기반 청산 체결가 (슬리피지 반영) ──
+    // ?? ?ㅼ젣 ?멸?李?湲곕컲 泥?궛 泥닿껐媛 (?щ━?쇱? 諛섏쁺) ??
     let exitPrice = pos.markPrice;
     try {
       const exitSide = pos.side === 'short' ? 'buy' : 'sell';
       const res = await fetch(`/api/exchanges/${pos.exchange}/orderbook?symbol=${encodeURIComponent(pos.symbol)}&side=${exitSide}&notional=${pos.sizeUSD}`).then(r => r.json());
       if (res.success) {
         exitPrice = res.fillPrice;
-        get().addLog('info', `[SIM] ${pos.baseAsset} ${pos.side} 청산 체결가: $${fmtNum(exitPrice, 2)} (슬리피지: ${fmtNum(res.slippagePercent, 4)}%)`, pos.exchange);
+        get().addLog('info', `[SIM] ${pos.baseAsset} ${pos.side} 泥?궛 泥닿껐媛: $${fmtNum(exitPrice, 2)} (?щ━?쇱?: ${fmtNum(res.slippagePercent, 4)}%)`, pos.exchange);
       }
     } catch {
-      // 호가창 조회 실패 시 markPrice 사용
+      // ?멸?李?議고쉶 ?ㅽ뙣 ??markPrice ?ъ슜
     }
 
-    const exitNotional = pos.size * exitPrice; // 현재 가격 기반 실제 청산 노셔널
-    const exitFee = exitNotional * getConfiguredExchangeFee(get().strategyConfig, pos.exchange, 'taker');
+    const exitNotional = pos.size * exitPrice; // ?꾩옱 媛寃?湲곕컲 ?ㅼ젣 泥?궛 ?몄뀛??    const exitFee = exitNotional * getConfiguredExchangeFee(get().strategyConfig, pos.exchange, 'taker');
     const pricePnl = pos.side === 'short'
       ? (pos.entryPrice - exitPrice) * pos.size
       : (exitPrice - pos.entryPrice) * pos.size;
 
-    // ── 스나이프 펀딩 직접 계산 (tickSimFunding 의존 X) ──
+    // ?? ?ㅻ굹?댄봽 ???吏곸젒 怨꾩궛 (tickSimFunding ?섏〈 X) ??
     let actualFunding = pos.fundingCollected;
     if (pos.isSnipe && actualFunding === 0) {
-      // tickSimFunding에서 처리 못 한 경우 직접 계산
-      // ★ 진입 시점 fundingRate 사용 — 청산 시점 liveRate는 이미 다음 주기로 갱신됐을 수 있음
+      // tickSimFunding?먯꽌 泥섎━ 紐???寃쎌슦 吏곸젒 怨꾩궛
+      // ??吏꾩엯 ?쒖젏 fundingRate ?ъ슜 ??泥?궛 ?쒖젏 liveRate???대? ?ㅼ쓬 二쇨린濡?媛깆떊?먯쓣 ???덉쓬
       const currentRate = pos.fundingRate;
       actualFunding = pos.side === 'short'
         ? pos.sizeUSD * currentRate
         : pos.sizeUSD * (-currentRate);
-      // 잔고에도 반영
+      // ?붽퀬?먮룄 諛섏쁺
       set(s => ({
         simBalances: { ...s.simBalances, [pos.exchange]: (s.simBalances[pos.exchange] ?? 0) + actualFunding },
         simTotalFundingEarned: s.simTotalFundingEarned + actualFunding,
       }));
       get().addLog('info',
-        `[SIM] 펀딩 직접 계산: ${pos.baseAsset} ${pos.side.toUpperCase()}`,
+        `[SIM] ???吏곸젒 怨꾩궛: ${pos.baseAsset} ${pos.side.toUpperCase()}`,
         pos.exchange,
         `$${fmtNum(Math.abs(actualFunding), 4)} (rate: ${fmtNum(currentRate * 100, 4)}%)`,
       );
@@ -2791,7 +2806,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const returnAmount = pos.margin + pricePnl - exitFee;
     const netPnl = pricePnl + actualFunding - (pos.entryFee ?? 0) - exitFee;
 
-    // ── 펀딩 수령 내역 기록: tickSimFunding이 이미 기록한 경우 스킵 (fallback 직접계산인 경우만 기록) ──
+    // ?? ????섎졊 ?댁뿭 湲곕줉: tickSimFunding???대? 湲곕줉??寃쎌슦 ?ㅽ궢 (fallback 吏곸젒怨꾩궛??寃쎌슦留?湲곕줉) ??
     const alreadyRecordedByTick = pos.fundingCollected > 0 && actualFunding === pos.fundingCollected;
     const fundingPayment: FundingPayment | null = (actualFunding !== 0 && !alreadyRecordedByTick)
       ? { exchange: pos.exchange, symbol: pos.symbol, amount: actualFunding, rate: pos.fundingRate, timestamp: Date.now(), side: pos.side }
@@ -2821,9 +2836,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const st2 = get();
     saveSimState({ simBalances: st2.simBalances, simInitialBalances: st2.simInitialBalances, simPositions: st2.simPositions, simTotalFundingEarned: st2.simTotalFundingEarned, simTotalTopUps: st2.simTotalTopUps, simTotalFees: st2.simTotalFees, simTotalClosedPnl: st2.simTotalClosedPnl, simClosedPnlPerExchange: st2.simClosedPnlPerExchange, simClosedFeesPerExchange: st2.simClosedFeesPerExchange });
     get().addLog(netPnl >= 0 ? 'success' : 'warning',
-      `[SIM] 포지션 청산: ${pos.displaySymbol} ${pos.side.toUpperCase()}`,
+      `[SIM] ?ъ???泥?궛: ${pos.displaySymbol} ${pos.side.toUpperCase()}`,
       pos.exchange,
-      `순손익: ${netPnl >= 0 ? '+' : ''}$${fmtNum(netPnl)} (펀딩: $${fmtNum(actualFunding, 4)}, 가격손익: $${fmtNum(pricePnl)}, 수수료: -$${fmtNum((pos.entryFee ?? 0) + exitFee)})`,
+      `?쒖넀?? ${netPnl >= 0 ? '+' : ''}$${fmtNum(netPnl)} (??? $${fmtNum(actualFunding, 4)}, 媛寃⑹넀?? $${fmtNum(pricePnl)}, ?섏닔猷? -$${fmtNum((pos.entryFee ?? 0) + exitFee)})`,
     );
     queueTrade({
       timestamp: Date.now(), type: pos.isSnipe ? 'snipe_exit' : 'exit', simulation: true,
@@ -2858,9 +2873,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       balanceDeltaHedge[pos.exchange] = (balanceDeltaHedge[pos.exchange] ?? 0) + funding;
       pendingLogs.push({
         level: funding >= 0 ? 'success' : 'warning',
-        message: `[SIM] 펀딩 ${funding >= 0 ? '수령' : '지불'}: ${pos.baseAsset} ${pos.side.toUpperCase()}`,
+        message: `[SIM] ???${funding >= 0 ? '?섎졊' : '吏遺?}: ${pos.baseAsset} ${pos.side.toUpperCase()}`,
         exchange: pos.exchange,
-        detail: `$${fmtNum(Math.abs(funding), 4)} (${fmtNum(currentRate * 100, 4)}%${liveRate ? '' : ' [진입시rate]'})`,
+        detail: `$${fmtNum(Math.abs(funding), 4)} (${fmtNum(currentRate * 100, 4)}%${liveRate ? '' : ' [吏꾩엯?쐒ate]'})`,
       });
       queueTrade({
         timestamp: Date.now(), type: 'funding', simulation: true,
@@ -2887,16 +2902,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const snipeToClose = updated.filter(p => p.isSnipe && (p.fundingReceived ?? 0) >= 1);
 
-    // 디버그: 스나이프 자동청산 판단 로그
+    // ?붾쾭洹? ?ㅻ굹?댄봽 ?먮룞泥?궛 ?먮떒 濡쒓렇
     if (updated.some(p => p.isSnipe)) {
       const snipePositions = updated.filter(p => p.isSnipe);
       for (const p of snipePositions) {
         if ((p.fundingReceived ?? 0) >= 1) {
           pendingLogs.push({
             level: 'info',
-            message: `[스나이프 청산대기] ${p.baseAsset} ${p.side} — fundingReceived:${p.fundingReceived} → 자동청산 예정`,
+            message: `[?ㅻ굹?댄봽 泥?궛?湲? ${p.baseAsset} ${p.side} ??fundingReceived:${p.fundingReceived} ???먮룞泥?궛 ?덉젙`,
             exchange: p.exchange,
-            detail: `simId:${p.simId} | pairId:${p.pairId} | 수령펀딩:$${fmtNum(p.fundingCollected, 4)}`,
+            detail: `simId:${p.simId} | pairId:${p.pairId} | ?섎졊???$${fmtNum(p.fundingCollected, 4)}`,
           });
         }
       }
@@ -2928,20 +2943,20 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       get().addLog(log.level, log.message, log.exchange, log.detail);
     }
 
-    // 텔레그램: 펀딩 수익 알림 (합산 메시지)
+    // ?붾젅洹몃옩: ????섏씡 ?뚮┝ (?⑹궛 硫붿떆吏)
     if (simFundingPayments.length > 0 && totalNewFunding !== 0) {
       const lines = simFundingPayments.map(p =>
         `  ${p.exchange.toUpperCase()} ${p.symbol} (${p.side}): ${p.amount >= 0 ? '+' : ''}$${p.amount.toFixed(4)}`
       );
-      const icon = totalNewFunding >= 0 ? '💰' : '💸';
+      const icon = totalNewFunding >= 0 ? '?뮥' : '?뮯';
       void sendTelegramMessage([
-        `${icon} <b>[SIM] 펀딩 수령: ${simFundingPayments.length}건</b>`,
+        `${icon} <b>[SIM] ????섎졊: ${simFundingPayments.length}嫄?/b>`,
         ...lines,
-        `\n합계: ${totalNewFunding >= 0 ? '+' : ''}$${totalNewFunding.toFixed(4)}`,
+        `\n?⑷퀎: ${totalNewFunding >= 0 ? '+' : ''}$${totalNewFunding.toFixed(4)}`,
       ].join('\n'));
     }
 
-    // 텔레그램: 잔고 부족 경고 (평균 대비 50% 이하, 30분 쿨다운)
+    // ?붾젅洹몃옩: ?붽퀬 遺議?寃쎄퀬 (?됯퇏 ?鍮?50% ?댄븯, 30遺?荑⑤떎??
     {
       const st = get();
       const bals = st.enabledExchanges.map(ex => ({
@@ -2958,7 +2973,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               lowBalance: b.balance,
               avgBalance: avg,
               exchanges: bals,
-              simulation: true, // tickSimFunding은 항상 SIM 전용
+              simulation: true, // tickSimFunding? ??긽 SIM ?꾩슜
             }));
             break;
           }
@@ -2966,13 +2981,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }
 
-    // 스나이핑: 펀딩 수령 완료 → 즉시 청산 → 다음 사이클 재예약
-    if (snipeToClose.length > 0) {
+    // ?ㅻ굹?댄븨: ????섎졊 ?꾨즺 ??利됱떆 泥?궛 ???ㅼ쓬 ?ъ씠???ъ삁??    if (snipeToClose.length > 0) {
       queueMicrotask(async () => {
-        // 포지션 닫기 전에 pair 정보 캡처 (닫은 후에는 simPositions에서 사라짐)
+        // ?ъ????リ린 ?꾩뿉 pair ?뺣낫 罹≪쿂 (?レ? ?꾩뿉??simPositions?먯꽌 ?щ씪吏?
         const positionsSnapshot = [...get().simPositions];
 
-        // 청산 후 실제 결과를 수집
+        // 泥?궛 ???ㅼ젣 寃곌낵瑜??섏쭛
         const closeResults: { pos: typeof snipeToClose[0]; result: { netPnl: number; funding: number } | null }[] = [];
         for (const pos of snipeToClose) {
           const result = await get().closeSimPosition(pos.simId);
@@ -2980,12 +2994,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }
         const totalCollected = snipeToClose.reduce((s, p) => s + p.fundingCollected, 0);
         get().addLog('success',
-          `[스나이핑] 펀딩 수령 완료 → ${snipeToClose.length}개 포지션 자동 청산`,
+          `[?ㅻ굹?댄븨] ????섎졊 ?꾨즺 ??${snipeToClose.length}媛??ъ????먮룞 泥?궛`,
           undefined,
-          `총 수령: $${fmtNum(totalCollected, 4)}`,
+          `珥??섎졊: $${fmtNum(totalCollected, 4)}`,
         );
 
-        // 텔레그램: 스나이프 완료 알림 — 실제 청산 결과(fillPrice 기반 netPnl) 사용
+        // ?붾젅洹몃옩: ?ㅻ굹?댄봽 ?꾨즺 ?뚮┝ ???ㅼ젣 泥?궛 寃곌낵(fillPrice 湲곕컲 netPnl) ?ъ슜
         const byAsset = new Map<string, { short: string; long: string; funding: number; pnl: number }>();
         for (const { pos, result } of closeResults) {
           const pair = positionsSnapshot.find(p => p.pairId === pos.pairId && p.simId !== pos.simId);
@@ -3008,16 +3022,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             longExchange: info.long,
             fundingCollected: info.funding,
             pnl: info.pnl,
-            simulation: true, // tickSimFunding은 SIM 전용
+            simulation: true, // tickSimFunding? SIM ?꾩슜
           }));
         }
 
-        // 청산된 코인들 타이머 정리 + 다음 사이클 자동 재예약
-        const closedKeys = [...new Set(
+        // 泥?궛??肄붿씤????대㉧ ?뺣━ + ?ㅼ쓬 ?ъ씠???먮룞 ?ъ삁??        const closedKeys = [...new Set(
           snipeToClose.map((position) => getSimPositionOpportunityKey(position, positionsSnapshot)),
         )];
         for (const key of closedKeys) {
-          get().cancelSnipeForAsset(mkSnipeKey(true, key)); // tickSimFunding은 SIM 전용
+          get().cancelSnipeForAsset(mkSnipeKey(true, key)); // tickSimFunding? SIM ?꾩슜
         }
         if (get().simSnipeActive || get().realSnipeActive) {
           get().scheduleAllSnipes();
@@ -3025,22 +3038,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       });
     }
 
-    // 홀딩: 스프레드 역전 감지 → 자동 청산
+    // ??? ?ㅽ봽?덈뱶 ??쟾 媛먯? ???먮룞 泥?궛
   },
 
-  // ── Exchange Toggle ─────────────────────────
+  // ?? Exchange Toggle ?????????????????????????
   toggleExchange(exchange) {
     const { enabledExchanges, simPositions } = get();
 
-    // 해당 거래소에 열린 포지션이 있으면 OFF 불가 (시뮬 + 실거래 모두 체크)
+    // ?대떦 嫄곕옒?뚯뿉 ?대┛ ?ъ??섏씠 ?덉쑝硫?OFF 遺덇? (?쒕? + ?ㅺ굅??紐⑤몢 泥댄겕)
     if (enabledExchanges.includes(exchange)) {
       const hasSimPositions = simPositions.some(p => p.exchange === exchange);
       const hasRealPositions = get().positions.some(p => p.exchange === exchange);
       if (hasSimPositions || hasRealPositions) {
         get().addLog('warning',
-          `${exchange.toUpperCase()} OFF 불가 — 열린 포지션이 있습니다`,
+          `${exchange.toUpperCase()} OFF 遺덇? ???대┛ ?ъ??섏씠 ?덉뒿?덈떎`,
           exchange,
-          '포지션을 먼저 청산하세요',
+          '?ъ??섏쓣 癒쇱? 泥?궛?섏꽭??,
         );
         return;
       }
@@ -3048,9 +3061,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     let next: ExchangeId[];
     if (enabledExchanges.includes(exchange)) {
-      // OFF: 최소 2개는 유지해야 헷징 가능
-      if (enabledExchanges.length <= 2) {
-        get().addLog('warning', '최소 2개 거래소가 필요합니다 — 비활성화 불가');
+      // OFF: 理쒖냼 2媛쒕뒗 ?좎??댁빞 ?룹쭠 媛??      if (enabledExchanges.length <= 2) {
+        get().addLog('warning', '理쒖냼 2媛?嫄곕옒?뚭? ?꾩슂?⑸땲????鍮꾪솢?깊솕 遺덇?');
         return;
       }
       next = enabledExchanges.filter(e => e !== exchange);
@@ -3059,7 +3071,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       next = [...enabledExchanges, exchange];
     }
 
-    // Smart sim balance redistribution — preserve position margins
+    // Smart sim balance redistribution ??preserve position margins
     const lockedPerExchangeHedge: Partial<Record<ExchangeId, number>> = {};
     for (const pos of simPositions) {
       lockedPerExchangeHedge[pos.exchange] = (lockedPerExchangeHedge[pos.exchange] ?? 0) + pos.margin;
@@ -3114,12 +3126,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const action = enabledExchanges.includes(exchange) ? 'OFF' : 'ON';
     const totalSim = Object.values(updatedBal).reduce((s, v) => s + v, 0);
     get().addLog('info',
-      `${exchange.toUpperCase()} ${action} — 활성 ${next.length}개 거래소`,
+      `${exchange.toUpperCase()} ${action} ???쒖꽦 ${next.length}媛?嫄곕옒??,
       exchange,
-      `시뮬 총 자산: $${fmtNum(totalSim, 0)} (포지션 마진 보존됨)`,
+      `?쒕? 珥??먯궛: $${fmtNum(totalSim, 0)} (?ъ???留덉쭊 蹂댁〈??`,
     );
 
-    // 즉시 새 설정으로 펀딩률 갱신
+    // 利됱떆 ???ㅼ젙?쇰줈 ??⑸쪧 媛깆떊
     if (get().realSnipeActive) {
       void syncServerSchedulerConfig(get().strategyConfig, next, get().addLog);
     }
@@ -3133,7 +3145,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }),
     }).then(r => r.json()).then((res: { success?: boolean; data?: SimStateSnapshot }) => {
       if (res.success && res.data) {
-        applyServerSimStateSnapshot(set, res.data);
+        applyServerSimStateSnapshot(set, res.data, { force: true });
       }
     }).catch(() => {});
     if (get().simSnipeActive) {
@@ -3142,14 +3154,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     get().refreshRates();
   },
 
-  // ── UI ────────────────────────────────────────
+  // ?? UI ????????????????????????????????????????
   setShowApiPanel: (v) => set({ showApiPanel: v }),
   setShowStrategyPanel: (v) => set({ showStrategyPanel: v }),
   setRateFilter: (v) => set({ rateFilter: v }),
   setExchangeFilter: (v) => set({ exchangeFilter: v }),
   setPositionToClose: (v) => set({ positionToClose: v }),
 
-  // ── 예약 코인 실시간 재검증: 8초마다 — netProfit ≤ 0 즉시 해제 + 더 좋은 기회로 교체 ──
+  // ?? ?덉빟 肄붿씤 ?ㅼ떆媛??ш?利? 8珥덈쭏????netProfit ??0 利됱떆 ?댁젣 + ??醫뗭? 湲고쉶濡?援먯껜 ??
   revalidateScheduledSnipes() {
     const {
       snipeTargets,
@@ -3167,7 +3179,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
 
-    // 실슬리피지+수수료 반영 순수익 계산 헬퍼 (복리 시 실잔고 기반 notional)
+    // ?ㅼ뒳由ы뵾吏+?섏닔猷?諛섏쁺 ?쒖닔??怨꾩궛 ?ы띁 (蹂듬━ ???ㅼ옍怨?湲곕컲 notional)
     const getLiveNetProfit = (
       opp: ArbitrageOpportunity,
       isSim: boolean,
@@ -3183,10 +3195,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       );
       const rs = getRealSpreadForOpportunity(currentRealSpreads, opp);
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
-      // realSpread 없으면 보수적으로 -1 반환 (이론값 진입 금지)
+      // realSpread ?놁쑝硫?蹂댁닔?곸쑝濡?-1 諛섑솚 (?대줎媛?吏꾩엯 湲덉?)
       if (!hasRS) return -1;
-      // effectiveSpread에 슬리피지+수수료 모두 반영됨
-      return notional * (rs.effectiveSpread / 100);
+      // effectiveSpread???щ━?쇱?+?섏닔猷?紐⑤몢 諛섏쁺??      return notional * (rs.effectiveSpread / 100);
     };
 
     for (const key of snipeKeys) {
@@ -3211,22 +3222,21 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         getOpportunityLegKeys(scheduledOpp).forEach((legKey) => occupiedLegs.add(legKey));
       }
 
-      // 해당 모드가 비활성이면 정리
+      // ?대떦 紐⑤뱶媛 鍮꾪솢?깆씠硫??뺣━
       if (isSim && !get().simSnipeActive) { get().cancelSnipeForAsset(key); continue; }
       if (!isSim && !get().realSnipeActive) { get().cancelSnipeForAsset(key); continue; }
 
-      // 펀딩 15초 전이면 lock-in — 재검증 스킵 (레이스 컨디션 방지)
+      // ???15珥??꾩씠硫?lock-in ???ш?利??ㅽ궢 (?덉씠??而⑤뵒??諛⑹?)
       const targetTime = snipeTargets[key];
       if (targetTime && targetTime - Date.now() < 15_000) continue;
 
       if (!currentOpp) {
-        get().addLog('warning', `[재검증] ${asset} 기회 소멸 — 예약 해제`);
+        get().addLog('warning', `[?ш?利? ${asset} 湲고쉶 ?뚮㈇ ???덉빟 ?댁젣`);
         get().cancelSnipeForAsset(key);
         continue;
       }
 
-      // 실효스프레드(오더북 슬리피지 반영) 기준 순수익 재계산
-      const realSpreadData = getRealSpreadForOpportunity(currentRealSpreads, currentOpp);
+      // ?ㅽ슚?ㅽ봽?덈뱶(?ㅻ뜑遺??щ━?쇱? 諛섏쁺) 湲곗? ?쒖닔???ш퀎??      const realSpreadData = getRealSpreadForOpportunity(currentRealSpreads, currentOpp);
       const hasRealSpreadData = realSpreadData && Date.now() - realSpreadData.updatedAt < 30_000;
       const effectiveSpreadPercent = hasRealSpreadData
         ? realSpreadData.effectiveSpread
@@ -3248,32 +3258,31 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         isSim,
         scheduledInvestmentUSDT,
       );
-      // effectiveSpread는 표시용(안전마진 미포함) → 실행 판단 시 안전마진 별도 차감
+      // effectiveSpread???쒖떆???덉쟾留덉쭊 誘명룷?? ???ㅽ뻾 ?먮떒 ???덉쟾留덉쭊 蹂꾨룄 李④컧
       const liveNetProfit = oppNotional * ((effectiveSpreadPercent - SAFETY_MARGIN_PCT) / 100);
 
-      // 순수익 ≤ 0 시 해제 — 진입 기준(3bps)과 동일한 안전마진 적용
+      // ?쒖닔????0 ???댁젣 ??吏꾩엯 湲곗?(3bps)怨??숈씪???덉쟾留덉쭊 ?곸슜
       if (liveNetProfit <= 0) {
         get().addLog('warning',
-          `[재검증] ${asset} 순수익 기준 미달 — 예약 해제`,
+          `[?ш?利? ${asset} ?쒖닔??湲곗? 誘몃떖 ???덉빟 ?댁젣`,
           undefined,
-          `실효스프레드: ${fmtNum(effectiveSpreadPercent, 4)}% | 순수익: $${fmtNum(liveNetProfit)}`,
+          `?ㅽ슚?ㅽ봽?덈뱶: ${fmtNum(effectiveSpreadPercent, 4)}% | ?쒖닔?? $${fmtNum(liveNetProfit)}`,
         );
         get().cancelSnipeForAsset(key);
         continue;
       }
 
-      // 10%+ 더 좋은 기회 발견 시 교체 (실슬리피지 반영 순수익 기준)
-      // 단, 더 늦은 펀딩 시점으로 갈아타지 않게 제한한다.
-      // ★ 후보에 realSpread가 없으면 이론값 과대평가 → 교체→해제 루프 방지
+      // 10%+ ??醫뗭? 湲고쉶 諛쒓껄 ??援먯껜 (?ㅼ뒳由ы뵾吏 諛섏쁺 ?쒖닔??湲곗?)
+      // ?? ????? ????쒖젏?쇰줈 媛덉븘?吏 ?딄쾶 ?쒗븳?쒕떎.
+      // ???꾨낫??realSpread媛 ?놁쑝硫??대줎媛?怨쇰??됯? ??援먯껜?믫빐??猷⑦봽 諛⑹?
       const MAX_REPLACEMENT_DELAY_MS = 10 * 60 * 1000;
       const betterOpp = opportunities.find(o => {
         if (getOpportunityId(o) === opportunityId) return false;
-        // 같은 모드에서 이미 예약됨
-        if (snipeTargets[mkSnipeKey(isSim, getOpportunityId(o))]) return false;
+        // 媛숈? 紐⑤뱶?먯꽌 ?대? ?덉빟??        if (snipeTargets[mkSnipeKey(isSim, getOpportunityId(o))]) return false;
         if (opportunityConflictsWithLegs(o, occupiedLegs)) return false;
         if (o.spreadPercent < effectiveMinPercent) return false;
         if ((o.nextFundingTime - targetTime) > MAX_REPLACEMENT_DELAY_MS) return false;
-        // ★ realSpread 없는 후보는 교체 대상에서 제외 (이론값 과대평가 방지)
+        // ??realSpread ?녿뒗 ?꾨낫??援먯껜 ??곸뿉???쒖쇅 (?대줎媛?怨쇰??됯? 諛⑹?)
         const candidateRs = getRealSpreadForOpportunity(currentRealSpreads, o);
         const hasRealSpread = candidateRs && Date.now() - candidateRs.updatedAt < 30_000;
         if (!hasRealSpread) return false;
@@ -3286,9 +3295,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         const betterLiveNet = getLiveNetProfit(betterOpp, isSim);
         const improvePct = ((betterLiveNet - liveNetProfit) / liveNetProfit * 100).toFixed(1);
         get().addLog('info',
-          `[교체] ${asset}($${fmtNum(liveNetProfit)}) → ${betterOpp.baseAsset}($${fmtNum(betterLiveNet)}) +${improvePct}%`,
+          `[援먯껜] ${asset}($${fmtNum(liveNetProfit)}) ??${betterOpp.baseAsset}($${fmtNum(betterLiveNet)}) +${improvePct}%`,
           undefined,
-          `실효스프레드 확인됨`,
+          `?ㅽ슚?ㅽ봽?덈뱶 ?뺤씤??,
         );
         get().cancelSnipeForAsset(key);
         get().scheduleSnipeForAsset(betterOpp, isSim);
@@ -3296,17 +3305,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
   },
 
-  // ── 트루 스나이핑: 코인별 독립 타이머 — 펀딩 7초 전 진입 → 수령 확인 → 즉시 청산 ──
+  // ?? ?몃（ ?ㅻ굹?댄븨: 肄붿씤蹂??낅┰ ??대㉧ ?????7珥???吏꾩엯 ???섎졊 ?뺤씤 ??利됱떆 泥?궛 ??
 
-  // 펀딩 주기별(1h/4h/8h) 버킷 라운드로빈 → 짧은 주기 우선 보장
-  // 각 활성 모드(sim/real)에 대해 독립적으로 스케줄링
+  // ???二쇨린蹂?1h/4h/8h) 踰꾪궥 ?쇱슫?쒕줈鍮???吏㏃? 二쇨린 ?곗꽑 蹂댁옣
+  // 媛??쒖꽦 紐⑤뱶(sim/real)??????낅┰?곸쑝濡??ㅼ?以꾨쭅
   scheduleAllSnipes() {
-    // SIM: 클라이언트 타이머로 스케줄링
-    // REAL: 서버 스케줄러가 전담 → 클라이언트에서 중복 타이머 생성하지 않음
+    // SIM: ?대씪?댁뼵????대㉧濡??ㅼ?以꾨쭅
+    // REAL: ?쒕쾭 ?ㅼ?以꾨윭媛 ?꾨떞 ???대씪?댁뼵?몄뿉??以묐났 ??대㉧ ?앹꽦?섏? ?딆쓬
     if (get().simSnipeActive) {
       void fetchServerSimSchedulerStatus()
         .then((status) => {
-          applyServerSimStateSnapshot(set, status.state);
+          applyServerSimStateSnapshot(set, status.state, { force: true });
           set({
             simSnipeActive: !!status.active,
             snipeTargets: {
@@ -3327,7 +3336,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
   },
 
-  // 내부: 특정 모드에 대한 스케줄링
+  // ?대?: ?뱀젙 紐⑤뱶??????ㅼ?以꾨쭅
   _scheduleSnipesForMode(isSim: boolean) {
     const {
       opportunities,
@@ -3341,7 +3350,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
     const modePrefix = isSim ? 'sim' : 'real';
 
-    // 이미 예약되었거나 활성 포지션이 잡힌 레그는 다시 태우지 않는다.
+    // ?대? ?덉빟?섏뿀嫄곕굹 ?쒖꽦 ?ъ??섏씠 ?≫엺 ?덇렇???ㅼ떆 ?쒖슦吏 ?딅뒗??
     const now = Date.now();
     const occupiedLegs = new Set<string>();
     for (const key of Object.keys(snipeTargets).filter((snipeKey) => snipeKey.startsWith(`${modePrefix}:`))) {
@@ -3362,13 +3371,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (opportunityConflictsWithLegs(o, occupiedLegs)) { filterReasons.legConflict++; return false; }
       if (!currentEnabled.includes(o.shortExchange) || !currentEnabled.includes(o.longExchange)) { filterReasons.exchangeDisabled++; return false; }
       if (o.nextFundingTime - now > getScheduleAheadWindowMs(o)) { filterReasons.tooFarAhead++; return false; }
-      // 과거 펀딩 시간만 차단 (normalizeFr에서 이미 보정하지만 안전장치)
+      // 怨쇨굅 ????쒓컙留?李⑤떒 (normalizeFr?먯꽌 ?대? 蹂댁젙?섏?留??덉쟾?μ튂)
       if (o.nextFundingTime < now) { filterReasons.pastFunding++; return false; }
-      // 예약 단계: realSpread 있으면 수익성은 getLiveNetProfit(3bps 포함)에서 검증 → minSpread는 이론값에만 적용
-      // effectiveSpread는 이미 수수료/슬리피지 차감 완료값이므로 minSpread(수수료 포함)와 비교하면 이중 필터
+      // ?덉빟 ?④퀎: realSpread ?덉쑝硫??섏씡?깆? getLiveNetProfit(3bps ?ы븿)?먯꽌 寃利???minSpread???대줎媛믪뿉留??곸슜
+      // effectiveSpread???대? ?섏닔猷??щ━?쇱? 李④컧 ?꾨즺媛믪씠誘濡?minSpread(?섏닔猷??ы븿)? 鍮꾧탳?섎㈃ ?댁쨷 ?꾪꽣
       const rs = getRealSpreadForOpportunity(preFilterRealSpreads, o);
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
-      // ★ 유동성 필터: 슬리피지가 maxSlippagePercent 이상이면 차단
+      // ???좊룞???꾪꽣: ?щ━?쇱?媛 maxSlippagePercent ?댁긽?대㈃ 李⑤떒
       const maxSlip = strategyConfig.maxSlippagePercent ?? 1.5;
       if (hasRS && (rs.shortSlippage > maxSlip || rs.longSlippage > maxSlip)) { filterReasons.noProfit++; return false; }
       if (!hasRS && o.spreadPercent < effectiveMinPercent) { filterReasons.lowSpread++; return false; }
@@ -3380,16 +3389,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (!_lastScheduleDiagAt || now - _lastScheduleDiagAt > 30_000) {
         _lastScheduleDiagAt = now;
         const parts = [];
-        if (filterReasons.legConflict > 0) parts.push(`레그충돌:${filterReasons.legConflict}`);
-        if (filterReasons.exchangeDisabled > 0) parts.push(`거래소비활성:${filterReasons.exchangeDisabled}`);
-        if (filterReasons.tooFarAhead > 0) parts.push(`시간초과:${filterReasons.tooFarAhead}`);
-        if (filterReasons.pastFunding > 0) parts.push(`과거시간:${filterReasons.pastFunding}`);
-        if (filterReasons.lowSpread > 0) parts.push(`스프레드미달:${filterReasons.lowSpread}`);
-        if (filterReasons.noProfit > 0) parts.push(`수익없음:${filterReasons.noProfit}`);
+        if (filterReasons.legConflict > 0) parts.push(`?덇렇異⑸룎:${filterReasons.legConflict}`);
+        if (filterReasons.exchangeDisabled > 0) parts.push(`嫄곕옒?뚮퉬?쒖꽦:${filterReasons.exchangeDisabled}`);
+        if (filterReasons.tooFarAhead > 0) parts.push(`?쒓컙珥덇낵:${filterReasons.tooFarAhead}`);
+        if (filterReasons.pastFunding > 0) parts.push(`怨쇨굅?쒓컙:${filterReasons.pastFunding}`);
+        if (filterReasons.lowSpread > 0) parts.push(`?ㅽ봽?덈뱶誘몃떖:${filterReasons.lowSpread}`);
+        if (filterReasons.noProfit > 0) parts.push(`?섏씡?놁쓬:${filterReasons.noProfit}`);
         get().addLog('warning',
-          `[스케줄-진단][${modePrefix.toUpperCase()}] 기회 ${opportunities.length}개 전부 탈락`,
+          `[?ㅼ?以?吏꾨떒][${modePrefix.toUpperCase()}] 湲고쉶 ${opportunities.length}媛??꾨? ?덈씫`,
           undefined,
-          `사유: ${parts.join(' | ')} | 최소스프레드: ${effectiveMinPercent}%`,
+          `?ъ쑀: ${parts.join(' | ')} | 理쒖냼?ㅽ봽?덈뱶: ${effectiveMinPercent}%`,
         );
       }
       return;
@@ -3402,10 +3411,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const rs = getRealSpreadForOpportunity(currentRealSpreads, o);
       const hasRealSpread = rs && Date.now() - rs.updatedAt < 30_000;
       if (hasRealSpread) {
-        // ★ effectiveSpread는 표시용(안전마진 미포함) → 스케줄링 시 안전마진 별도 차감
+        // ??effectiveSpread???쒖떆???덉쟾留덉쭊 誘명룷?? ???ㅼ?以꾨쭅 ???덉쟾留덉쭊 蹂꾨룄 李④컧
         return n * ((rs.effectiveSpread - SAFETY_MARGIN_PCT) / 100);
       }
-      // 실측 없으면 이론 기반 보수적 계산 (안전마진 포함)
+      // ?ㅼ륫 ?놁쑝硫??대줎 湲곕컲 蹂댁닔??怨꾩궛 (?덉쟾留덉쭊 ?ы븿)
       const hedgeFeePct = getConfiguredHedgeFees(
         strategyConfig,
         o.shortExchange,
@@ -3424,22 +3433,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         const rs = getRealSpreadForOpportunity(currentRealSpreads, sample);
         const effSpr = (rs && Date.now() - rs.updatedAt < 30_000) ? rs.effectiveSpread : null;
         get().addLog('warning',
-          `[스케줄-진단][${modePrefix.toUpperCase()}] ${filtered.length}개 기회가 실효스프레드 수익 체크에서 전부 탈락`,
+          `[?ㅼ?以?吏꾨떒][${modePrefix.toUpperCase()}] ${filtered.length}媛?湲고쉶媛 ?ㅽ슚?ㅽ봽?덈뱶 ?섏씡 泥댄겕?먯꽌 ?꾨? ?덈씫`,
           undefined,
-          `예시: ${sample.baseAsset} 이론:${fmtNum(sample.spreadPercent, 4)}% 실효:${effSpr !== null ? fmtNum(effSpr, 4) + '%' : '없음'} netProfit:$${fmtNum(getLiveNetProfit(sample))}`,
+          `?덉떆: ${sample.baseAsset} ?대줎:${fmtNum(sample.spreadPercent, 4)}% ?ㅽ슚:${effSpr !== null ? fmtNum(effSpr, 4) + '%' : '?놁쓬'} netProfit:$${fmtNum(getLiveNetProfit(sample))}`,
         );
       }
       return;
     }
 
-    // 시뮬레이션 모드: 잔고 체크 전 재분배 먼저 실행 (잔고 부족 방지)
+    // ?쒕??덉씠??紐⑤뱶: ?붽퀬 泥댄겕 ???щ텇諛?癒쇱? ?ㅽ뻾 (?붽퀬 遺議?諛⑹?)
     if (isSim) {
       get().redistributeBalances();
     }
     const latestSimBalances = get().simBalances;
     const latestRealBalances = get().balances;
 
-    // 거래소별 가용 잔고 추적 (자금 초과 예약 방지)
+    // 嫄곕옒?뚮퀎 媛???붽퀬 異붿쟻 (?먭툑 珥덇낵 ?덉빟 諛⑹?)
     const availableBalance: Record<string, number> = {};
     for (const ex of currentEnabled) {
       const bal = isSim
@@ -3448,8 +3457,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       availableBalance[ex] = bal;
     }
 
-    // 이미 예약된 코인의 마진을 순차 차감 (복리: 이전 예약이 줄인 잔고 반영)
-    // 펀딩 시각 순 정렬 — 이른 펀딩이 먼저 자금을 사용하므로 순서가 중요
+    // ?대? ?덉빟??肄붿씤??留덉쭊???쒖감 李④컧 (蹂듬━: ?댁쟾 ?덉빟??以꾩씤 ?붽퀬 諛섏쁺)
+    // ????쒓컖 ???뺣젹 ???대Ⅸ ??⑹씠 癒쇱? ?먭툑???ъ슜?섎?濡??쒖꽌媛 以묒슂
     const reservedKeys = Object.keys(snipeTargets)
       .filter(k => parseSnipeKey(k).isSim === isSim)
       .sort((a, b) => (snipeTargets[a] ?? 0) - (snipeTargets[b] ?? 0));
@@ -3509,9 +3518,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         const intervalH = Math.round(getOpportunityIntervalHours(plan.opportunity));
         const minsLeft = Math.round((plan.opportunity.nextFundingTime - now) / 60000);
         get().addLog('info',
-          `[스케줄-헷징][${modePrefix.toUpperCase()}] ${plan.opportunity.baseAsset} 선택 — ${minsLeft}분 후 펀딩`,
+          `[?ㅼ?以??룹쭠][${modePrefix.toUpperCase()}] ${plan.opportunity.baseAsset} ?좏깮 ??${minsLeft}遺??????,
           undefined,
-          `주기:${intervalH}h | 투자금:$${fmtNum(plan.investmentUSDT, 0)} | 스프레드:+${fmtNum(plan.opportunity.spreadPercent, 4)}% | ${plan.opportunity.shortExchange}↔${plan.opportunity.longExchange}`,
+          `二쇨린:${intervalH}h | ?ъ옄湲?$${fmtNum(plan.investmentUSDT, 0)} | ?ㅽ봽?덈뱶:+${fmtNum(plan.opportunity.spreadPercent, 4)}% | ${plan.opportunity.shortExchange}??{plan.opportunity.longExchange}`,
         );
         get().scheduleSnipeForAsset(plan.opportunity, isSim, plan.investmentUSDT);
         getOpportunityLegKeys(plan.opportunity).forEach((legKey) => occupiedLegs.add(legKey));
@@ -3524,26 +3533,26 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         _lastScheduleDiagAt = now;
         const balInfo = Object.entries(availableBalance).map(([ex, b]) => `${ex}:$${Math.round(b)}`).join(' ');
         get().addLog('warning',
-          `[스케줄-진단][${modePrefix.toUpperCase()}] ${profitable.length}개 수익 기회 → 잔고부족:${balanceSkips}`,
+          `[?ㅼ?以?吏꾨떒][${modePrefix.toUpperCase()}] ${profitable.length}媛??섏씡 湲고쉶 ???붽퀬遺議?${balanceSkips}`,
           undefined,
-          `기준투자금:$${strategyConfig.investmentUSDT} | 가용잔고: ${balInfo}`,
+          `湲곗??ъ옄湲?$${strategyConfig.investmentUSDT} | 媛?⑹옍怨? ${balInfo}`,
         );
       }
     }
   },
 
-  // 특정 코인 1개에 대한 스나이핑 예약 (모드별)
+  // ?뱀젙 肄붿씤 1媛쒖뿉 ????ㅻ굹?댄븨 ?덉빟 (紐⑤뱶蹂?
   scheduleSnipeForAsset(opportunity, isSim, investmentUSDT) {
     const { _snipeTimers, snipeTargets } = get();
     const snipeKey = mkSnipeKey(isSim, getOpportunityId(opportunity));
 
-    // 이미 예약된 키면 스킵
+    // ?대? ?덉빟???ㅻ㈃ ?ㅽ궢
     if (snipeTargets[snipeKey]) return;
 
-    // 기존 타이머 정리
+    // 湲곗〈 ??대㉧ ?뺣━
     if (_snipeTimers[snipeKey]) clearTimeout(_snipeTimers[snipeKey]);
 
-    // 과거 시간 보정
+    // 怨쇨굅 ?쒓컙 蹂댁젙
     const intervalMs = opportunity.fundingIntervalMs ?? 8 * 3600 * 1000;
     let targetTime = opportunity.nextFundingTime;
     const now = Date.now();
@@ -3553,14 +3562,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const entryLeadMs = getResolvedTimingConfig(get().strategyConfig.timingConfig).entryLeadMs;
 
-    // 펀딩까지 6초 미만 → 다음 사이클 (ENTRY_BEFORE_MS=5초보다 약간 여유)
+    // ??⑷퉴吏 6珥?誘몃쭔 ???ㅼ쓬 ?ъ씠??(ENTRY_BEFORE_MS=5珥덈낫???쎄컙 ?ъ쑀)
     if (targetTime - now < entryLeadMs + 1_000) {
       targetTime += intervalMs;
     }
 
     const entryDelay = Math.max(0, targetTime - now - entryLeadMs);
 
-    // 타이머 등록
+    // ??대㉧ ?깅줉
     const timer = setTimeout(() => get()._executeSnipeEntry(opportunity, targetTime, isSim), entryDelay);
 
     set(s => ({
@@ -3577,19 +3586,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const intervalH = Math.round(intervalMs / 3600000);
     const modeLabel = isSim ? 'SIM' : 'REAL';
     get().addLog('info',
-      `[스나이핑-헷징][${modeLabel}] ${opportunity.baseAsset} 예약 — ${mins}분 ${secs}초 후`,
+      `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${opportunity.baseAsset} ?덉빟 ??${mins}遺?${secs}珥???,
       undefined,
-      `펀딩주기: ${intervalH}h | 투자금:$${fmtNum(investmentUSDT ?? get().strategyConfig.investmentUSDT, 0)} | 스프레드: +${fmtNum(opportunity.spreadPercent, 4)}%`,
+      `??⑹＜湲? ${intervalH}h | ?ъ옄湲?$${fmtNum(investmentUSDT ?? get().strategyConfig.investmentUSDT, 0)} | ?ㅽ봽?덈뱶: +${fmtNum(opportunity.spreadPercent, 4)}%`,
     );
   },
 
-  // ★ 내부: 펀딩 직전 진입 실행 + 수령 후 자동청산 예약
+  // ???대?: ???吏곸쟾 吏꾩엯 ?ㅽ뻾 + ?섎졊 ???먮룞泥?궛 ?덉빟
   _executeSnipeEntry(opportunity: ArbitrageOpportunity, targetFundingTime: number, isSim: boolean) {
     const modeActive = isSim ? get().simSnipeActive : get().realSnipeActive;
     const modeLabel = isSim ? 'SIM' : 'REAL';
-    // 자동화 비활성 시 진입 차단 (청산 실패 등으로 일시정지된 경우)
+    // ?먮룞??鍮꾪솢????吏꾩엯 李⑤떒 (泥?궛 ?ㅽ뙣 ?깆쑝濡??쇱떆?뺤???寃쎌슦)
     if (!modeActive) {
-      get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${opportunity.baseAsset} 진입 스킵 — 자동화 비활성 상태`);
+      get().addLog('warning', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${opportunity.baseAsset} 吏꾩엯 ?ㅽ궢 ???먮룞??鍮꾪솢???곹깭`);
       return;
     }
 
@@ -3597,22 +3606,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const snipeKey = mkSnipeKey(isSim, getOpportunityId(opportunity));
     const plannedInvestmentUSDT = get().snipeAllocations[snipeKey] ?? get().strategyConfig.investmentUSDT;
 
-    // ★ 실행 직전 시간 검증 — 펀딩 시간이 이미 지났거나 너무 일찍이면 차단
+    // ???ㅽ뻾 吏곸쟾 ?쒓컙 寃利???????쒓컙???대? 吏?ш굅???덈Т ?쇱컢?대㈃ 李⑤떒
     const secsUntilFunding = (targetFundingTime - Date.now()) / 1000;
     if (secsUntilFunding < -10) {
-      get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${asset} 진입 차단 — 펀딩 시간이 ${Math.abs(secsUntilFunding).toFixed(0)}초 전에 이미 지남`);
+      get().addLog('warning', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 吏꾩엯 李⑤떒 ??????쒓컙??${Math.abs(secsUntilFunding).toFixed(0)}珥??꾩뿉 ?대? 吏??);
       get().cancelSnipeForAsset(snipeKey);
       return;
     }
     if (secsUntilFunding > 30) {
-      get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${asset} 진입 차단 — 펀딩까지 ${secsUntilFunding.toFixed(0)}초 남음 (너무 이름)`);
+      get().addLog('warning', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 吏꾩엯 李⑤떒 ????⑷퉴吏 ${secsUntilFunding.toFixed(0)}珥??⑥쓬 (?덈Т ?대쫫)`);
       get().cancelSnipeForAsset(snipeKey);
       return;
     }
 
     const { enabledExchanges: currentEnabled } = get();
 
-    // 진입 시점에 해당 코인의 최신 기회 확인 (순수익 + 최소스프레드 기준)
+    // 吏꾩엯 ?쒖젏???대떦 肄붿씤??理쒖떊 湲고쉶 ?뺤씤 (?쒖닔??+ 理쒖냼?ㅽ봽?덈뱶 湲곗?)
     const { opportunities, strategyConfig, realSpreads: currentRealSpreads, simBalances, balances: realBalances } = get();
     const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
 
@@ -3626,10 +3635,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const n = plannedInvestmentUSDT * strategyConfig.leverage;
       const rs = getRealSpreadForOpportunity(currentRealSpreads, o);
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
-      // realSpread 없으면 진입 불가 — 이론값만으로 진입 금지
+      // realSpread ?놁쑝硫?吏꾩엯 遺덇? ???대줎媛믩쭔?쇰줈 吏꾩엯 湲덉?
       if (!hasRS) return false;
-      const effSpreadPct = rs.effectiveSpread; // 슬리피지+수수료 모두 반영됨
-      const liveNet = n * (effSpreadPct / 100);
+      const effSpreadPct = rs.effectiveSpread; // ?щ━?쇱?+?섏닔猷?紐⑤몢 諛섏쁺??      const liveNet = n * (effSpreadPct / 100);
       return liveNet > 0;
     };
     const finalTarget = latestOpp && meetsThreshold(latestOpp)
@@ -3637,22 +3645,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       : meetsThreshold(opportunity) ? opportunity : null;
 
     if (!finalTarget) {
-      get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${asset} 기준 미달 — 스킵`);
+      get().addLog('warning', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 湲곗? 誘몃떖 ???ㅽ궢`);
       get().cancelSnipeForAsset(snipeKey);
       return;
     }
 
     const secsToFunding = Math.max(0, (targetFundingTime - Date.now()) / 1000).toFixed(1);
     get().addLog('info',
-      `[스나이핑-헷징][${modeLabel}] ${asset} 진입 실행 — 펀딩까지 ${secsToFunding}초`,
+      `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 吏꾩엯 ?ㅽ뻾 ????⑷퉴吏 ${secsToFunding}珥?,
       undefined,
-      `숏:${finalTarget.shortExchange.toUpperCase()} 롱:${finalTarget.longExchange.toUpperCase()} | 투자금:$${fmtNum(plannedInvestmentUSDT, 0)} | 스프레드: +${fmtNum(finalTarget.spreadPercent, 4)}%`,
+      `??${finalTarget.shortExchange.toUpperCase()} 濡?${finalTarget.longExchange.toUpperCase()} | ?ъ옄湲?$${fmtNum(plannedInvestmentUSDT, 0)} | ?ㅽ봽?덈뱶: +${fmtNum(finalTarget.spreadPercent, 4)}%`,
     );
 
-    // 실행 직전 최종 확인 — 다른 자산 청산 실패로 비활성화됐을 수 있음
+    // ?ㅽ뻾 吏곸쟾 理쒖쥌 ?뺤씤 ???ㅻⅨ ?먯궛 泥?궛 ?ㅽ뙣濡?鍮꾪솢?깊솕?먯쓣 ???덉쓬
     const modeActiveRecheck = isSim ? get().simSnipeActive : get().realSnipeActive;
     if (!modeActiveRecheck) {
-      get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${asset} 진입 직전 취소 — 자동화 비활성 상태`);
+      get().addLog('warning', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 吏꾩엯 吏곸쟾 痍⑥냼 ???먮룞??鍮꾪솢???곹깭`);
       get().cancelSnipeForAsset(snipeKey);
       return;
     }
@@ -3660,11 +3668,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const entryTarget = { ...finalTarget, nextFundingTime: targetFundingTime };
     get().executeStrategy(entryTarget, isSim, plannedInvestmentUSDT).then((result) => {
       if (result.success) {
-        // 진입 성공 후 자동화 비활성 체크 — 다른 자산 청산 실패로 정지된 경우
+        // 吏꾩엯 ?깃났 ???먮룞??鍮꾪솢??泥댄겕 ???ㅻⅨ ?먯궛 泥?궛 ?ㅽ뙣濡??뺤???寃쎌슦
         const stillActive = isSim ? get().simSnipeActive : get().realSnipeActive;
         if (!stillActive) {
           get().addLog('warning',
-            `[스나이핑-헷징][${modeLabel}] ${asset} 진입 성공했으나 자동화 비활성 — 서버 체결 수량으로 즉시 정리`,
+            `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 吏꾩엯 ?깃났?덉쑝???먮룞??鍮꾪솢?????쒕쾭 泥닿껐 ?섎웾?쇰줈 利됱떆 ?뺣━`,
           );
           const cleanupStaleEntry = async () => {
             if (isSim) {
@@ -3683,7 +3691,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
             if (stalePositions.length === 0) {
               get().addLog('error',
-                `[스나이핑-헷징][${modeLabel}] ${asset} stale 진입 정리 실패 — 체결 정보 없음, 수동 확인 필요`,
+                `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} stale 吏꾩엯 ?뺣━ ?ㅽ뙣 ??泥닿껐 ?뺣낫 ?놁쓬, ?섎룞 ?뺤씤 ?꾩슂`,
               );
               get().cancelSnipeForAsset(snipeKey);
               return;
@@ -3714,7 +3722,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               pendingClosures = failedPositions;
               if (attempt === 0) {
                 get().addLog('warning',
-                  `[스나이핑-헷징][${modeLabel}] ${asset} stale 진입 자동 정리 1차 실패 — 1초 후 재시도`,
+                  `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} stale 吏꾩엯 ?먮룞 ?뺣━ 1李??ㅽ뙣 ??1珥????ъ떆??,
                   undefined,
                   lastCloseErrors.join('; '),
                 );
@@ -3724,7 +3732,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
             if (pendingClosures.length > 0) {
               get().addLog('error',
-                `[스나이핑-헷징][${modeLabel}] ${asset} stale 진입 자동 정리 ${pendingClosures.length}/${stalePositions.length}개 실패 — 수동 확인 필요`,
+                `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} stale 吏꾩엯 ?먮룞 ?뺣━ ${pendingClosures.length}/${stalePositions.length}媛??ㅽ뙣 ???섎룞 ?뺤씤 ?꾩슂`,
                 undefined,
                 lastCloseErrors.join('; '),
               );
@@ -3735,7 +3743,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               });
             } else {
               get().addLog('success',
-                `[스나이핑-헷징][${modeLabel}] ${asset} stale 진입 자동 정리 완료`,
+                `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} stale 吏꾩엯 ?먮룞 ?뺣━ ?꾨즺`,
               );
             }
 
@@ -3743,7 +3751,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           };
           void cleanupStaleEntry().catch((err) => {
             get().addLog('error',
-              `[스나이핑-헷징][${modeLabel}] ${asset} stale 진입 정리 중 오류`,
+              `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} stale 吏꾩엯 ?뺣━ 以??ㅻ쪟`,
               undefined,
               (err as Error).message,
             );
@@ -3753,9 +3761,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }
 
         get().addLog('success',
-          `[스나이핑-헷징][${modeLabel}] ${asset} 진입 완료`,
+          `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 吏꾩엯 ?꾨즺`,
           undefined,
-          `펀딩까지 ~${secsToFunding}초`,
+          `??⑷퉴吏 ~${secsToFunding}珥?,
         );
         const closeDelay = Math.max(0, targetFundingTime - Date.now()) + getResolvedTimingConfig(get().strategyConfig.timingConfig).closeDelayMs;
         const closeTimer = setTimeout(() => {
@@ -3765,15 +3773,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           _snipeCloseTimers: { ...s._snipeCloseTimers, [snipeKey]: closeTimer },
         }));
         get().addLog('info',
-          `[스나이핑-헷징][${modeLabel}] ${asset} 자동청산 예약 — ${fmtNum(closeDelay / 1000, 0)}초 후`,
+          `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} ?먮룞泥?궛 ?덉빟 ??${fmtNum(closeDelay / 1000, 0)}珥???,
         );
-        // 진입 후 남은 자금으로 다음 최고 수익 기회 자동 예약
+        // 吏꾩엯 ???⑥? ?먭툑?쇰줈 ?ㅼ쓬 理쒓퀬 ?섏씡 湲고쉶 ?먮룞 ?덉빟
         const modeStillActive = isSim ? get().simSnipeActive : get().realSnipeActive;
         if (modeStillActive) {
           get().scheduleAllSnipes();
         }
       } else {
-        get().addLog('error', `[스나이핑-헷징][${modeLabel}] ${asset} 진입 실패`, undefined, result.error);
+        get().addLog('error', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 吏꾩엯 ?ㅽ뙣`, undefined, result.error);
         get().cancelSnipeForAsset(snipeKey);
         const modeStillActive = isSim ? get().simSnipeActive : get().realSnipeActive;
         if (modeStillActive) {
@@ -3783,45 +3791,43 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     });
   },
 
-  // ★ 내부: 펀딩 수령 확인 + 포지션 청산 + 다음 사이클 재예약
-  async _executeSnipeClose(target: ArbitrageOpportunity, isSim: boolean) {
+  // ???대?: ????섎졊 ?뺤씤 + ?ъ???泥?궛 + ?ㅼ쓬 ?ъ씠???ъ삁??  async _executeSnipeClose(target: ArbitrageOpportunity, isSim: boolean) {
     const asset = target.baseAsset;
     const snipeKey = mkSnipeKey(isSim, getOpportunityId(target));
     const modeLabel = isSim ? 'SIM' : 'REAL';
     let closeFailed = false;
 
     if (isSim) {
-      // 시뮬레이션: tickSimFunding 의존 X → 직접 해당 코인 포지션 찾아서 청산
+      // ?쒕??덉씠?? tickSimFunding ?섏〈 X ??吏곸젒 ?대떦 肄붿씤 ?ъ???李얠븘??泥?궛
       const simPosForAsset = get().simPositions.filter((position) =>
         position.baseAsset === asset
         && position.isSnipe
         && (position.exchange === target.shortExchange || position.exchange === target.longExchange),
       );
       if (simPosForAsset.length === 0) {
-        get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${asset} 시뮬 포지션 없음`);
+        get().addLog('warning', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} ?쒕? ?ъ????놁쓬`);
       } else {
         for (const pos of simPosForAsset) {
           await get().closeSimPosition(pos.simId);
         }
         const totalCollected = simPosForAsset.reduce((s, p) => s + p.fundingCollected, 0);
         get().addLog('success',
-          `[스나이핑-헷징][${modeLabel}] ${asset} 시뮬 청산 완료`,
+          `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} ?쒕? 泥?궛 ?꾨즺`,
           undefined,
-          `${simPosForAsset.length}개 포지션 | 수령 펀딩: $${fmtNum(totalCollected, 4)}`,
+          `${simPosForAsset.length}媛??ъ???| ?섎졊 ??? $${fmtNum(totalCollected, 4)}`,
         );
       }
     } else {
-      // ★ 실거래: 즉시 청산 (T+2s) → 펀딩 검증은 비동기로 후처리
-      const currentPositions = get().positions;
+      // ???ㅺ굅?? 利됱떆 泥?궛 (T+2s) ?????寃利앹? 鍮꾨룞湲곕줈 ?꾩쿂由?      const currentPositions = get().positions;
       const targetPositions = currentPositions.filter(p => {
         if (p.baseAsset !== asset) return false;
-        if (p.positionType === 'manual') return false; // 사용자 수동 포지션 보호
+        if (p.positionType === 'manual') return false; // ?ъ슜???섎룞 ?ъ???蹂댄샇
         return (p.exchange === target.shortExchange || p.exchange === target.longExchange)
           && (p.positionType === 'hedge_short' || p.positionType === 'hedge_long');
       });
 
       if (targetPositions.length > 0) {
-        get().addLog('info', `[스나이핑-헷징][${modeLabel}] ${asset} ${targetPositions.length}개 즉시 청산 중...`);
+        get().addLog('info', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} ${targetPositions.length}媛?利됱떆 泥?궛 以?..`);
         const closeResults = await Promise.allSettled(
           targetPositions.map(pos => get().closePosition(pos)),
         );
@@ -3833,7 +3839,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         if (failedLegs.length > 0) {
           closeFailed = true;
           get().addLog('error',
-            `[스나이핑-헷징][${modeLabel}] ${asset} 청산 ${failedLegs.length}/${targetPositions.length}개 실패 — 자동화 일시정지, 수동 확인 필요`,
+            `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 泥?궛 ${failedLegs.length}/${targetPositions.length}媛??ㅽ뙣 ???먮룞???쇱떆?뺤?, ?섎룞 ?뺤씤 ?꾩슂`,
             undefined,
             failedLegs.map(r => (r as PromiseRejectedResult).reason?.message || 'unknown').join('; '),
           );
@@ -3843,9 +3849,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             detail: `${failedLegs.length}/${targetPositions.length} legs failed`,
           });
         } else {
-          get().addLog('success', `[스나이핑-헷징][${modeLabel}] ${asset} 청산 완료`);
+          get().addLog('success', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 泥?궛 ?꾨즺`);
 
-          // 펀딩 수령 확인은 비동기로 — 청산을 지연시키지 않음 (확인 후 실제 순손익 확정)
+          // ????섎졊 ?뺤씤? 鍮꾨룞湲곕줈 ??泥?궛??吏?곗떆?ㅼ? ?딆쓬 (?뺤씤 ???ㅼ젣 ?쒖넀???뺤젙)
           (async () => {
             let fundingVerified = false;
             let verifiedFunding: number | null = null;
@@ -3878,9 +3884,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                     .map(funding => `${funding.exchange}:$${fmtNum(funding.amount, 4)}`)
                     .join(' | ');
                   get().addLog('success',
-                    `[스나이핑-헷징][${modeLabel}] ${asset} 펀딩 수령 확인`,
+                    `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} ????섎졊 ?뺤씤`,
                     undefined,
-                    `${recentFundings.length}건 / 합계 $${fmtNum(totalFunding, 4)} | 최종 순손익 ${verifiedPnl >= 0 ? '+' : ''}$${fmtNum(verifiedPnl ?? 0, 4)}${fundingBreakdown ? ` | ${fundingBreakdown}` : ''}`,
+                    `${recentFundings.length}嫄?/ ?⑷퀎 $${fmtNum(totalFunding, 4)} | 理쒖쥌 ?쒖넀??${verifiedPnl >= 0 ? '+' : ''}$${fmtNum(verifiedPnl ?? 0, 4)}${fundingBreakdown ? ` | ${fundingBreakdown}` : ''}`,
                   );
                   for (const funding of recentFundings) {
                     queueTrade({
@@ -3902,7 +3908,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               } catch (err) {
                 get().addLog(
                   'warning',
-                  `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} ????섎졊 ?뺤씤 ?ъ떆??${attempt + 1} ?ㅽ뙣`,
+                  `[??산돌??꾨릅-?猷뱀췅][${modeLabel}] ${asset} ??????롮죯 ?類ㅼ뵥 ?????${attempt + 1} ??쎈솭`,
                   undefined,
                   (err as Error).message,
                 );
@@ -3913,7 +3919,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               verifiedPnl = closedLegs.reduce((sum, leg) => sum + leg.pnl, 0);
               get().addLog(
                 'warning',
-                `[스나이핑-헷징][${modeLabel}] ${asset} 펀딩 수령 미확인 — 가격손익 기준 잠정 순손익 ${verifiedPnl >= 0 ? '+' : ''}$${fmtNum(verifiedPnl ?? 0, 4)}`,
+                `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} ????섎졊 誘명솗????媛寃⑹넀??湲곗? ?좎젙 ?쒖넀??${verifiedPnl >= 0 ? '+' : ''}$${fmtNum(verifiedPnl ?? 0, 4)}`,
               );
             }
 
@@ -3924,7 +3930,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               fundingCollected: verifiedFunding,
               pnl: verifiedPnl,
               simulation: false,
-              note: fundingVerified ? undefined : '펀딩 수령은 거래소 정산 내역 추가 확인 필요',
+              note: fundingVerified ? undefined : '????섎졊? 嫄곕옒???뺤궛 ?댁뿭 異붽? ?뺤씤 ?꾩슂',
             }));
             queueTrade({
               timestamp: Date.now(), type: 'snipe_complete', simulation: false,
@@ -3937,16 +3943,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           })();
         }
       } else {
-        get().addLog('warning', `[스나이핑-헷징][${modeLabel}] ${asset} 청산할 포지션 없음`);
+        get().addLog('warning', `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} 泥?궛???ъ????놁쓬`);
       }
     }
 
-    // 해당 키 타이머 정리
+    // ?대떦 ????대㉧ ?뺣━
     get().cancelSnipeForAsset(snipeKey);
 
-    // 청산 실패 시 자동화 일시정지 — 잔여 포지션이 있는 상태에서 새 스나이프 차단
+    // 泥?궛 ?ㅽ뙣 ???먮룞???쇱떆?뺤? ???붿뿬 ?ъ??섏씠 ?덈뒗 ?곹깭?먯꽌 ???ㅻ굹?댄봽 李⑤떒
     if (!isSim && closeFailed) {
-      // REAL 모드의 진입 타이머만 정리 — 청산 타이머는 유지 (다른 자산의 열린 포지션 보호)
+      // REAL 紐⑤뱶??吏꾩엯 ??대㉧留??뺣━ ??泥?궛 ??대㉧???좎? (?ㅻⅨ ?먯궛???대┛ ?ъ???蹂댄샇)
       const { _snipeTimers, snipeTargets: currentTargets } = get();
       const realTimerKeys = Object.keys(_snipeTimers).filter(k => k.startsWith('real:'));
       for (const k of realTimerKeys) clearTimeout(_snipeTimers[k]);
@@ -3954,11 +3960,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const newTargets = { ...currentTargets };
       for (const k of realTimerKeys) { delete newTimers[k]; delete newTargets[k]; }
       set({ realSnipeActive: false, snipeTargets: newTargets, _snipeTimers: newTimers });
-      // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (재시도 포함)
+      // ?쒕쾭??鍮꾪솢???곹깭 ???+ ?쒕쾭 ?ㅼ?以꾨윭 ?뺤? (?ъ떆???ы븿)
       void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ realSnipeActive: false }) }).catch(() => {});
       void stopServerScheduler(get().addLog);
       get().addLog('error',
-        `[스나이핑-헷징][${modeLabel}] 청산 실패로 자동화 일시정지 — 진입 예약 해제 (기존 청산 타이머 유지), 잔여 포지션 확인 후 수동 재개 필요`,
+        `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] 泥?궛 ?ㅽ뙣濡??먮룞???쇱떆?뺤? ??吏꾩엯 ?덉빟 ?댁젣 (湲곗〈 泥?궛 ??대㉧ ?좎?), ?붿뿬 ?ъ????뺤씤 ???섎룞 ?ш컻 ?꾩슂`,
       );
       return;
     }
@@ -3969,7 +3975,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
   },
 
-  // 특정 코인의 스나이핑 타이머만 정리
+  // ?뱀젙 肄붿씤???ㅻ굹?댄븨 ??대㉧留??뺣━
   cancelSnipeForAsset(snipeKey: string) {
     const { _snipeTimers, _snipeCloseTimers } = get();
     if (_snipeTimers[snipeKey]) clearTimeout(_snipeTimers[snipeKey]);
@@ -3992,7 +3998,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     });
   },
 
-  // 스나이핑 중지 (모드별 또는 전체)
+  // ?ㅻ굹?댄븨 以묒? (紐⑤뱶蹂??먮뒗 ?꾩껜)
   cancelSnipe(mode = 'all') {
     const { _snipeTimers, _snipeCloseTimers, snipeTargets: currentTargets } = get();
 
@@ -4000,11 +4006,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       for (const t of Object.values(_snipeTimers)) clearTimeout(t);
       for (const t of Object.values(_snipeCloseTimers)) clearTimeout(t);
       set({ simSnipeActive: false, realSnipeActive: false, snipeTargets: {}, snipeAllocations: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
-      // 서버에 비활성 상태 저장 + 서버 스케줄러 정지 (재시도 포함)
+      // ?쒕쾭??鍮꾪솢???곹깭 ???+ ?쒕쾭 ?ㅼ?以꾨윭 ?뺤? (?ъ떆???ы븿)
       void fetch('/api/snipe-state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simSnipeActive: false, realSnipeActive: false }) }).catch(() => {});
       void fetch('/api/sim-scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
       void stopServerScheduler(get().addLog);
-      get().addLog('info', '[스나이핑] 전체 중지됨');
+      get().addLog('info', '[?ㅻ굹?댄븨] ?꾩껜 以묒???);
     } else {
       const prefix = mode === 'sim' ? 'sim:' : 'real:';
       const newTimers = { ..._snipeTimers };
@@ -4032,18 +4038,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (mode === 'sim') updates.simSnipeActive = false;
       else updates.realSnipeActive = false;
       set(updates);
-      // REAL 모드 정지 시 서버 스케줄러도 함께 정지 (재시도 포함)
+      // REAL 紐⑤뱶 ?뺤? ???쒕쾭 ?ㅼ?以꾨윭???④퍡 ?뺤? (?ъ떆???ы븿)
       if (mode === 'real') {
         void stopServerScheduler(get().addLog);
       } else {
         void fetch('/api/sim-scheduler', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).catch(() => {});
       }
-      get().addLog('info', `[스나이핑] ${mode.toUpperCase()} 모드 중지됨`);
+      get().addLog('info', `[?ㅻ굹?댄븨] ${mode.toUpperCase()} 紐⑤뱶 以묒???);
     }
   },
 
   async fetchFundingHistory() {
-    // 시뮬레이션 모드에서는 실거래 API 조회하지 않음 (tickSimFunding에서 자체 기록)
+    // ?쒕??덉씠??紐⑤뱶?먯꽌???ㅺ굅??API 議고쉶?섏? ?딆쓬 (tickSimFunding?먯꽌 ?먯껜 湲곕줉)
     if (get().simulationMode) return;
     set({ isLoadingHistory: true });
     const { apiConfigs, enabledExchanges, fundingHistory: previousHistory } = get();
@@ -4057,7 +4063,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     let apiSuccessCount = 0;
 
     const fallbackHistory = await loadFundingHistoryFromTradeLog(false).catch((err) => {
-      get().addLog('warning', '[????섎졊] 嫄곕옒 濡쒓렇 fallback 濡쒕뱶 ?ㅽ뙣', undefined, (err as Error).message);
+      get().addLog('warning', '[??????롮죯] 椰꾧퀡??嚥≪뮄??fallback 嚥≪뮆諭???쎈솭', undefined, (err as Error).message);
       return [] as FundingPayment[];
     });
 
@@ -4084,11 +4090,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const mergedHistory = mergeFundingHistory(apiHistory, fallbackHistory);
 
     if (failures.length > 0) {
-      get().addLog('warning', '[????섎졊] ?쇰? 嫄곕옒??議고쉶 ?ㅽ뙣', undefined, failures.join(' | '));
+      get().addLog('warning', '[??????롮죯] ??? 椰꾧퀡???鈺곌퀬????쎈솭', undefined, failures.join(' | '));
     }
 
     if (apiSuccessCount === 0 && fallbackHistory.length > 0) {
-      get().addLog('info', `[????섎졊] 嫄곕옒 濡쒓렇 fallback?쇰줈 ${fallbackHistory.length}嫄?蹂듭썝`);
+      get().addLog('info', `[??????롮죯] 椰꾧퀡??嚥≪뮄??fallback??곗쨮 ${fallbackHistory.length}椰?癰귣벊??);
     }
 
     if (mergedHistory.length > 0) {
@@ -4099,7 +4105,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     if (previousHistory.length > 0 && failures.length > 0) {
       set({ isLoadingHistory: false });
-      get().addLog('warning', '[????섎졊] ?ㅽ뙣濡?湲곗〈 ?댁뿭??留ㅼ?');
+      get().addLog('warning', '[??????롮죯] ??쎈솭嚥?疫꿸퀣????곷열??筌띲끉?');
       return;
     }
 
@@ -4107,3 +4113,4 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ fundingHistory: [], isLoadingHistory: false });
   },
 }));
+
