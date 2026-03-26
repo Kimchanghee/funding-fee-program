@@ -342,12 +342,16 @@ export default function OpportunityCard() {
         defaultInvestmentUSDT: strategyConfig.investmentUSDT,
         limit: 10,
       });
-      // realSpread 기반 필터: effectiveSpread ≤ 0이면 헷징 불가 → 예약/후보 숨김
+      // realSpread 기반 필터: 실질 수익이 마이너스면 예약/후보 숨김
       return items.filter(item => {
         if (item.status === 'active') return true;
         const rs = realSpreads[item.id] ?? realSpreads[item.asset];
-        if (rs && rs.effectiveSpread <= 0) return false;
-        return true;
+        if (!rs) return true; // realSpread 없으면 명목 스프레드 기준 (이미 netProfit>0 통과)
+        // effectiveSpread로 실질 수익 직접 계산
+        const perSide = item.investmentUSDT ?? strategyConfig.investmentUSDT;
+        const notional = perSide * strategyConfig.leverage;
+        const netPerFunding = notional * (rs.effectiveSpread / 100);
+        return netPerFunding > 0;
       });
     },
     [
