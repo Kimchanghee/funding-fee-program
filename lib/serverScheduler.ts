@@ -372,7 +372,7 @@ class ServerScheduler {
   private startPolling() {
     if (this.pollInterval) clearInterval(this.pollInterval);
     setTimeout(() => void this.poll(), 2_000);
-    this.pollInterval = setInterval(() => void this.poll(), 10_000);
+    this.pollInterval = setInterval(() => void this.poll(), 5_000);
   }
 
   private async poll() {

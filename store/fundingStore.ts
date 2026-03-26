@@ -997,8 +997,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   fundingHistory: [],
   simulationMode: true,
   realPositionMeta: {},
-  simBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
-  simInitialBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
+  simBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000, htx: 2000 },
+  simInitialBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000, htx: 2000 },
   simPositions: [],
   simTotalFundingEarned: 0,
   simTotalTopUps: 0,
@@ -1735,7 +1735,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   async refreshRealSpreads() {
     const { snipeTargets, snipeAllocations, opportunities, strategyConfig, realSpreads, simBalances, balances: realBalances, simulationMode } = get();
     const now = Date.now();
-    const STALE_MS = 10_000;
+    const STALE_MS = 5_000;
 
     // Collect from scheduled targets + near-term opportunities (route key 기준)
     const opportunityIds = new Set<string>();
@@ -1898,7 +1898,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           saveSimMode(snapshot.simulationMode);
         })
         .catch(() => {});
-    }, 5_000);
+    }, 3_000);
 
     // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)
     const snipeCheckInterval = setInterval(() => {
@@ -1949,7 +1949,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (get().simulationMode && !get().simSnipeActive) {
         get().redistributeBalances();
       }
-    }, 15_000);
+    }, 10_000);
 
     set({ _ratesInterval: ratesInterval, _positionsInterval: positionsInterval, _snipeCheckInterval: snipeCheckInterval, _simSyncInterval: simSyncInterval });
   },

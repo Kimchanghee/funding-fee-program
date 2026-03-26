@@ -1,4 +1,4 @@
-export type ExchangeId = 'binance' | 'bybit' | 'okx' | 'bitget' | 'gate' | 'bingx';
+export type ExchangeId = 'binance' | 'bybit' | 'okx' | 'bitget' | 'gate' | 'bingx' | 'htx';
 
 export const EXCHANGE_NAMES: Record<ExchangeId, string> = {
   binance: 'BINANCE',
@@ -7,6 +7,7 @@ export const EXCHANGE_NAMES: Record<ExchangeId, string> = {
   bitget: 'BITGET',
   gate: 'GATE',
   bingx: 'BINGX',
+  htx: 'HTX',
 };
 
 export const EXCHANGE_COLORS: Record<ExchangeId, string> = {
@@ -16,6 +17,7 @@ export const EXCHANGE_COLORS: Record<ExchangeId, string> = {
   bitget: '#00C5C5',
   gate: '#00B2FF',
   bingx: '#2354E6',
+  htx: '#E53E3E',
 };
 
 export const EXCHANGE_BG: Record<ExchangeId, string> = {
@@ -25,6 +27,7 @@ export const EXCHANGE_BG: Record<ExchangeId, string> = {
   bitget: 'rgba(0,197,197,0.12)',
   gate: 'rgba(0,178,255,0.12)',
   bingx: 'rgba(35,84,230,0.12)',
+  htx: 'rgba(229,62,62,0.12)',
 };
 
 export interface FundingRate {
@@ -172,7 +175,7 @@ export interface SnipeStateSnapshot {
   updatedAt: number;
 }
 
-export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx'];
+export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx', 'htx'];
 
 // ── Per-exchange fee matrix (VIP0 / basic tier, USDT-M futures) ──
 // Source: official fee schedules as of 2026-03
@@ -191,8 +194,8 @@ export interface TimingConfig {
 }
 
 export const DEFAULT_TIMING_CONFIG: TimingConfig = {
-  entryLeadMs: 5_000,
-  closeDelayMs: 2_000,
+  entryLeadMs: 3_500,
+  closeDelayMs: 1_500,
   fundingVerifyRetryMs: 5_000,
   fundingVerifyAttempts: 3,
 };
@@ -291,6 +294,7 @@ export const EXCHANGE_FEES: Record<ExchangeId, ExchangeFees> = {
   bitget:  { taker: 0.00060, maker: 0.00020 },  // 0.060% / 0.020%
   gate:    { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
   bingx:   { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
+  htx:     { taker: 0.00060, maker: 0.00020 },  // 0.060% / 0.020%
 };
 
 /** Get round-trip fee for a hedge pair (entry + exit on both sides) */
