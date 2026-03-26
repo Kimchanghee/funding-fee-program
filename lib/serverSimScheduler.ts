@@ -83,6 +83,33 @@ function getSimPositionOpportunityKey(
   );
 }
 
+function flipOpportunityDirection(opportunity: ArbitrageOpportunity): ArbitrageOpportunity {
+  const fundingIntervalMs = opportunity.fundingIntervalMs ?? 8 * 3600000;
+  const flippedSpread = opportunity.longRate - opportunity.shortRate;
+  return {
+    ...opportunity,
+    id: makeOpportunityId(
+      opportunity.baseAsset,
+      opportunity.longExchange,
+      opportunity.shortExchange,
+      fundingIntervalMs,
+    ),
+    shortExchange: opportunity.longExchange,
+    shortSymbol: opportunity.longSymbol,
+    shortRate: opportunity.longRate,
+    shortRatePercent: opportunity.longRatePercent,
+    shortMarkPrice: opportunity.longMarkPrice,
+    longExchange: opportunity.shortExchange,
+    longSymbol: opportunity.shortSymbol,
+    longRate: opportunity.shortRate,
+    longRatePercent: opportunity.shortRatePercent,
+    longMarkPrice: opportunity.shortMarkPrice,
+    spread: flippedSpread,
+    spreadPercent: flippedSpread * 100,
+    annualReturnPercent: opportunity.annualReturnPercent * -1,
+  };
+}
+
 function buildStrategyLikeConfig(config: ServerSimSchedulerConfig): StrategyConfig {
   return {
     investmentUSDT: config.investmentUSDT,
@@ -211,7 +238,7 @@ export interface ServerSimSchedulerConfig {
   enabledExchanges: ExchangeId[];
   feeOverrides?: FeeOverrides;
   timingConfig?: TimingConfig;
-  maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%)
+  maxSlippagePercent?: number; // maximum slippage percent (default 1.5%)
 }
 
 interface ScheduledSimEntry {
@@ -257,6 +284,7 @@ class ServerSimScheduler {
   private lastRatesUpdate = 0;
   private loopInterval: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  private revalidateCursor = 0;
   private mutationQueue: Promise<void> = Promise.resolve();
 
   static getInstance() {
@@ -500,19 +528,25 @@ class ServerSimScheduler {
     }
   }
 
-  /** ★ 오더북 기반 예약 재검증 — 실측 수익성 미달 시 예약 해제 */
+  /** Orderbook-based schedule revalidation. Removes routes that are no longer profitable. */
   private async revalidateScheduledByOrderbook() {
     if (this.scheduledEntries.size === 0) return;
 
     const now = Date.now();
     const toRemove: string[] = [];
+    const toReplace = new Map<string, ScheduledSimEntry>();
 
-    // 펀딩 60초 이상 남은 예약만 재검증 (직전은 executeDueEntries에서 처리)
+    // ???60珥??댁긽 ?⑥? ?덉빟留??ш?利?(吏곸쟾? executeDueEntries?먯꽌 泥섎━)
     const candidates = Array.from(this.scheduledEntries.entries())
       .filter(([, entry]) => entry.targetTime - now > 60_000);
+    if (candidates.length === 0) return;
 
-    // 최대 3개씩 배치로 오더북 조회 (API 부하 제한)
-    const batch = candidates.slice(0, 3);
+    // 理쒕? 3媛쒖뵫 諛곗튂濡??ㅻ뜑遺?議고쉶 (API 遺???쒗븳)
+    // 怨좎젙 slice(0,3) ???round-robin?쇰줈 ?쒗솚 ?먭??댁꽌 ?꾨씫??諛⑹??쒕떎.
+    const batchSize = Math.min(3, candidates.length);
+    const startIndex = this.revalidateCursor % candidates.length;
+    const batch = Array.from({ length: batchSize }, (_, index) => candidates[(startIndex + index) % candidates.length]);
+    this.revalidateCursor = (startIndex + batch.length) % candidates.length;
 
     await Promise.allSettled(batch.map(async ([opportunityId, entry]) => {
       try {
@@ -534,13 +568,42 @@ class ServerSimScheduler {
         const realNetSpread = calcNetSpreadPercent(entry.opportunity.spreadPercent, entryGapPct, hedgeFeePct);
 
         if (realNetSpread <= 0) {
+          // 湲곗〈 ?덉빟???뚯닔硫?諛섎? 諛⑺뼢??利됱떆 ?ш?利앺븳??
+          const flipped = flipOpportunityDirection(entry.opportunity);
+          try {
+            const [flipShortFill, flipLongFill] = await Promise.all([
+              fetchMarketFillPrice(flipped.shortExchange, flipped.shortSymbol, 'sell', notional),
+              fetchMarketFillPrice(flipped.longExchange, flipped.longSymbol, 'buy', notional),
+            ]);
+            const flipEntryGapPct = ((flipLongFill.fillPrice - flipShortFill.fillPrice) / flipShortFill.fillPrice) * 100;
+            const flipHedgeFeePct = getHedgeFeesWithOverrides(
+              flipped.shortExchange,
+              flipped.longExchange,
+              'taker',
+              this.config.feeOverrides,
+            ) * 100;
+            const flippedNetSpread = calcNetSpreadPercent(flipped.spreadPercent, flipEntryGapPct, flipHedgeFeePct);
+            if (flippedNetSpread > 0) {
+              toReplace.set(opportunityId, {
+                ...entry,
+                opportunity: flipped,
+              });
+              return;
+            }
+          } catch {
+            // 諛섎? 諛⑺뼢 ?ш?利??ㅽ뙣 ?쒖뿉??湲곗〈 ?뺤콉?濡??쒓굅
+          }
           toRemove.push(opportunityId);
         }
       } catch {
-        // 오더북 조회 실패 시 유지 (실행 시점에서 다시 검증)
+        // ?ㅻ뜑遺?議고쉶 ?ㅽ뙣 ???좎? (?ㅽ뻾 ?쒖젏?먯꽌 ?ㅼ떆 寃利?
       }
     }));
 
+    for (const [opportunityId, nextEntry] of toReplace.entries()) {
+      if (!this.scheduledEntries.has(opportunityId)) continue;
+      this.scheduledEntries.set(opportunityId, nextEntry);
+    }
     for (const id of toRemove) {
       this.scheduledEntries.delete(id);
     }
@@ -680,10 +743,26 @@ class ServerSimScheduler {
 
     for (const entry of dueEntries) {
       this.scheduledEntries.delete(entry.opportunityId);
-      const opportunity = this.opportunities.find(
+      const latestById = this.opportunities.find(
         (candidate) => getOpportunityId(candidate) === entry.opportunityId,
-      ) ?? entry.opportunity;
-      await this.executeOpportunity(opportunity, entry.investmentUSDT, true);
+      );
+      const isRouteOverridden = !!latestById
+        && (
+          latestById.shortExchange !== entry.opportunity.shortExchange
+          || latestById.longExchange !== entry.opportunity.longExchange
+          || latestById.shortSymbol !== entry.opportunity.shortSymbol
+          || latestById.longSymbol !== entry.opportunity.longSymbol
+        );
+      const primaryOpportunity = isRouteOverridden
+        ? entry.opportunity
+        : (latestById ?? entry.opportunity);
+
+      const primaryResult = await this.executeOpportunity(primaryOpportunity, entry.investmentUSDT, true);
+      if (primaryResult.success) continue;
+
+      // 留덉?留?吏꾩엯 吏곸쟾???쒖꽭媛 ?ㅼ쭛?덈뒗 寃쎌슦瑜??鍮꾪빐 諛섎? 諛⑺뼢????踰????쒕룄?쒕떎.
+      const flipped = flipOpportunityDirection(primaryOpportunity);
+      await this.executeOpportunity(flipped, entry.investmentUSDT, true);
     }
   }
 
@@ -912,7 +991,7 @@ class ServerSimScheduler {
     investmentUSDT: number,
     isSnipe: boolean,
   ): Promise<SimTradeResult> {
-    if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
+    if (!isSnipe && opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
       return { success: false, error: 'spread below threshold' };
     }
 
@@ -945,8 +1024,7 @@ class ServerSimScheduler {
         fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
         fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
       ]);
-
-      // ★ 슬리피지 하드캡 — 설정값 사용 (기본 1.5%)
+      // Hard slippage cap using configured threshold (default 1.5%).
       const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
       if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
         return {
@@ -960,8 +1038,7 @@ class ServerSimScheduler {
     } catch {
       // Fall back to mark prices.
     }
-
-    // ★ 부호 통일: (longFill - shortFill) / shortFill — 양수 = 진입 손실 (execute route/클라이언트와 동일)
+    // Sign convention: (longFill - shortFill) / shortFill. Positive means worse entry.
     const entryGapPercent = ((longFillPrice - shortFillPrice) / shortFillPrice) * 100;
     let adjustedLongNotional = notional;
     if (Math.abs(entryGapPercent) > 0.1) {
@@ -1123,3 +1200,4 @@ class ServerSimScheduler {
 export function getServerSimScheduler() {
   return ServerSimScheduler.getInstance();
 }
+
