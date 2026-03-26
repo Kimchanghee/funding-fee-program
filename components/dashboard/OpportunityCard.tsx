@@ -395,8 +395,8 @@ export default function OpportunityCard() {
       seenAssets.add(opp.baseAsset);
     }
 
-    // 마이너스 순수익 필터링 (활성 포지션은 유지)
-    const profitable = items.filter(i => i.status === 'active' || i.opp.netProfit > 0);
+    // 마이너스 순수익 필터링 (예약/활성은 유지, 후보만 필터)
+    const profitable = items.filter(i => i.status === 'active' || i.status === 'scheduled' || i.opp.netProfit > 0);
 
     // Sort: active first, then by 가장 빠른 시간 + 높은 수익률
     return profitable.sort((a, b) => {
@@ -775,8 +775,8 @@ export default function OpportunityCard() {
                 skipFees: hasRealSpread,
                 feeOverrides: strategyConfig.feeOverrides,
               });
-              // 마이너스 순수익: 활성 포지션만 항상 표시, 나머지(예약/후보)는 숨김
-              if (profit.netPerFunding <= 0 && item.status !== 'active') return null;
+              // 마이너스 순수익: 예약/활성은 항상 표시, 후보만 숨김
+              if (profit.netPerFunding <= 0 && item.status === 'opportunity') return null;
 
               visibleIdx++;
 
