@@ -944,13 +944,24 @@ class ServerSimScheduler {
         fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
         fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
       ]);
+
+      // ★ 슬리피지 하드캡 — execute route와 동일 기준 (1.5%)
+      const MAX_SLIPPAGE_PCT = 1.5;
+      if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
+        return {
+          success: false,
+          error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${MAX_SLIPPAGE_PCT}%`,
+        };
+      }
+
       shortFillPrice = shortFill.fillPrice;
       longFillPrice = longFill.fillPrice;
     } catch {
       // Fall back to mark prices.
     }
 
-    const entryGapPercent = ((shortFillPrice - longFillPrice) / ((shortFillPrice + longFillPrice) / 2)) * 100;
+    // ★ 부호 통일: (longFill - shortFill) / shortFill — 양수 = 진입 손실 (execute route/클라이언트와 동일)
+    const entryGapPercent = ((longFillPrice - shortFillPrice) / shortFillPrice) * 100;
     let adjustedLongNotional = notional;
     if (Math.abs(entryGapPercent) > 0.1) {
       adjustedLongNotional = notional * (longFillPrice / shortFillPrice);

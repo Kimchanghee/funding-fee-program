@@ -67,6 +67,7 @@ interface HedgePair {
   status: 'open' | 'partial' | 'closed';
   completion?: TradeEvent | null;
   fundingVerified?: boolean | null; // null = 미확인, true = 검증됨, false = 검증 실패
+  simulation: boolean;
 }
 
 function buildPairs(events: TradeEvent[]): HedgePair[] {
@@ -99,6 +100,7 @@ function buildPairs(events: TradeEvent[]): HedgePair[] {
         longPricePnl: 0,
         status: 'open',
         completion: null,
+        simulation: ev.simulation ?? false,
       });
     }
   }
@@ -231,6 +233,13 @@ function PairRow({ pair }: { pair: HedgePair }) {
         </span>
         <span style={{ fontWeight: 700, color: '#e2e8f0' }}>
           {pair.baseAsset}
+          <span style={{
+            fontSize: 8, fontWeight: 700, marginLeft: 4, padding: '1px 4px', borderRadius: 3,
+            background: pair.simulation ? 'rgba(139,92,246,0.2)' : 'rgba(239,68,68,0.2)',
+            color: pair.simulation ? '#a78bfa' : '#ef4444',
+          }}>
+            {pair.simulation ? 'SIM' : 'REAL'}
+          </span>
         </span>
         <span style={{ color: '#94a3b8', fontSize: 11 }}>
           {`숏:${pair.shortExchange.toUpperCase()} / 롱:${pair.longExchange.toUpperCase()}`}
