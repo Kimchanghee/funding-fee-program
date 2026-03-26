@@ -641,6 +641,7 @@ interface FundingState {
   isLoadingRates: boolean;
   isLoadingPositions: boolean;
   isLoadingHistory: boolean;
+  tradesClearedAt: number;
   strategyRunning: boolean;
   connectedExchanges: ExchangeId[];
   lastRatesUpdate: number | null;
@@ -1040,6 +1041,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   isLoadingRates: false,
   isLoadingPositions: false,
   isLoadingHistory: false,
+  tradesClearedAt: 0,
   strategyRunning: false,
   connectedExchanges: [],
   lastRatesUpdate: null,
@@ -2731,7 +2733,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }).catch(() => {});
     // 서버 측 거래내역 + 로그도 초기화
-    fetch('/api/trades/clear', { method: 'DELETE' }).catch(() => {});
+    fetch('/api/trades/clear', { method: 'DELETE' })
+      .then(() => set({ tradesClearedAt: Date.now() }))
+      .catch(() => set({ tradesClearedAt: Date.now() }));
     fetch('/api/logs/clear', { method: 'DELETE' }).catch(() => {});
     get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${perExchange} 리셋`);
   },

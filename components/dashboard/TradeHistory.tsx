@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { History, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import { fmtNum } from '@/lib/format';
+import { useFundingStore } from '@/store/fundingStore';
 
 interface TradeEvent {
   timestamp: number;
@@ -405,6 +406,7 @@ export default function TradeHistory() {
   const [events, setEvents] = useState<TradeEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const tradesClearedAt = useFundingStore(s => s.tradesClearedAt);
 
   const fetchTrades = useCallback(async () => {
     setLoading(true);
@@ -416,7 +418,7 @@ export default function TradeHistory() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { fetchTrades(); }, [fetchTrades]);
+  useEffect(() => { fetchTrades(); }, [fetchTrades, tradesClearedAt]);
 
   const pairs = buildPairs(events);
   const closedPairs = pairs.filter(p => p.status === 'closed');
