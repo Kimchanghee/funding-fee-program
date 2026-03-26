@@ -1001,6 +1001,8 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
           feeOverrides,
         })
         : estimateProfit(opp, perSideInvestment, leverage, { feeOverrides });
+      // 마이너스 수익 항목은 합산에서 제외
+      if (profit.netPerFunding <= 0) continue;
       perDay += profit.perDay; per2Day += profit.per2Day; per3Day += profit.per3Day;
       per4Day += profit.per4Day; per5Day += profit.per5Day; per6Day += profit.per6Day;
       perWeek += profit.perWeek; per2Week += profit.per2Week; per3Week += profit.per3Week; perMonth += profit.perMonth;
