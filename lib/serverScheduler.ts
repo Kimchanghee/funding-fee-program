@@ -553,6 +553,26 @@ class ServerScheduler {
       }
 
       const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
+      // ★ 거래소 간 가격 괴리도 슬리피지와 동일 기준 적용
+      if (Math.abs(entryGapPct) > MAX_SLIPPAGE_PCT) {
+        this.log(
+          'warning',
+          `entry blocked by cross-exchange gap | asset=${asset} entryGap=${entryGapPct.toFixed(4)}% > max=${MAX_SLIPPAGE_PCT}% (short=${shortFill.fillPrice} long=${longFill.fillPrice})`,
+        );
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'entry_gap_exceeded',
+          detail: `entryGap:${entryGapPct.toFixed(6)}% max:${MAX_SLIPPAGE_PCT}% short=${shortFill.fillPrice} long=${longFill.fillPrice}`,
+        }]);
+        return;
+      }
       const hedgeFeePct = getHedgeFeesWithOverrides(
         opportunity.shortExchange,
         opportunity.longExchange,
@@ -689,7 +709,8 @@ class ServerScheduler {
 
       const pairId = `srv-${Date.now()}-${opportunityId.replace(/[:]/g, '-')}`;
       const entryTime = Date.now();
-      const closeAt = Math.max(Date.now(), targetFundingTime + this.getTimingConfig().closeDelayMs);
+      const closeDelayMs = Math.max(0, Math.min(this.getTimingConfig().closeDelayMs, 1_000));
+      const closeAt = Math.max(Date.now(), targetFundingTime + closeDelayMs);
       const activePosition: ActivePosition = {
         opportunityId,
         asset,

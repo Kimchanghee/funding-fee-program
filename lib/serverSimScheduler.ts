@@ -38,8 +38,13 @@ import {
 const DATA_DIR = join(process.cwd(), 'data');
 const STATE_FILE = join(DATA_DIR, 'sim-scheduler-state.json');
 const LOOP_INTERVAL_MS = 1_000;
-const RATES_REFRESH_INTERVAL_MS = 3_000;
+const RATES_REFRESH_INTERVAL_MS = 1_000;
 const MAX_FUNDING_HISTORY = 500;
+const BASE_REVALIDATE_BATCH_SIZE = 3;
+const URGENT_REVALIDATE_BATCH_SIZE = 12;
+const URGENT_REVALIDATE_WINDOW_MS = 15_000;
+const FINAL_REVALIDATE_GUARD_MS = 1_000;
+const FULL_REVALIDATE_CAP = 20;
 
 function ensureDataDir() {
   if (!existsSync(DATA_DIR)) {
@@ -538,15 +543,39 @@ class ServerSimScheduler {
 
     // ???60珥??댁긽 ?⑥? ?덉빟留??ш?利?(吏곸쟾? executeDueEntries?먯꽌 泥섎━)
     const candidates = Array.from(this.scheduledEntries.entries())
-      .filter(([, entry]) => entry.targetTime - now > 60_000);
+      .filter(([, entry]) => entry.targetTime - now > FINAL_REVALIDATE_GUARD_MS)
+      .sort((a, b) => a[1].targetTime - b[1].targetTime);
     if (candidates.length === 0) return;
 
     // 理쒕? 3媛쒖뵫 諛곗튂濡??ㅻ뜑遺?議고쉶 (API 遺???쒗븳)
     // 怨좎젙 slice(0,3) ???round-robin?쇰줈 ?쒗솚 ?먭??댁꽌 ?꾨씫??諛⑹??쒕떎.
-    const batchSize = Math.min(3, candidates.length);
-    const startIndex = this.revalidateCursor % candidates.length;
-    const batch = Array.from({ length: batchSize }, (_, index) => candidates[(startIndex + index) % candidates.length]);
-    this.revalidateCursor = (startIndex + batch.length) % candidates.length;
+    let batch: Array<[string, ScheduledSimEntry]> = [];
+    if (candidates.length <= FULL_REVALIDATE_CAP) {
+      batch = candidates;
+      this.revalidateCursor = 0;
+    } else {
+      const urgent = candidates.filter(([, entry]) => entry.targetTime - now <= URGENT_REVALIDATE_WINDOW_MS);
+      const regular = candidates.filter(([, entry]) => entry.targetTime - now > URGENT_REVALIDATE_WINDOW_MS);
+      const urgentBatch = urgent.slice(0, Math.min(URGENT_REVALIDATE_BATCH_SIZE, urgent.length));
+
+      const regularBudget = Math.max(BASE_REVALIDATE_BATCH_SIZE - urgentBatch.length, 0);
+      let regularBatch: Array<[string, ScheduledSimEntry]> = [];
+      if (regularBudget > 0 && regular.length > 0) {
+        const startIndex = this.revalidateCursor % regular.length;
+        regularBatch = Array.from(
+          { length: Math.min(regularBudget, regular.length) },
+          (_, index) => regular[(startIndex + index) % regular.length],
+        );
+        this.revalidateCursor = (startIndex + regularBatch.length) % regular.length;
+      } else {
+        this.revalidateCursor = 0;
+      }
+
+      batch = [...urgentBatch, ...regularBatch];
+      if (batch.length === 0) {
+        batch = candidates.slice(0, Math.min(BASE_REVALIDATE_BATCH_SIZE, candidates.length));
+      }
+    }
 
     await Promise.allSettled(batch.map(async ([opportunityId, entry]) => {
       try {
@@ -772,6 +801,7 @@ class ServerSimScheduler {
 
     const now = Date.now();
     const timing = this.getTimingConfig();
+    const closeDelayMs = Math.max(0, Math.min(timing.closeDelayMs, 1_000));
     const fundingEvents: FundingPayment[] = [];
     const tradeEvents: Array<Parameters<typeof appendTrades>[0][number]> = [];
     let changed = false;
@@ -828,7 +858,8 @@ class ServerSimScheduler {
 
       const updatedFundingReceived = (position.fundingReceived ?? 0) + 1;
       if (position.isSnipe && position.pairId && updatedFundingReceived >= 1) {
-        this.pendingAutoCloses.set(position.pairId, position.nextFundingTime + timing.closeDelayMs);
+        const closeAt = Math.max(Date.now(), position.nextFundingTime + closeDelayMs);
+        this.pendingAutoCloses.set(position.pairId, closeAt);
       }
 
       const pricePnl = position.side === 'short'
@@ -1030,6 +1061,14 @@ class ServerSimScheduler {
         return {
           success: false,
           error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${MAX_SLIPPAGE_PCT}%`,
+        };
+      }
+      // ★ 거래소 간 가격 괴리도 슬리피지와 동일 기준 적용 — 괴리가 크면 헷징 불가
+      const preEntryGapPct = Math.abs(((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100);
+      if (preEntryGapPct > MAX_SLIPPAGE_PCT) {
+        return {
+          success: false,
+          error: `entry gap exceeded: ${preEntryGapPct.toFixed(4)}% > max=${MAX_SLIPPAGE_PCT}% (short=${shortFill.fillPrice} long=${longFill.fillPrice})`,
         };
       }
 

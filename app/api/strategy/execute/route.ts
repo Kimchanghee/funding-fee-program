@@ -131,8 +131,24 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2b. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증 (통합 계산식)
+    // 2b. Cross-exchange entry gap guard — 거래소 간 가격 괴리도 슬리피지와 동일 기준 적용
     const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
+    if (Math.abs(entryGapPct) > MAX_SLIPPAGE_PCT) {
+      console.log(
+        `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 거래소 간 가격 괴리 초과: ` +
+        `entryGap=${entryGapPct.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}% | ` +
+        `short(${opportunity.shortExchange})=${shortFill.fillPrice} long(${opportunity.longExchange})=${longFill.fillPrice}`,
+      );
+      return NextResponse.json({
+        success: false,
+        error: `거래소 간 가격 괴리 초과: ${entryGapPct.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}%`,
+        reason: 'entry_gap_exceeded',
+        entryGapPct,
+        maxSlippage: MAX_SLIPPAGE_PCT,
+      });
+    }
+
+    // 2c. Pre-execution profitability gate — fresh fill price 기반 수익성 재검증 (통합 계산식)
     const hedgeFeePct = getHedgeFeesWithOverrides(
       opportunity.shortExchange,
       opportunity.longExchange,

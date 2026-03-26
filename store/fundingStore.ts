@@ -3395,9 +3395,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // effectiveSpread는 이미 수수료/슬리피지 차감 완료값이므로 minSpread(수수료 포함)와 비교하면 이중 필터
       const rs = getRealSpreadForOpportunity(preFilterRealSpreads, o);
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;
-      // ★ 유동성 필터: 슬리피지가 maxSlippagePercent 이상이면 차단
+      // ★ 유동성 필터: 개별 슬리피지 또는 거래소 간 가격 괴리가 maxSlippagePercent 이상이면 차단
       const maxSlip = strategyConfig.maxSlippagePercent ?? 1.5;
       if (hasRS && (rs.shortSlippage > maxSlip || rs.longSlippage > maxSlip)) { filterReasons.noProfit++; return false; }
+      if (hasRS && Math.abs(rs.entryGapPct) > maxSlip) { filterReasons.noProfit++; return false; }
+      // effectiveSpread ≤ 0이면 헷징 불가 (진입 손실 > 펀딩 수익)
+      if (hasRS && rs.effectiveSpread <= 0) { filterReasons.noProfit++; return false; }
       if (!hasRS && o.spreadPercent < effectiveMinPercent) { filterReasons.lowSpread++; return false; }
       if (o.netProfit <= 0) { filterReasons.noProfit++; return false; }
       return true;
@@ -3784,7 +3787,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           undefined,
           `펀딩까지 ~${secsToFunding}초`,
         );
-        const closeDelay = Math.max(0, targetFundingTime - Date.now()) + getResolvedTimingConfig(get().strategyConfig.timingConfig).closeDelayMs;
+        const resolvedCloseDelayMs = Math.max(
+          0,
+          Math.min(getResolvedTimingConfig(get().strategyConfig.timingConfig).closeDelayMs, 1_000),
+        );
+        const closeDelay = Math.max(0, targetFundingTime - Date.now()) + resolvedCloseDelayMs;
         const closeTimer = setTimeout(() => {
           get()._executeSnipeClose(finalTarget, isSim);
         }, closeDelay);
