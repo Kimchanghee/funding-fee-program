@@ -276,7 +276,7 @@ function SimModeColumn({
       </div>
 
       {/* 거래소 미니 카드 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 6, marginTop: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${enabledExchanges.length}, 1fr)`, gap: 8, marginTop: 10 }}>
         {enabledExchanges.map(ex => <ExchangeMiniCard key={ex} exchange={ex} />)}
       </div>
     </div>
