@@ -904,11 +904,28 @@ export default function OpportunityCard() {
                 </div>
               );
             });
-              // 빈 행으로 15개 채우기
+              // 빈 행으로 15개 채우기 (번호 + 대시 형태 유지)
               const emptyRows = [];
               for (let i = visibleIdx; i < MIN_ROWS; i++) {
                 emptyRows.push(
-                  <div key={`empty-${i}`} style={{ height: ROW_HEIGHT }} />
+                  <div key={`empty-${i}`} style={{
+                    display: 'grid',
+                    gridTemplateColumns: '28px 62px 1fr 72px 72px 80px 70px 60px 70px 56px 72px',
+                    gap: 4, padding: '8px 10px', height: ROW_HEIGHT,
+                    alignItems: 'center', opacity: 0.2,
+                  }}>
+                    <span className="mono opp-hide-mobile" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{i + 1}</span>
+                    <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>—</span>
+                    <span className="opp-hide-mobile" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span className="opp-hide-mobile" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                  </div>
                 );
               }
               return [...renderedRows, ...emptyRows];
