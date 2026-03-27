@@ -640,8 +640,8 @@ export default function OpportunityCard() {
             {/* Table Header */}
             <div className="opp-table-header" style={{
               display: 'grid',
-              gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 60px 80px',
-              gap: 8, padding: '6px 10px', marginBottom: 4,
+              gridTemplateColumns: '28px 62px 1fr 72px 72px 80px 70px 60px 70px 56px 72px',
+              gap: 4, padding: '6px 10px', marginBottom: 4,
               fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)',
               borderBottom: '1px solid var(--color-border)',
               textTransform: 'uppercase', letterSpacing: '0.05em',
@@ -651,16 +651,19 @@ export default function OpportunityCard() {
               <span>코인</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>숏</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>롱</span>
-              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>예상 투자금</span>
-              <span style={{ textAlign: 'right' }}>예상 수익</span>
+              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>투자금</span>
+              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩수익</span>
+              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>수수료</span>
+              <span style={{ textAlign: 'right' }}>순수익</span>
               <span style={{ textAlign: 'right' }}>수익률</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩까지</span>
             </div>
 
-            {/* Rows — 15행 고정 높이로 레이아웃 안정화 */}
-            <div style={{ minHeight: 15 * 42 }}>
+            {/* Rows — 15행 고정 */}
             {(() => {
               let visibleIdx = 0;
+              const ROW_HEIGHT = 42;
+              const MIN_ROWS = 15;
               // 순차적 잔고 추적: 이전 기회의 마진 사용을 반영
               const remainingBal: Record<string, number> = {};
               if (strategyConfig.compoundInvesting) {
@@ -681,7 +684,7 @@ export default function OpportunityCard() {
               let lastFundingWindow = 0; // 현재 처리 중인 펀딩 시간 윈도우
               const pendingReturns: { exchange: string; amount: number; fundingTime: number }[] = [];
 
-              return scheduledCoins.map((item) => {
+              const renderedRows = scheduledCoins.map((item) => {
               const isExpanded = expandedAsset === item.id;
               const realSpread = realSpreads[item.id] ?? realSpreads[item.asset];
               const effectiveOpp: ArbitrageOpportunity = realSpread
@@ -764,8 +767,8 @@ export default function OpportunityCard() {
                     onClick={() => setExpandedAsset(isExpanded ? null : item.id)}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '32px 70px 1fr 80px 80px 90px 80px 60px 80px',
-                      gap: 8, padding: '8px 10px',
+                      gridTemplateColumns: '28px 62px 1fr 72px 72px 80px 70px 60px 70px 56px 72px',
+                      gap: 4, padding: '8px 10px',
                       alignItems: 'center',
                       cursor: 'pointer',
                       borderRadius: 8,
@@ -821,39 +824,50 @@ export default function OpportunityCard() {
                       <ExBadge ex={item.opp.longExchange} />
                     </div>
 
-                    {/* Expected Investment — 복리 시 순차 잔고 기반, 단리 시 설정값 */}
+                    {/* 투자금 */}
                     {(() => {
                       const totalInvest = itemPerSide * 2;
                       const posSize = itemPerSide * strategyConfig.leverage;
                       return (
                         <div className="opp-hide-mobile" style={{ textAlign: 'right' }}>
-                          <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: '#a78bfa' }}>
+                          <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa' }}>
                             ${fmtNum(totalInvest, 0)}
                           </span>
-                          <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
-                            {strategyConfig.leverage}x → ${fmtNum(posSize, 0)}
+                          <div style={{ fontSize: 8, color: 'var(--color-text-muted)' }}>
+                            {strategyConfig.leverage}x→${fmtNum(posSize, 0)}
                           </div>
                         </div>
                       );
                     })()}
 
-                    {/* Net Profit */}
+                    {/* 펀딩수익 (gross) */}
+                    <div className="opp-hide-mobile" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
+                      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: profit.perFunding >= 0 ? '#10b981' : '#ef4444' }}>
+                        {profit.perFunding >= 0 ? '+' : ''}${fmtNum(profit.perFunding)}
+                      </span>
+                    </div>
+
+                    {/* 수수료 */}
+                    <div className="opp-hide-mobile" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
+                      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: '#ef4444' }}>
+                        -${fmtNum(displayFees)}
+                      </span>
+                    </div>
+
+                    {/* 순수익 */}
                     <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
                       <span className="mono" style={{
-                        fontSize: 13, fontWeight: 700,
+                        fontSize: 12, fontWeight: 700,
                         color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444',
                       }}>
                         {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
                       </span>
-                      <div style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
-                        수수료 -${fmtNum(displayFees)}
-                      </div>
                     </div>
 
-                    {/* ROI % */}
+                    {/* 수익률 */}
                     <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
                       <span className="mono" style={{
-                        fontSize: 13, fontWeight: 700,
+                        fontSize: 11, fontWeight: 700,
                         color: profit.roiPerFunding >= 0 ? '#10b981' : '#ef4444',
                       }}>
                         {profit.roiPerFunding >= 0 ? '+' : ''}{fmtNum(profit.roiPerFunding, 3)}%
@@ -890,8 +904,15 @@ export default function OpportunityCard() {
                 </div>
               );
             });
+              // 빈 행으로 15개 채우기
+              const emptyRows = [];
+              for (let i = visibleIdx; i < MIN_ROWS; i++) {
+                emptyRows.push(
+                  <div key={`empty-${i}`} style={{ height: ROW_HEIGHT }} />
+                );
+              }
+              return [...renderedRows, ...emptyRows];
             })()}
-            </div>
           </div>
         )}
 
