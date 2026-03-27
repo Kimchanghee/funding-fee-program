@@ -119,6 +119,25 @@ function evictExchangeCache(id: ExchangeId, config?: ApiConfig): void {
   }
 }
 
+/** 비동기 거래량 병합 — 펀딩레이트 반환 후 백그라운드에서 실행 */
+async function fetchTickersAndMergeVolume(
+  ex: any,
+  id: ExchangeId,
+  rates: FundingRate[],
+): Promise<void> {
+  try {
+    const tickers = await Promise.race([
+      ex.fetchTickers() as Promise<Record<string, any>>,
+      new Promise<Record<string, any>>((resolve) => setTimeout(() => resolve({}), 15000)),
+    ]);
+    for (const rate of rates) {
+      const base = rate.symbol.replace(/:.*$/, '');
+      const ticker = tickers[rate.symbol] ?? tickers[base + '/USDT:USDT'] ?? tickers[base + '/USDT'];
+      if (ticker?.quoteVolume) rate.quoteVolume24h = ticker.quoteVolume;
+    }
+  } catch { /* silent */ }
+}
+
 function isPerpetualUsdtSymbol(symbol: string): boolean {
   return symbol.includes('USDT') && !/-\d{6}$/i.test(symbol);
 }
@@ -214,20 +233,11 @@ export async function fetchFundingRates(
   try {
     // ── Bulk fetch (1 API call) with 12s timeout ──
     console.log(`[CCXT] ${id}: fetchFundingRates 시작`);
-    const [frs, tickers] = await Promise.all([
-      Promise.race([
-        ex.fetchFundingRates() as Promise<Record<string, any>>,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout (20s)`)), 20000),
-        ),
-      ]),
-      // 24h 거래량 가져오기 (실패해도 무시)
-      Promise.race([
-        ex.fetchTickers() as Promise<Record<string, any>>,
-        new Promise<Record<string, any>>((resolve) =>
-          setTimeout(() => resolve({}), 15000),
-        ),
-      ]).catch(() => ({} as Record<string, any>)),
+    const frs = await Promise.race([
+      ex.fetchFundingRates() as Promise<Record<string, any>>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[${id}] fetchFundingRates timeout (20s)`)), 20000),
+      ),
     ]);
     const results: FundingRate[] = [];
     for (const [sym, fr] of Object.entries(frs)) {
@@ -235,13 +245,10 @@ export async function fetchFundingRates(
       const base = sym.replace(/:.*$/, '');
       if (baseSet && !baseSet.has(base)) continue;
       const normalized = normalizeFr(id, sym, fr);
-      if (normalized) {
-        // 티커에서 24h 거래량(USDT) 병합
-        const ticker = tickers[sym] ?? tickers[base + '/USDT:USDT'] ?? tickers[base + '/USDT'];
-        if (ticker?.quoteVolume) normalized.quoteVolume24h = ticker.quoteVolume;
-        results.push(normalized);
-      }
+      if (normalized) results.push(normalized);
     }
+    // 24h 거래량 비동기 병합 (실패해도 무시, 펀딩레이트 반환을 지연시키지 않음)
+    fetchTickersAndMergeVolume(ex, id, results).catch(() => {});
     return results;
   } catch {
     // ── Fallback: per-symbol fetch ──
