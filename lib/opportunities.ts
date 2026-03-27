@@ -64,11 +64,11 @@ export function findOpportunities(
   feeOverrides?: FeeOverrides,
   minVolume24hUSD?: number,
 ): ArbitrageOpportunity[] {
-  const volumeThreshold = minVolume24hUSD ?? DEFAULT_MIN_VOLUME_24H_USD;
+  // 볼륨 필터는 비동기 fetchTickers 타이밍 이슈로 여기서 적용하지 않음
+  // → 스케줄링 단계(fundingStore)에서 realSpread/볼륨 데이터 확인 후 필터링
+  void minVolume24hUSD; // kept in signature for scheduling callers
   const byAsset = new Map<string, FundingRate[]>();
   for (const rate of rates) {
-    // 24h 거래량 필터: 최소 기준 미달 시 제외
-    if (volumeThreshold > 0 && rate.quoteVolume24h != null && rate.quoteVolume24h < volumeThreshold) continue;
     const list = byAsset.get(rate.baseAsset) ?? [];
     list.push(rate);
     byAsset.set(rate.baseAsset, list);

@@ -3376,6 +3376,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       simPositions,
       positions,
       strategyConfig,
+      fundingRates,
     } = get();
     const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
     const modePrefix = isSim ? 'sim' : 'real';
@@ -3410,9 +3411,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // ★ 유동성 필터: 개별 슬리피지 또는 거래소 간 가격 괴리가 maxSlippagePercent 이상이면 차단
       const maxSlip = strategyConfig.maxSlippagePercent ?? 1.5;
       if (hasRS && (rs.shortSlippage > maxSlip || rs.longSlippage > maxSlip)) { filterReasons.noProfit++; return false; }
-      if (hasRS && Math.abs(rs.entryGapPct) > maxSlip) { filterReasons.noProfit++; return false; }
-      // effectiveSpread ≤ 0이면 헷징 불가 (진입 손실 > 펀딩 수익)
+      // effectiveSpread ≤ 0이면 슬리피지+수수료 > 펀딩 수익
       if (hasRS && rs.effectiveSpread <= 0) { filterReasons.noProfit++; return false; }
+      // ★ 거래량 필터: 양쪽 거래소 중 하나라도 최소 거래량 미달이면 제외
+      const minVol = strategyConfig.minVolume24hUSD ?? 7_500_000;
+      if (minVol > 0) {
+        const shortVol = fundingRates.find(r => r.exchange === o.shortExchange && r.baseAsset === o.baseAsset)?.quoteVolume24h;
+        const longVol = fundingRates.find(r => r.exchange === o.longExchange && r.baseAsset === o.baseAsset)?.quoteVolume24h;
+        if ((typeof shortVol === 'number' && shortVol < minVol) || (typeof longVol === 'number' && longVol < minVol)) {
+          filterReasons.noProfit++; return false;
+        }
+      }
       if (!hasRS && o.spreadPercent < effectiveMinPercent) { filterReasons.lowSpread++; return false; }
       if (o.netProfit <= 0) { filterReasons.noProfit++; return false; }
       return true;
