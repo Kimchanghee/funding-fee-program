@@ -45,7 +45,7 @@ import {
 // ─────────────────────────────────────────────
 // Fee constants (fallback for contexts without exchange info)
 // ─────────────────────────────────────────────
-const TAKER_FEE_FALLBACK = 0.0006; // 0.06% worst-case fallback (bitget taker)
+const TAKER_FEE_FALLBACK = 0.00048; // 0.048% referral-max worst-case fallback (bitget taker)
 let _lastScheduleDiagAt = 0; // 진단 로그 스팸 방지
 
 /** 서버 스케줄러 정지 — 재시도 2회, 실패 시 경고 로그 */
@@ -705,7 +705,7 @@ interface FundingState {
   removeApiConfig: (exchange: ExchangeId) => void;
   setStrategyConfig: (config: Partial<StrategyConfig>) => void;
 
-  refreshRates: () => Promise<void>;
+  refreshRates: (options?: { silent?: boolean }) => Promise<void>;
   refreshPositions: () => Promise<void>;
   refreshAndStampPositions: (baseAsset: string, exchanges: ExchangeId[]) => Promise<void>;
   refreshBalances: () => Promise<void>;
@@ -771,6 +771,7 @@ function makeApiHeaders(config: ApiConfig): Record<string, string> {
 }
 
 let logCounter = 0;
+let ratesRefreshInFlight = false;
 
 function makeLog(level: LogLevel, message: string, exchange?: ExchangeId, detail?: string): LogEntry {
   return {
@@ -1069,8 +1070,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Init ──────────────────────────────────────
   init() {
     try {
-      // React 18 Strict Mode / HMR에서 상태 초기화
-      set({ isLoadingRates: false, simSnipeActive: false, realSnipeActive: false, snipeTargets: {}, snipeAllocations: {}, _snipeTimers: {}, _snipeCloseTimers: {} });
+      // React 18 Strict Mode / HMR에서 상태 초기화 (snipeActive는 서버 상태가 source of truth → 여기서 리셋하지 않음)
+      set({ isLoadingRates: false, _snipeTimers: {}, _snipeCloseTimers: {} });
 
       // ── 1회성 데이터 정리: 시뮬 초기화 (v3 마이그레이션) ──
       const MIGRATION_KEY = 'funding_fee_migration_v3';
@@ -1452,15 +1453,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   // ── Refresh rates (거래소별 개별 비동기 — 응답 즉시 UI 업데이트) ──
-  async refreshRates() {
-    if (get().isLoadingRates) {
+  async refreshRates(options) {
+    if (ratesRefreshInFlight) {
       console.log('[refreshRates] skip — already loading');
       return;
     }
-    set({ isLoadingRates: true, ratesStatus: get().lastRatesUpdate ? get().ratesStatus : 'loading', ratesError: null });
+    ratesRefreshInFlight = true;
+    const showLoading = !options?.silent || !get().lastRatesUpdate;
+    if (showLoading) {
+      set({ isLoadingRates: true, ratesStatus: get().lastRatesUpdate ? get().ratesStatus : 'loading', ratesError: null });
+    } else {
+      set({ ratesError: null });
+    }
 
-    const enabled = get().enabledExchanges;
-    console.log('[refreshRates] start:', enabled.join(','));
+    try {
+      const enabled = get().enabledExchanges;
+      console.log('[refreshRates] start:', enabled.join(','));
 
     // 비활성 거래소 데이터 제거 (OFF한 거래소가 기회 계산에 남는 것 방지)
     set(s => ({
@@ -1658,7 +1666,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         set({ consecutiveAllFailCount: 0 });
       }
     }
-    set({ isLoadingRates: false });
+    } finally {
+      ratesRefreshInFlight = false;
+      if (showLoading) set({ isLoadingRates: false });
+    }
   },
 
   // ── Refresh positions (활성 거래소만) ─────────────
@@ -1925,7 +1936,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // 5초 간격 펀딩률 + 오더북 폴링 (기회 탐지 속도 향상)
     const ratesInterval = setInterval(() => {
-      get().refreshRates();
+      get().refreshRates({ silent: true });
       if (get().simSnipeActive || get().realSnipeActive) {
         get().refreshRealSpreads();
       }

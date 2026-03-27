@@ -1040,7 +1040,7 @@ class ServerSimScheduler {
       );
       return latestOpportunity
         ? getOpportunityLegKeys(latestOpportunity).some((legKey) => opportunityLegs.has(legKey))
-        : makePositionLegKey(position.exchange, position.symbol) === `${position.exchange}:${position.symbol}`;
+        : opportunityLegs.has(makePositionLegKey(position.exchange, position.symbol));
     });
     if (existingPair) {
       return { success: false, error: 'position already active for route' };
@@ -1055,12 +1055,14 @@ class ServerSimScheduler {
 
     let shortFillPrice = opportunity.shortMarkPrice;
     let longFillPrice = opportunity.longMarkPrice;
+    let shortSlippagePercent = 0;
+    let longSlippagePercent = 0;
     try {
       const [shortFill, longFill] = await Promise.all([
         fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
         fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
       ]);
-      // Hard slippage cap using configured threshold (default 1.5%).
+      // Keep aligned with /api/strategy/execute real path.
       const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
       if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
         return {
@@ -1079,34 +1081,30 @@ class ServerSimScheduler {
 
       shortFillPrice = shortFill.fillPrice;
       longFillPrice = longFill.fillPrice;
-    } catch {
-      // Fall back to mark prices.
+      shortSlippagePercent = shortFill.slippagePercent;
+      longSlippagePercent = longFill.slippagePercent;
+    } catch (err) {
+      return { success: false, error: `orderbook fetch failed — cannot validate slippage: ${(err as Error).message ?? err}` };
     }
     // Sign convention: (longFill - shortFill) / shortFill. Positive means worse entry.
     const entryGapPercent = ((longFillPrice - shortFillPrice) / shortFillPrice) * 100;
-    let adjustedLongNotional = notional;
-    if (Math.abs(entryGapPercent) > 0.1) {
-      adjustedLongNotional = notional * (longFillPrice / shortFillPrice);
-    }
 
     const execHedgeFeePct = getHedgeFeesWithOverrides(
       opportunity.shortExchange, opportunity.longExchange, 'taker', this.config.feeOverrides,
     ) * 100;
-    const shortSlip = shortFillPrice !== opportunity.shortMarkPrice
-      ? Math.abs((shortFillPrice - opportunity.shortMarkPrice) / opportunity.shortMarkPrice) * 100 : 0;
-    const longSlip = longFillPrice !== opportunity.longMarkPrice
-      ? Math.abs((longFillPrice - opportunity.longMarkPrice) / opportunity.longMarkPrice) * 100 : 0;
+    // Keep simulation profitability gate aligned with real execution:
+    // fetchMarketFillPrice().slippagePercent is midPrice-based.
     const realNetSpread = calcHedgedNetSpreadPercent(
-      opportunity.spreadPercent, shortSlip, longSlip, execHedgeFeePct,
+      opportunity.spreadPercent, shortSlippagePercent, longSlippagePercent, execHedgeFeePct,
     );
     if (realNetSpread <= 0) {
       return { success: false, error: 'real net spread not profitable' };
     }
 
     const shortEntryFee = notional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides);
-    const longEntryFee = adjustedLongNotional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides);
+    const longEntryFee = notional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides);
     const shortCostPerSide = margin + shortEntryFee;
-    const longMargin = adjustedLongNotional / leverage;
+    const longMargin = margin;
     const longCostPerSide = longMargin + longEntryFee;
 
     const workingBalances = { ...state.simBalances };
@@ -1180,8 +1178,8 @@ class ServerSimScheduler {
       displaySymbol: `${opportunity.baseAsset}/USDT`,
       baseAsset: opportunity.baseAsset,
       side: 'long',
-      size: adjustedLongNotional / longFillPrice,
-      sizeUSD: adjustedLongNotional,
+      size: notional / longFillPrice,
+      sizeUSD: notional,
       entryPrice: longFillPrice,
       markPrice: opportunity.longMarkPrice,
       leverage,
@@ -1202,9 +1200,9 @@ class ServerSimScheduler {
       entryGapPercent,
     };
 
-    const perFunding = notional * opportunity.shortRate - adjustedLongNotional * opportunity.longRate;
+    const perFunding = notional * opportunity.shortRate - notional * opportunity.longRate;
     const totalRoundTripFees = notional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides) * 2
-      + adjustedLongNotional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides) * 2;
+      + notional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides) * 2;
     const netProfit = perFunding - totalRoundTripFees;
 
     const nextState: SimStateSnapshot = {
