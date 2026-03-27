@@ -122,7 +122,7 @@ export function buildManagedOpportunityItems(params: {
     activePositions,
     simulationMode,
     defaultInvestmentUSDT,
-    limit = 10,
+    limit = 15,
   } = params;
 
   const items = new Map<string, ManagedOpportunityItem>();

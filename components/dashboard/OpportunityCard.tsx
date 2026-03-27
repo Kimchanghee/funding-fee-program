@@ -340,7 +340,7 @@ export default function OpportunityCard() {
         activePositions: (simulationMode ? simPositions : positions) as Array<Position | SimPosition>,
         simulationMode,
         defaultInvestmentUSDT: strategyConfig.investmentUSDT,
-        limit: 10,
+        limit: 15,
       });
       // realSpread 기반 필터: 실질 수익이 마이너스면 예약/후보 숨김
       return items.filter(item => {
@@ -657,7 +657,8 @@ export default function OpportunityCard() {
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩까지</span>
             </div>
 
-            {/* Rows — 실효스프레드 기반 순수익 마이너스 자동 필터링 */}
+            {/* Rows — 15행 고정 높이로 레이아웃 안정화 */}
+            <div style={{ minHeight: 15 * 42 }}>
             {(() => {
               let visibleIdx = 0;
               // 순차적 잔고 추적: 이전 기회의 마진 사용을 반영
@@ -890,6 +891,7 @@ export default function OpportunityCard() {
               );
             });
             })()}
+            </div>
           </div>
         )}
 
