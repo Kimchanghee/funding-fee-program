@@ -640,7 +640,7 @@ export default function OpportunityCard() {
             {/* Table Header */}
             <div className="opp-table-header" style={{
               display: 'grid',
-              gridTemplateColumns: '28px 62px 1fr 72px 72px 80px 70px 60px 70px 56px 72px',
+              gridTemplateColumns: '28px 62px 1fr 72px 72px 58px 80px 70px 60px 70px 56px 72px',
               gap: 4, padding: '6px 10px', marginBottom: 4,
               fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)',
               borderBottom: '1px solid var(--color-border)',
@@ -651,6 +651,7 @@ export default function OpportunityCard() {
               <span>코인</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>숏</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>롱</span>
+              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>거래량</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>투자금</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩수익</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>수수료</span>
@@ -767,7 +768,7 @@ export default function OpportunityCard() {
                     onClick={() => setExpandedAsset(isExpanded ? null : item.id)}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '28px 62px 1fr 72px 72px 80px 70px 60px 70px 56px 72px',
+                      gridTemplateColumns: '28px 62px 1fr 72px 72px 58px 80px 70px 60px 70px 56px 72px',
                       gap: 4, padding: '8px 10px',
                       alignItems: 'center',
                       cursor: 'pointer',
@@ -823,6 +824,22 @@ export default function OpportunityCard() {
                     <div className="opp-hide-mobile" style={{ textAlign: 'center' }}>
                       <ExBadge ex={item.opp.longExchange} />
                     </div>
+
+                    {/* 거래량 (양쪽 중 최소) */}
+                    {(() => {
+                      const shortVol = fundingRates.find(r => r.exchange === item.opp.shortExchange && r.baseAsset === item.asset)?.quoteVolume24h;
+                      const longVol = fundingRates.find(r => r.exchange === item.opp.longExchange && r.baseAsset === item.asset)?.quoteVolume24h;
+                      const minVol = shortVol != null && longVol != null ? Math.min(shortVol, longVol)
+                        : shortVol ?? longVol ?? null;
+                      const fmt = (v: number) => v >= 1e9 ? `${(v / 1e9).toFixed(1)}B` : v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)}K` : v.toFixed(0);
+                      return (
+                        <div className="opp-hide-mobile" style={{ textAlign: 'right' }}>
+                          <span className="mono" style={{ fontSize: 10, color: minVol != null && minVol < 7_500_000 ? '#f59e0b' : 'var(--color-text-muted)' }}>
+                            {minVol != null ? `$${fmt(minVol)}` : '-'}
+                          </span>
+                        </div>
+                      );
+                    })()}
 
                     {/* 투자금 */}
                     {(() => {
@@ -910,7 +927,7 @@ export default function OpportunityCard() {
                 emptyRows.push(
                   <div key={`empty-${i}`} style={{
                     display: 'grid',
-                    gridTemplateColumns: '28px 62px 1fr 72px 72px 80px 70px 60px 70px 56px 72px',
+                    gridTemplateColumns: '28px 62px 1fr 72px 72px 58px 80px 70px 60px 70px 56px 72px',
                     gap: 4, padding: '8px 10px', height: ROW_HEIGHT,
                     alignItems: 'center', opacity: 0.2,
                   }}>
@@ -919,6 +936,7 @@ export default function OpportunityCard() {
                     <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>—</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
+                    <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>—</span>
