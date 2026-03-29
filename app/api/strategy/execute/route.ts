@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, getExchangeFee, getHedgeFeesWithOverrides, calcHedgedNetSpreadPercent, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
+import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides, ConfirmedSnipeConfig } from '@/lib/types';
+import {
+  SUPPORTED_EXCHANGES,
+  getExchangeFee,
+  getHedgeFeesWithOverrides,
+  calcHedgedNetSpreadPercent,
+  hasValidFeeOverrides,
+  sanitizeFeeOverrides,
+  DEFAULT_CONFIRMED_SNIPE_CONFIG,
+  MAX_ROUND_TRIP_IMPACT_BPS,
+  HEDGE_RATIO_MIN,
+  HEDGE_RATIO_MAX,
+  MAX_HEDGE_MISMATCH_PCT,
+} from '@/lib/types';
 import {
   openPositionExact,
   fetchBalance,
@@ -66,9 +78,11 @@ export async function POST(req: NextRequest) {
       pairId?: string;
       feeOverrides?: FeeOverrides;
       maxSlippagePercent?: number;
+      confirmedSnipeConfig?: ConfirmedSnipeConfig;
     };
 
     const { opportunity, investmentUSDT, leverage, apiConfigs, feeOverrides, maxSlippagePercent } = body;
+    const snipeConfig = body.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     const normalizedFeeOverrides = sanitizeFeeOverrides(feeOverrides);
     const pairId = typeof body.pairId === 'string' && body.pairId.trim()
       ? body.pairId.trim()
@@ -156,41 +170,66 @@ export async function POST(req: NextRequest) {
       fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
     ]);
 
-    // 2a. Slippage guard — configured max slippage (default 1.5%)
-    const MAX_SLIPPAGE_PCT = maxSlippagePercent ?? 1.5;
-    if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
-      const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
-      const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;
-      const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
-      console.log(
-        `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 슬리피지 초과: ` +
-        `${worstSide}(${worstExchange})=${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}% | ` +
-        `short(${opportunity.shortExchange})=${shortFill.slippagePercent.toFixed(4)}% long(${opportunity.longExchange})=${longFill.slippagePercent.toFixed(4)}%`,
-      );
-      return NextResponse.json({
-        success: false,
-        error: `슬리피지 초과: ${worstSide}(${worstExchange}) ${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}%`,
-        reason: 'slippage_exceeded',
-        shortSlippage: shortFill.slippagePercent,
-        longSlippage: longFill.slippagePercent,
-        maxSlippage: MAX_SLIPPAGE_PCT,
-      });
+    // 2a. Impact / Slippage guard
+    if (snipeConfig.useImpactGuards) {
+      // v2.1: impact-based guard — per-exchange mid, round-trip bps cap
+      const roundTripImpactBps = (shortFill.slippagePercent + longFill.slippagePercent) * 2 * 100;
+      if (roundTripImpactBps > (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS)) {
+        const cap = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
+        console.log(
+          `[EXECUTE] ${opportunity.baseAsset} BLOCKED — round-trip impact: ` +
+          `${roundTripImpactBps.toFixed(1)}bps > ${cap}bps`,
+        );
+        return NextResponse.json({
+          success: false,
+          error: `Round-trip impact ${roundTripImpactBps.toFixed(1)}bps > ${cap}bps cap`,
+          reason: 'impact_exceeded',
+          roundTripImpactBps,
+          maxRoundTripImpactBps: cap,
+        });
+      }
+    } else {
+      // Legacy: slippage % guard
+      const MAX_SLIPPAGE_PCT = maxSlippagePercent ?? 1.5;
+      if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
+        const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
+        const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;
+        const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
+        console.log(
+          `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 슬리피지 초과: ` +
+          `${worstSide}(${worstExchange})=${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}% | ` +
+          `short(${opportunity.shortExchange})=${shortFill.slippagePercent.toFixed(4)}% long(${opportunity.longExchange})=${longFill.slippagePercent.toFixed(4)}%`,
+        );
+        return NextResponse.json({
+          success: false,
+          error: `슬리피지 초과: ${worstSide}(${worstExchange}) ${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}%`,
+          reason: 'slippage_exceeded',
+          shortSlippage: shortFill.slippagePercent,
+          longSlippage: longFill.slippagePercent,
+          maxSlippage: MAX_SLIPPAGE_PCT,
+        });
+      }
     }
 
-    // 2b. Cross-exchange entry gap guard — 거래소 간 가격 괴리도 슬리피지와 동일 기준 적용
+    // 2b. Cross-exchange entry gap guard
     const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
-    if (Math.abs(entryGapPct) > MAX_SLIPPAGE_PCT) {
+    // When impact guards are ON, entry gap is already covered by round-trip impact cap.
+    // When OFF, use legacy slippage threshold.
+    const entryGapThreshold = snipeConfig.useImpactGuards
+      ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 100  // convert bps to %
+      : (maxSlippagePercent ?? 1.5);
+    if (Math.abs(entryGapPct) > entryGapThreshold) {
       console.log(
         `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 거래소 간 가격 괴리 초과: ` +
-        `entryGap=${entryGapPct.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}% | ` +
+        `entryGap=${entryGapPct.toFixed(4)}% > ${entryGapThreshold.toFixed(4)}% | ` +
         `short(${opportunity.shortExchange})=${shortFill.fillPrice} long(${opportunity.longExchange})=${longFill.fillPrice}`,
       );
       return NextResponse.json({
         success: false,
-        error: `거래소 간 가격 괴리 초과: ${entryGapPct.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}%`,
+        error: `거래소 간 가격 괴리 초과: ${entryGapPct.toFixed(4)}% > ${entryGapThreshold.toFixed(4)}%`,
         reason: 'entry_gap_exceeded',
         entryGapPct,
-        maxSlippage: MAX_SLIPPAGE_PCT,
+        maxGap: entryGapThreshold,
       });
     }
 
@@ -231,7 +270,25 @@ export async function POST(req: NextRequest) {
     const shortQty = targetNotional / shortFill.fillPrice;
     const longQty = targetNotional / longFill.fillPrice;
 
-    // 3. Limit prices with buffer beyond worst level (NOT fillPrice — must cover all levels)
+    // 3b. v2.1: strict hedge ratio pre-check
+    if (snipeConfig.useStrictHedge) {
+      const shortNotionalEst = shortQty * shortFill.fillPrice;
+      const longNotionalEst = longQty * longFill.fillPrice;
+      const hedgeRatio = Math.abs(longNotionalEst / shortNotionalEst);
+      if (hedgeRatio < HEDGE_RATIO_MIN || hedgeRatio > HEDGE_RATIO_MAX) {
+        console.log(
+          `[EXECUTE] ${opportunity.baseAsset} BLOCKED — hedge ratio: ${hedgeRatio.toFixed(6)} outside [${HEDGE_RATIO_MIN}, ${HEDGE_RATIO_MAX}]`,
+        );
+        return NextResponse.json({
+          success: false,
+          error: `Hedge ratio ${hedgeRatio.toFixed(6)} outside [${HEDGE_RATIO_MIN}, ${HEDGE_RATIO_MAX}]`,
+          reason: 'hedge_ratio_exceeded',
+          hedgeRatio,
+        });
+      }
+    }
+
+    // 3c. Limit prices with buffer beyond worst level (NOT fillPrice — must cover all levels)
     const PRICE_BUFFER = 0.0005; // 0.05%
     const shortLimitPrice = shortFill.worstPrice * (1 - PRICE_BUFFER); // selling: below worst bid
     const longLimitPrice = longFill.worstPrice * (1 + PRICE_BUFFER);   // buying: above worst ask
@@ -254,6 +311,7 @@ export async function POST(req: NextRequest) {
         shortLimitPrice,
         leverage,
         normalizedFeeOverrides,
+        snipeConfig.useIocLimitOnly,
       ),
       openPositionExact(
         opportunity.longExchange,
@@ -264,6 +322,7 @@ export async function POST(req: NextRequest) {
         longLimitPrice,
         leverage,
         normalizedFeeOverrides,
+        snipeConfig.useIocLimitOnly,
       ),
     ]);
 
@@ -331,7 +390,9 @@ export async function POST(req: NextRequest) {
       );
 
       // 2% 초과 불균형 시 초과분 부분 청산으로 보정
-      if (diffPercent > 2) {
+      // v2.1: 0.20% mismatch when strict hedge ON, legacy 2% otherwise
+      const trimThreshold = snipeConfig.useStrictHedge ? MAX_HEDGE_MISMATCH_PCT : 2;
+      if (diffPercent > trimThreshold) {
         try {
           const minNotional = Math.min(shortNotional, longNotional);
           if (shortNotional > longNotional) {

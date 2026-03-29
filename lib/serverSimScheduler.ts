@@ -19,6 +19,7 @@ import {
   sanitizeFeeOverrides,
   sanitizeTimingConfig,
   type ArbitrageOpportunity,
+  type ConfirmedSnipeConfig,
   type ExchangeId,
   type FeeOverrides,
   type FundingPayment,
@@ -125,6 +126,7 @@ function buildStrategyLikeConfig(config: ServerSimSchedulerConfig): StrategyConf
     compoundInvesting: config.compoundInvesting,
     feeOverrides: config.feeOverrides,
     timingConfig: config.timingConfig,
+    confirmedSnipeConfig: config.confirmedSnipeConfig,
   };
 }
 
@@ -255,6 +257,7 @@ export interface ServerSimSchedulerConfig {
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // maximum slippage percent (default 1.5%)
   minVolume24hUSD?: number; // minimum 24h volume in USD
+  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all features OFF
 }
 
 interface ScheduledSimEntry {

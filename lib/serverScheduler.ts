@@ -6,14 +6,23 @@ import {
   fetchFundingHistory as fetchFundingHistoryFromExchange,
   fetchFundingRates,
   fetchMarketFillPrice,
+  fetchOrderbook,
+  calcOrderbookImpactBps,
+  checkFundingSettled,
   getPartialExecution,
   openPositionExact,
   type ExecutedOrderSummary,
 } from './exchanges';
+import {
+  EXCHANGE_PROFILES,
+  getPairEntryLeadMs,
+  getPairMaxSettlementWaitMs,
+  hasTierCExchange,
+  pairSupportsConfirmedClose,
+} from './exchangeProfiles';
 import { appendTrades, type TradeEvent } from './fileLogger';
 import {
   findOpportunities,
-  getOpportunityHourlyNetProfit,
   getOpportunityId,
   getOpportunityLegKeys,
 } from './opportunities';
@@ -31,8 +40,13 @@ import {
   getResolvedTimingConfig,
   sanitizeFeeOverrides,
   sanitizeTimingConfig,
+  DEFAULT_CONFIRMED_SNIPE_CONFIG,
+  MAX_FUNDING_TIMESTAMP_DIFF_MS,
+  HEDGE_RATIO_MIN,
+  HEDGE_RATIO_MAX,
   type ApiConfig,
   type ArbitrageOpportunity,
+  type ConfirmedSnipeConfig,
   type ExchangeId,
   type FeeOverrides,
   type FundingPayment,
@@ -52,6 +66,11 @@ function getErrorMessage(error: unknown): string {
   return 'unknown';
 }
 
+/** Resolve v2.1 config — missing = all OFF (existing behavior) */
+function getSnipeConfig(config?: ConfirmedSnipeConfig): ConfirmedSnipeConfig {
+  return config ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+}
+
 export interface SchedulerConfig {
   investmentUSDT: number;
   leverage: number;
@@ -62,6 +81,7 @@ export interface SchedulerConfig {
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%)
   minVolume24hUSD?: number; // 최소 24시간 거래량 (USD)
+  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all features OFF
 }
 
 interface SchedulerStats {
@@ -420,6 +440,17 @@ class ServerScheduler {
         if (opportunity.spreadPercent < this.config.minSpreadPercent) return false;
         if (opportunity.netProfit <= 0) return false;
 
+        // v2.1: strict funding timestamp alignment (3s) when confirmed snipe is active
+        const snipeCfg = getSnipeConfig(this.config.confirmedSnipeConfig);
+        if (snipeCfg.useConfirmedClose) {
+          const shortRate = rates.find(r => r.exchange === opportunity.shortExchange && r.symbol === opportunity.shortSymbol);
+          const longRate = rates.find(r => r.exchange === opportunity.longExchange && r.symbol === opportunity.longSymbol);
+          if (shortRate && longRate) {
+            const tsDiff = Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
+            if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) return false;
+          }
+        }
+
         return true;
       });
 
@@ -452,37 +483,62 @@ class ServerScheduler {
     const opportunityId = getOpportunityId(opportunity);
     const asset = opportunity.baseAsset;
     if (this.scheduledEntries.has(opportunityId)) return;
-    const timing = this.getTimingConfig();
+
+    // v2.1: use exchange-profile entry lead time (falls back to legacy if larger)
+    const profileLeadMs = getPairEntryLeadMs(
+      opportunity.shortExchange,
+      opportunity.longExchange,
+    );
+    const legacyLeadMs = this.getTimingConfig().entryLeadMs;
+    const entryLeadMs = Math.max(profileLeadMs, legacyLeadMs);
+
+    // Skip Tier C pairs unless explicitly enabled
+    if (hasTierCExchange(opportunity.shortExchange, opportunity.longExchange)) {
+      const tierCExchange = EXCHANGE_PROFILES[opportunity.shortExchange].tier === 'C'
+        ? opportunity.shortExchange
+        : opportunity.longExchange;
+      if (!this.config.enabledExchanges.includes(tierCExchange)) return;
+    }
 
     let targetTime = opportunity.nextFundingTime;
     const intervalMs = opportunity.fundingIntervalMs ?? 8 * 3600000;
     const now = Date.now();
 
     while (targetTime <= now) targetTime += intervalMs;
-    if (targetTime - now < timing.entryLeadMs + 1_000) targetTime += intervalMs;
+    if (targetTime - now < entryLeadMs + 1_000) targetTime += intervalMs;
 
     const scheduledEntry: ScheduledEntry = {
       opportunityId,
       asset,
       opportunity,
       targetTime,
-      timer: this.scheduleEntryTimer(opportunity, targetTime),
+      timer: this.scheduleEntryTimer(opportunity, targetTime, entryLeadMs),
     };
 
     this.scheduledEntries.set(opportunityId, scheduledEntry);
     this.saveState();
 
-    const delayMs = Math.max(0, targetTime - now - timing.entryLeadMs);
+    const delayMs = Math.max(0, targetTime - now - entryLeadMs);
     const minutes = Math.floor(delayMs / 60000);
     const seconds = Math.floor((delayMs / 1000) % 60);
     this.log(
       'info',
-      `entry scheduled | asset=${asset} opportunityId=${opportunityId} in=${minutes}m${seconds}s short=${opportunity.shortExchange} long=${opportunity.longExchange} spread=${opportunity.spreadPercent.toFixed(4)}% hourlyNet=${getOpportunityHourlyNetProfit(opportunity).toFixed(4)}`,
+      `entry scheduled | asset=${asset} opportunityId=${opportunityId} in=${minutes}m${seconds}s ` +
+      `short=${opportunity.shortExchange} long=${opportunity.longExchange} ` +
+      `spread=${opportunity.spreadPercent.toFixed(4)}% entryLead=${entryLeadMs}ms`,
     );
   }
 
-  private scheduleEntryTimer(opportunity: ArbitrageOpportunity, targetTime: number) {
-    const delayMs = Math.max(0, targetTime - Date.now() - this.getTimingConfig().entryLeadMs);
+  private scheduleEntryTimer(
+    opportunity: ArbitrageOpportunity,
+    targetTime: number,
+    entryLeadMs?: number,
+  ) {
+    const leadMs = entryLeadMs ?? Math.max(
+      getPairEntryLeadMs(opportunity.shortExchange, opportunity.longExchange),
+      this.getTimingConfig().entryLeadMs,
+    );
+    const delayMs = Math.max(0, targetTime - Date.now() - leadMs);
     return setTimeout(() => {
       void this.executeEntry(opportunity, targetTime);
     }, delayMs);
@@ -524,10 +580,69 @@ class ServerScheduler {
     }
 
     try {
-      const targetNotional = this.config.investmentUSDT * this.config.leverage;
-      const requiredShortBalance = this.config.investmentUSDT
+      const snipeConfig = getSnipeConfig(this.config.confirmedSnipeConfig);
+      const baseNotional = this.config.investmentUSDT * this.config.leverage;
+      let targetNotional = baseNotional;
+
+      // v2.1: dynamic notional based on orderbook depth
+      if (snipeConfig.useDynamicNotional) {
+        try {
+          const [shortOb, longOb] = await Promise.all([
+            fetchOrderbook(opportunity.shortExchange, opportunity.shortSymbol, 50),
+            fetchOrderbook(opportunity.longExchange, opportunity.longSymbol, 50),
+          ]);
+          const shortImpact = calcOrderbookImpactBps(shortOb.bids, shortOb.asks, baseNotional, 'sell');
+          const longImpact = calcOrderbookImpactBps(longOb.bids, longOb.asks, baseNotional, 'buy');
+
+          targetNotional = Math.min(
+            baseNotional,
+            shortImpact.depthCapNotional,
+            longImpact.depthCapNotional,
+            snipeConfig.dynamicNotionalCap,
+          );
+
+          this.log(
+            'info',
+            `dynamic notional | asset=${asset} base=$${baseNotional.toFixed(0)} ` +
+            `shortDepthCap=$${shortImpact.depthCapNotional.toFixed(0)} ` +
+            `longDepthCap=$${longImpact.depthCapNotional.toFixed(0)} ` +
+            `final=$${targetNotional.toFixed(0)}`,
+          );
+
+          // No floor — if depth is too shallow, check economic viability below
+          // If targetNotional is too small for fees to make sense, skip
+          const minViableNotional = 100; // $100 minimum to cover execution overhead
+          if (targetNotional < minViableNotional) {
+            this.log(
+              'warning',
+              `entry skipped — depth too shallow | asset=${asset} targetNotional=$${targetNotional.toFixed(0)} < $${minViableNotional}`,
+            );
+            this.recordTrades([{
+              timestamp: Date.now(),
+              type: 'guard_block',
+              simulation: false,
+              baseAsset: asset,
+              shortExchange: opportunity.shortExchange,
+              longExchange: opportunity.longExchange,
+              spread: opportunity.spread,
+              spreadPercent: opportunity.spreadPercent,
+              reason: 'depth_insufficient',
+              detail: `targetNotional:$${targetNotional.toFixed(0)} shortDepthCap:$${shortImpact.depthCapNotional.toFixed(0)} longDepthCap:$${longImpact.depthCapNotional.toFixed(0)}`,
+            }]);
+            return;
+          }
+        } catch (err) {
+          this.log(
+            'warning',
+            `dynamic notional fallback to base | asset=${asset} error=${getErrorMessage(err)}`,
+          );
+          // Fall back to base notional if orderbook fetch fails
+        }
+      }
+
+      const requiredShortBalance = (targetNotional / this.config.leverage)
         + (targetNotional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides));
-      const requiredLongBalance = this.config.investmentUSDT
+      const requiredLongBalance = (targetNotional / this.config.leverage)
         + (targetNotional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
       const [shortBalance, longBalance] = await Promise.all([
         fetchBalance(opportunity.shortExchange, shortConfig),
@@ -642,6 +757,33 @@ class ServerScheduler {
       const shortLimitPrice = shortFill.worstPrice * (1 - 0.0005);
       const longLimitPrice = longFill.worstPrice * (1 + 0.0005);
 
+      // v2.1: strict hedge ratio pre-check
+      if (snipeConfig.useStrictHedge) {
+        const shortNotionalEst = shortQty * shortFill.fillPrice;
+        const longNotionalEst = longQty * longFill.fillPrice;
+        const hedgeRatio = Math.abs(longNotionalEst / shortNotionalEst);
+        if (hedgeRatio < HEDGE_RATIO_MIN || hedgeRatio > HEDGE_RATIO_MAX) {
+          this.log(
+            'warning',
+            `entry blocked by hedge ratio | asset=${asset} ratio=${hedgeRatio.toFixed(6)} ` +
+            `allowed=[${HEDGE_RATIO_MIN}, ${HEDGE_RATIO_MAX}]`,
+          );
+          this.recordTrades([{
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: false,
+            baseAsset: asset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: opportunity.spread,
+            spreadPercent: opportunity.spreadPercent,
+            reason: 'hedge_ratio_exceeded',
+            detail: `hedgeRatio:${hedgeRatio.toFixed(6)}`,
+          }]);
+          return;
+        }
+      }
+
       const [shortResult, longResult] = await Promise.allSettled([
         openPositionExact(
           opportunity.shortExchange,
@@ -652,6 +794,7 @@ class ServerScheduler {
           shortLimitPrice,
           this.config.leverage,
           this.config.feeOverrides,
+          snipeConfig.useIocLimitOnly,
         ),
         openPositionExact(
           opportunity.longExchange,
@@ -662,6 +805,7 @@ class ServerScheduler {
           longLimitPrice,
           this.config.leverage,
           this.config.feeOverrides,
+          snipeConfig.useIocLimitOnly,
         ),
       ]);
 
@@ -745,8 +889,11 @@ class ServerScheduler {
 
       const pairId = `srv-${Date.now()}-${opportunityId.replace(/[:]/g, '-')}`;
       const entryTime = Date.now();
-      const closeDelayMs = Math.max(0, Math.min(this.getTimingConfig().closeDelayMs, 1_000));
-      const closeAt = Math.max(Date.now(), targetFundingTime + closeDelayMs);
+      // v2.1: when confirmed close is ON, fire at funding time (executeClose handles settlement wait)
+      // Legacy: fire at funding time + closeDelayMs
+      const closeAt = snipeConfig.useConfirmedClose
+        ? Math.max(Date.now(), targetFundingTime)
+        : Math.max(Date.now(), targetFundingTime + Math.max(0, Math.min(this.getTimingConfig().closeDelayMs, 1_000)));
       const activePosition: ActivePosition = {
         opportunityId,
         asset,
@@ -849,6 +996,64 @@ class ServerScheduler {
       this.log('error', `close postponed due to missing API config | asset=${asset}`);
       this.saveState();
       return;
+    }
+
+    // v2.1: confirmed close — wait for funding settlement before closing
+    const snipeConfig = getSnipeConfig(this.config.confirmedSnipeConfig);
+    if (
+      snipeConfig.useConfirmedClose
+      && position.closeAttempts === 0
+      && pairSupportsConfirmedClose(position.opportunity.shortExchange, position.opportunity.longExchange)
+    ) {
+      const maxWaitMs = getPairMaxSettlementWaitMs(
+        position.opportunity.shortExchange,
+        position.opportunity.longExchange,
+      );
+      const deadline = position.targetFundingTime + maxWaitMs;
+      const pollIntervalMs = 2_000;
+      let shortSettled = false;
+      let longSettled = false;
+
+      this.log('info', `close: waiting for funding confirmation | asset=${asset} maxWait=${maxWaitMs / 1000}s`);
+
+      while (Date.now() < deadline && (!shortSettled || !longSettled)) {
+        const checks = await Promise.allSettled([
+          !shortSettled
+            ? checkFundingSettled(
+                position.opportunity.shortExchange,
+                shortConfig,
+                position.opportunity.shortSymbol,
+                position.targetFundingTime,
+              )
+            : Promise.resolve({ settled: true } as const),
+          !longSettled
+            ? checkFundingSettled(
+                position.opportunity.longExchange,
+                longConfig,
+                position.opportunity.longSymbol,
+                position.targetFundingTime,
+              )
+            : Promise.resolve({ settled: true } as const),
+        ]);
+
+        if (checks[0].status === 'fulfilled' && checks[0].value.settled) shortSettled = true;
+        if (checks[1].status === 'fulfilled' && checks[1].value.settled) longSettled = true;
+
+        if (shortSettled && longSettled) {
+          this.log('info', `close: both legs funding confirmed | asset=${asset}`);
+          break;
+        }
+
+        if (Date.now() + pollIntervalMs >= deadline) break;
+        await this.sleep(pollIntervalMs);
+      }
+
+      if (!shortSettled || !longSettled) {
+        this.log(
+          'warning',
+          `close: funding confirmation timeout | asset=${asset} short=${shortSettled} long=${longSettled} — force closing`,
+        );
+      }
     }
 
     this.log('info', `close started | asset=${asset} attempt=${position.closeAttempts + 1}`);

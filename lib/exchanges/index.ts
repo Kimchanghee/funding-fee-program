@@ -443,6 +443,101 @@ export function analyzeOrderbook(
   };
 }
 
+/** Fetch raw orderbook from an exchange (public, cached instance) */
+export async function fetchOrderbook(
+  id: ExchangeId,
+  symbol: string,
+  depth = 50,
+): Promise<{ bids: number[][]; asks: number[][] }> {
+  let ex = getPublicExchange(id);
+  ex = await ensureMarkets(ex, id);
+  return await Promise.race([
+    ex.fetchOrderBook(symbol, depth) as Promise<{ bids: number[][]; asks: number[][] }>,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 5000),
+    ),
+  ]);
+}
+
+/**
+ * Calculate orderbook impact in basis points for a given notional.
+ * Impact is measured from EACH exchange's own mid price — not a cross-exchange average.
+ *
+ * Also returns `depthCapNotional`: the max notional that stays within
+ * MAX_ROUND_TRIP_IMPACT_BPS/2 per side (6bps default).
+ */
+export function calcOrderbookImpactBps(
+  bids: number[][],
+  asks: number[][],
+  notionalUSDT: number,
+  side: 'buy' | 'sell',
+): { impactBps: number; fillPrice: number; worstPrice: number; midPrice: number; depthCapNotional: number } {
+  if (!bids?.length || !asks?.length) {
+    throw new Error('Empty orderbook for impact calculation');
+  }
+
+  const midPrice = (bids[0][0] + asks[0][0]) / 2;
+  const levels = side === 'buy' ? asks : bids;
+  const analysis = analyzeOrderbook(levels, notionalUSDT, side);
+  const impactBps = Math.abs((analysis.fillPrice - midPrice) / midPrice) * 10000;
+
+  // Walk levels to find max notional within per-side impact cap (6bps = half of 12bps round-trip)
+  const perSideCapBps = 6;
+  let depthCapNotional = 0;
+  for (const [price, qty] of levels) {
+    const levelImpactBps = Math.abs((price - midPrice) / midPrice) * 10000;
+    if (levelImpactBps > perSideCapBps) break;
+    depthCapNotional += price * qty;
+  }
+
+  return {
+    impactBps,
+    fillPrice: analysis.fillPrice,
+    worstPrice: analysis.worstPrice,
+    midPrice,
+    depthCapNotional,
+  };
+}
+
+/**
+ * Check if funding has been settled by querying recent funding history.
+ * Returns true if a funding payment matching the expected time is found.
+ * Only call on exchanges where profile.supportsFundingSettlementCheck === true.
+ */
+export async function checkFundingSettled(
+  id: ExchangeId,
+  config: ApiConfig,
+  symbol: string,
+  expectedFundingTime: number,
+  toleranceMs = 60_000,
+): Promise<{ settled: boolean; payment?: { amount: number; rate: number; timestamp: number } }> {
+  const ex = makeExchange(id, config);
+  try {
+    const history = await Promise.race([
+      ex.fetchFundingHistory(symbol, undefined, 5) as Promise<any[]>,
+      new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 5000)),
+    ]);
+
+    for (const entry of history) {
+      const ts = (entry.timestamp as number) || new Date(entry.datetime as string).getTime();
+      if (Math.abs(ts - expectedFundingTime) <= toleranceMs) {
+        return {
+          settled: true,
+          payment: {
+            amount: (entry.amount as number) || 0,
+            rate: (entry.rate as number) || (entry.fundingRate as number) || 0,
+            timestamp: ts,
+          },
+        };
+      }
+    }
+
+    return { settled: false };
+  } catch {
+    return { settled: false };
+  }
+}
+
 function estimateExecutionFee(
   exchange: ExchangeId,
   parts: Array<{ notional: number; liquidity: Exclude<OrderLiquidity, 'mixed'> }>,
@@ -669,7 +764,11 @@ export async function openPosition(
  * Falls back to market order if limit IOC doesn't fill sufficiently.
  */
 /**
- * Open position with pre-computed quantity using Post-Only maker → IOC taker fallback.
+ * Open position with pre-computed quantity.
+ *
+ * When useIocLimitOnly=false (default): Post-Only maker → IOC taker fallback (existing behavior).
+ * When useIocLimitOnly=true (v2.1): IOC-limit only — no Post-Only, no market fallback.
+ *
  * Used for coordinated hedge execution where both sides' quantities
  * are calculated together for equal notional exposure (100% hedge).
  */
@@ -682,6 +781,7 @@ export async function openPositionExact(
   limitPrice: number,
   leverage: number,
   feeOverrides?: FeeOverrides,
+  useIocLimitOnly = false,
 ): Promise<ExecutedOrderSummary> {
   let ex = makeExchange(id, config);
   try {
@@ -699,6 +799,61 @@ export async function openPositionExact(
     const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
     const orderSide = side === 'long' ? 'buy' : 'sell';
     const minFilledQty = qty * MIN_EXECUTION_FILL_RATIO;
+
+    // ── v2.1: IOC-limit only path (no Post-Only, no market fallback) ──
+    if (useIocLimitOnly) {
+      console.log(
+        `[${id}] ${symbol} ${side} IOC-LIMIT-ONLY: limit=${limitPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
+      );
+
+      const order = await Promise.race([
+        ex.createOrder(symbol, 'limit', orderSide, qty, limitPrice, {
+          timeInForce: 'IOC', reduceOnly: false,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`[${id}] IOC order timeout`)), 5000),
+        ),
+      ]);
+
+      const filledAmount = (order.filled as number) || 0;
+      const filledPrice = (order.average as number) || limitPrice;
+
+      if (filledAmount < minFilledQty) {
+        const partialExecution = filledAmount > 0
+          ? buildExecutionSummary(
+              (order.id as string) || '',
+              filledPrice,
+              filledAmount * cSize,
+              filledAmount * cSize * filledPrice,
+              'taker',
+              estimateExecutionFee(id, [{ notional: filledAmount * cSize * filledPrice, liquidity: 'taker' }], feeOverrides),
+            )
+          : undefined;
+
+        throw new OrderExecutionError(
+          `[${id}] ${symbol} ${side} IOC insufficient fill: ` +
+          `${((filledAmount / qty) * 100).toFixed(1)}% filled (min ${(MIN_EXECUTION_FILL_RATIO * 100).toFixed(0)}%)`,
+          partialExecution,
+        );
+      }
+
+      const filledNotional = filledAmount * cSize * filledPrice;
+      console.log(
+        `[${id}] ${symbol} ${side} IOC FILLED: price=${filledPrice.toFixed(4)}, ` +
+        `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}`,
+      );
+
+      return buildExecutionSummary(
+        (order.id as string) || '',
+        filledPrice,
+        filledAmount * cSize,
+        filledNotional,
+        'taker',
+        estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides),
+      );
+    }
+
+    // ── Legacy path: Post-Only maker → IOC taker fallback ──
 
     // 1. Try Post-Only maker at the provided limit price (best bid/ask from caller)
     try {

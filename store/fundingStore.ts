@@ -186,6 +186,7 @@ function buildSchedulerConfig(
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
     maxSlippagePercent: strategyConfig.maxSlippagePercent,
     minVolume24hUSD: strategyConfig.minVolume24hUSD,
+    confirmedSnipeConfig: strategyConfig.confirmedSnipeConfig,
   };
 }
 
@@ -232,6 +233,7 @@ function buildServerSimSchedulerConfig(
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
     maxSlippagePercent: strategyConfig.maxSlippagePercent,
     minVolume24hUSD: strategyConfig.minVolume24hUSD,
+    confirmedSnipeConfig: strategyConfig.confirmedSnipeConfig,
   };
 }
 

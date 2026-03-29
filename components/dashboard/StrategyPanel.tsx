@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { X, DollarSign, TrendingUp, Info, Send } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { estimateProfit } from '@/lib/opportunities';
+import { DEFAULT_CONFIRMED_SNIPE_CONFIG, type ConfirmedSnipeConfig } from '@/lib/types';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { getTelegramConfig, saveTelegramConfig, sendTelegramMessage } from '@/lib/telegram';
 
@@ -186,6 +187,15 @@ export default function StrategyPanel() {
             </div>
           </div>
 
+          {/* v2.1 Confirmed Snipe Settings */}
+          <ConfirmedSnipeSettings
+            config={strategyConfig.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG}
+            onChange={(patch) => {
+              const prev = strategyConfig.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+              setStrategyConfig({ confirmedSnipeConfig: { ...prev, ...patch } });
+            }}
+          />
+
           {/* Telegram Settings */}
           <TelegramSettings />
 
@@ -323,6 +333,80 @@ function TelegramSettings() {
       <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 8 }}>
         펀딩 수익 수령, 스나이프 완료, 거래소 잔고 부족(평균 50% 이하) 시 알림
       </div>
+    </div>
+  );
+}
+
+/** v2.1 Confirmed Snipe 설정 */
+function ConfirmedSnipeSettings({
+  config,
+  onChange,
+}: {
+  config: ConfirmedSnipeConfig;
+  onChange: (patch: Partial<ConfirmedSnipeConfig>) => void;
+}) {
+  const toggleStyle = (enabled: boolean): React.CSSProperties => ({
+    width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer', position: 'relative',
+    background: enabled ? '#3b82f6' : 'var(--bg-accent)',
+    transition: 'background 0.2s',
+  });
+  const dotStyle = (enabled: boolean): React.CSSProperties => ({
+    width: 16, height: 16, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2,
+    left: enabled ? 18 : 2, transition: 'left 0.2s',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+  });
+
+  const toggles: Array<{ key: keyof ConfirmedSnipeConfig; label: string; desc: string }> = [
+    { key: 'useConfirmedClose', label: 'Confirmed Close', desc: '펀딩 정산 확인 후 청산' },
+    { key: 'useIocLimitOnly', label: 'IOC-Limit Only', desc: 'Post-Only 제거, IOC 전용 진입' },
+    { key: 'useDynamicNotional', label: 'Dynamic Notional', desc: '오더북 깊이 기반 동적 노셔널' },
+    { key: 'useImpactGuards', label: 'Impact Guards', desc: 'impact bps 기반 가드 (슬리피지 % 대체)' },
+    { key: 'useStrictHedge', label: 'Strict Hedge', desc: '헷지 비율 0.998~1.002, mismatch 0.20%' },
+    { key: 'useDriftBuffer', label: 'Drift Buffer', desc: '펀딩레이트 변동 보수적 반영' },
+  ];
+
+  return (
+    <div style={{ padding: 16, borderRadius: 10, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#3b82f6', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Info size={12} /> v2.1 Confirmed Snipe
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 12 }}>
+        모든 토글 기본 OFF. 기존 전략 동작에 영향 없음.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {toggles.map(({ key, label, desc }) => (
+          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              style={toggleStyle(!!config[key])}
+              onClick={() => onChange({ [key]: !config[key] })}
+            >
+              <div style={dotStyle(!!config[key])} />
+            </button>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text)' }}>{label}</div>
+              <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{desc}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {config.useDynamicNotional && (
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label style={{ fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>노셔널 상한 ($)</label>
+          <input
+            type="number"
+            value={config.dynamicNotionalCap}
+            onChange={e => onChange({ dynamicNotionalCap: Math.max(500, Math.min(10000, Number(e.target.value))) })}
+            style={{
+              width: 80, padding: '4px 8px', borderRadius: 6, fontSize: 12,
+              background: 'var(--bg-accent)', border: '1px solid var(--border-primary)',
+              color: 'var(--color-text)',
+            }}
+            min={500}
+            max={10000}
+            step={100}
+          />
+        </div>
+      )}
     </div>
   );
 }

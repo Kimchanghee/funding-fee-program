@@ -1,8 +1,136 @@
 import type { FundingRate, ArbitrageOpportunity, ExchangeId, FeeOverrides } from './types';
-import { getHedgeFeesWithOverrides, calcNetSpreadPercent } from './types';
+import { getHedgeFeesWithOverrides, calcNetSpreadPercent, MIN_DRIFT_BUFFER_BPS, MIN_PROFIT_USD, MIN_EV_RATIO } from './types';
 import { calcAnnualReturn, getMinutesToFunding } from './exchanges/utils';
 
 const FUNDING_ALIGNMENT_TOLERANCE_MS = 120_000;
+
+// ── v2.1: Funding Drift Buffer ──
+
+/**
+ * Calculate conservative funding rate drift buffer.
+ * Accounts for rate volatility between display time and actual settlement.
+ *
+ * For exchanges with frequent rate updates (e.g. Bybit every minute)
+ * or instantaneous rate usage (e.g. OKX), apply larger buffer.
+ *
+ * @param displayedRate - Current displayed funding rate (decimal, e.g. 0.0005)
+ * @param recentRateHistory - Optional recent rate changes for more precise buffer
+ * @param exchangeUsesInstantRate - Whether the exchange uses instantaneous rate at settlement
+ * @returns Buffer amount in decimal (same unit as displayedRate)
+ */
+export function calcDriftBuffer(
+  displayedRate: number,
+  recentRateHistory?: { last1mChange: number; last5mChange: number },
+  exchangeUsesInstantRate = false,
+): number {
+  const minBuffer = MIN_DRIFT_BUFFER_BPS / 10000; // 1bp in decimal
+
+  if (!recentRateHistory) {
+    // No history available — use a conservative default
+    return exchangeUsesInstantRate
+      ? Math.max(minBuffer, Math.abs(displayedRate) * 0.05) // 5% of rate for instant-rate exchanges
+      : minBuffer;
+  }
+
+  const { last1mChange, last5mChange } = recentRateHistory;
+  const buffer = Math.max(
+    Math.abs(last1mChange),
+    Math.abs(last5mChange) * 0.5,
+    minBuffer,
+  );
+
+  // Instant-rate exchanges (OKX) need larger buffer
+  return exchangeUsesInstantRate ? buffer * 1.5 : buffer;
+}
+
+// ── v2.1: Conservative Expected Value ──
+
+export interface ConservativeEVResult {
+  expectedFundingUSD: number;
+  roundTripFeeUSD: number;
+  entryImpactUSD: number;
+  exitImpactUSD: number;
+  timingReserveUSD: number;
+  expectedNetUSD: number;
+  passesMinProfit: boolean;
+  passesEVRatio: boolean;
+  evRatio: number;
+}
+
+/**
+ * Conservative Expected Value calculation per v2.1 strategy.
+ * All impacts are per-exchange-mid-based (not cross-exchange average).
+ *
+ * @param notionalUSD - Position notional in USD
+ * @param shortRate - Short leg funding rate (decimal)
+ * @param longRate - Long leg funding rate (decimal)
+ * @param shortDriftBuffer - Drift buffer for short leg (decimal)
+ * @param longDriftBuffer - Drift buffer for long leg (decimal)
+ * @param roundTripFeePct - Round-trip fee as decimal (e.g. 0.0016 for 0.16%)
+ * @param entryImpactPct - Entry impact as decimal (e.g. 0.0004 for 4bps), per-exchange mid based
+ * @param exitImpactPct - Exit impact as decimal, per-exchange mid based
+ */
+export function calcConservativeEV(
+  notionalUSD: number,
+  shortRate: number,
+  longRate: number,
+  shortDriftBuffer: number,
+  longDriftBuffer: number,
+  roundTripFeePct: number,
+  entryImpactPct: number,
+  exitImpactPct: number,
+): ConservativeEVResult {
+  const shortFR_eff = shortRate - shortDriftBuffer;
+  const longFR_eff = longRate + longDriftBuffer;
+  const expectedFundingUSD = notionalUSD * (shortFR_eff - longFR_eff);
+  const roundTripFeeUSD = notionalUSD * roundTripFeePct;
+  const entryImpactUSD = notionalUSD * entryImpactPct;
+  const exitImpactUSD = notionalUSD * exitImpactPct;
+  // Timing reserve: 0.5bp flat for rounding/latency
+  const timingReserveUSD = notionalUSD * 0.00005;
+
+  const expectedNetUSD = expectedFundingUSD
+    - roundTripFeeUSD
+    - entryImpactUSD
+    - exitImpactUSD
+    - timingReserveUSD;
+
+  const worstCaseExitUSD = roundTripFeeUSD + entryImpactUSD + exitImpactUSD + timingReserveUSD;
+  const evRatio = worstCaseExitUSD > 0 ? expectedNetUSD / worstCaseExitUSD : 0;
+
+  return {
+    expectedFundingUSD,
+    roundTripFeeUSD,
+    entryImpactUSD,
+    exitImpactUSD,
+    timingReserveUSD,
+    expectedNetUSD,
+    passesMinProfit: expectedNetUSD >= MIN_PROFIT_USD,
+    passesEVRatio: evRatio >= MIN_EV_RATIO,
+    evRatio,
+  };
+}
+
+// ── v2.1: Time-Normalized Scoring ──
+
+/**
+ * Time-normalized opportunity score per v2.1 strategy.
+ * score = expectedNetUSD * fillProb * fundingCaptureProb / capitalLockSec
+ *
+ * @param expectedNetUSD - Expected net profit from conservative EV
+ * @param capitalLockSec - How long capital is locked (entry to exit)
+ * @param fillProb - Probability of full fill (default 1.0, refine with data)
+ * @param fundingCaptureProb - Probability of capturing funding (default 1.0)
+ */
+export function calcTimeNormalizedScore(
+  expectedNetUSD: number,
+  capitalLockSec: number,
+  fillProb = 1.0,
+  fundingCaptureProb = 1.0,
+): number {
+  if (capitalLockSec <= 0) return 0;
+  return (expectedNetUSD * fillProb * fundingCaptureProb) / capitalLockSec;
+}
 
 export function getOpportunityIntervalHours(
   opportunity: Pick<ArbitrageOpportunity, 'fundingIntervalMs'>,
