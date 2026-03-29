@@ -7,7 +7,8 @@
     "build": "next build && node scripts/prepare-standalone.js",
     "start": "node scripts/start-standalone.js",
     "lint": "next lint",
-    "typecheck": "tsc -p tsconfig.check.json --noEmit"
+    "typecheck": "tsc -p tsconfig.check.json --noEmit",
+    "evaluate:exchanges": "npx tsx scripts/evaluate-exchanges.ts"
   },
   "dependencies": {
     "next": "15.1.6",

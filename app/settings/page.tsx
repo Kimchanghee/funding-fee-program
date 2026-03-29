@@ -4,7 +4,15 @@ import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES, EXCHANGE_FEES, DEFAULT_TIMING_CONFIG } from '@/lib/types';
+import {
+  EXCHANGE_NAMES,
+  EXCHANGE_COLORS,
+  SUPPORTED_EXCHANGES,
+  EXCHANGE_FEES,
+  DEFAULT_TIMING_CONFIG,
+  EXCHANGE_FEE_PRESET_LABEL,
+  EXCHANGE_FEE_PRESET_NOTE,
+} from '@/lib/types';
 import StatusDot from '@/components/ui/StatusDot';
 import Header from '@/components/dashboard/Header';
 import ApiPanel from '@/components/dashboard/ApiPanel';
@@ -342,11 +350,12 @@ export default function SettingsPage() {
 
           {/* Fee Overrides */}
           <div className="glass-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: 'var(--color-text)' }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
               거래소별 수수료 설정
+              <span style={{ fontSize: 10, fontWeight: 800, color: '#10b981', border: '1px solid rgba(16,185,129,0.35)', background: 'rgba(16,185,129,0.12)', borderRadius: 999, padding: '2px 8px' }}>{EXCHANGE_FEE_PRESET_LABEL}</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 16 }}>
-              실제 VIP 등급에 맞는 수수료(%)를 입력하세요. 비워두면 기본값(VIP0)이 적용됩니다.
+              {EXCHANGE_FEE_PRESET_NOTE} Leave blank to use this preset value, or enter your custom fee.
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
               {SUPPORTED_EXCHANGES.map(ex => {

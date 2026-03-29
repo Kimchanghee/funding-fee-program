@@ -133,7 +133,7 @@ export function findOpportunities(
           longMarkPrice: longCandidate.markPrice,
           spread,
           spreadPercent: spread * 100,
-          annualReturnPercent: calcAnnualReturn(spread, fundingIntervalMs),
+          annualReturnPercent: calcAnnualReturn(netSpreadPct, fundingIntervalMs),
           nextFundingTime,
           minutesToFunding: getMinutesToFunding(nextFundingTime),
           fundingIntervalMs,

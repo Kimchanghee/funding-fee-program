@@ -3,7 +3,13 @@
 import { RefreshCw, Key, Settings, Zap, FlaskConical } from 'lucide-react';
 import KSTClock from '@/components/ui/KSTClock';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES } from '@/lib/types';
+import {
+  EXCHANGE_NAMES,
+  EXCHANGE_COLORS,
+  SUPPORTED_EXCHANGES,
+  EXCHANGE_FEE_PRESET_LABEL,
+  EXCHANGE_FEE_PRESET_NOTE,
+} from '@/lib/types';
 import Link from 'next/link';
 import { fmtNum } from '@/lib/format';
 
@@ -88,6 +94,26 @@ export default function Header() {
           마지막 업데이트: {new Date(lastRatesUpdate).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })}
         </span>
       )}
+
+      <div
+        title={EXCHANGE_FEE_PRESET_NOTE}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 8px',
+          borderRadius: 999,
+          border: '1px solid rgba(16,185,129,0.35)',
+          background: 'rgba(16,185,129,0.12)',
+          color: '#10b981',
+          fontSize: 10,
+          fontWeight: 800,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <span style={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>FEE</span>
+        <span>{EXCHANGE_FEE_PRESET_LABEL}</span>
+      </div>
 
       {/* Spacer */}
       <div style={{ flex: 1 }} />

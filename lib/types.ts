@@ -44,13 +44,13 @@ export interface FundingRate {
 export interface ArbitrageOpportunity {
   id: string;
   baseAsset: string;     // 'BTC'
-  // Short side (high positive funding → receive fee)
+  // Short side (high positive funding ??receive fee)
   shortExchange: ExchangeId;
   shortSymbol: string;
   shortRate: number;
   shortRatePercent: number;
   shortMarkPrice: number;
-  // Long side (low/negative funding → receive fee or pay little)
+  // Long side (low/negative funding ??receive fee or pay little)
   longExchange: ExchangeId;
   longSymbol: string;
   longRate: number;
@@ -59,11 +59,11 @@ export interface ArbitrageOpportunity {
   // Metrics
   spread: number;        // shortRate - longRate (per 8h)
   spreadPercent: number;
-  annualReturnPercent: number; // spread * 3 * 365 * 100
+  annualReturnPercent: number; // fee/slippage-aware estimated annualized return (%)
   nextFundingTime: number;
   minutesToFunding: number;
-  fundingIntervalMs: number;  // 펀딩 주기 (ms) — 거래소/코인별 다름 (기본 8h=28800000)
-  netProfit: number;          // 수수료 차감 후 순수익 per funding (notional*spread - notional*0.0005*4)
+  fundingIntervalMs: number;  // ?�??주기 (ms) ??거래??코인�??�름 (기본 8h=28800000)
+  netProfit: number;          // estimated net profit per funding after configured fees/safety
 }
 
 export type OrderLiquidity = 'maker' | 'taker' | 'mixed';
@@ -113,11 +113,11 @@ export interface StrategyConfig {
   leverage: number;         // 1-20
   minSpreadPercent: number; // minimum spread to enter (e.g., 0.05%)
   autoExecute: boolean;     // auto enter at funding time
-  compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (단리)
-  feeOverrides?: FeeOverrides; // 사용자 수수료 override
-  timingConfig?: TimingConfig; // 스나이프/펀딩 검증 타이밍 설정
-  maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%) — 이 이상이면 유동성 부족으로 필터링
-  minVolume24hUSD?: number; // 최소 24시간 거래량 (USD) — 기본 $7,500,000 (≈100억원)
+  compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (?�리)
+  feeOverrides?: FeeOverrides; // ?�용???�수�?override
+  timingConfig?: TimingConfig; // ?�나?�프/?�??검�??�?�밍 ?�정
+  maxSlippagePercent?: number; // 최�? ?�리?��? % (기본 1.5%) ?????�상?�면 ?�동??부족으�??�터�?
+  minVolume24hUSD?: number; // 최소 24?�간 거래??(USD) ??기본 $7,500,000 (??00?�원)
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
@@ -146,11 +146,11 @@ export interface SimPosition extends Position {
   fundingCollected: number;
   spread: number;           // shortRate - longRate at entry
   nextFundingTime: number;  // ms timestamp of next funding
-  isSnipe?: boolean;        // true = 펀딩 스나이핑 (수령 후 자동 청산)
-  fundingReceived?: number; // snipe: 펀딩 수령 횟수
-  entryFee: number;         // 진입 수수료 (WS 가격 갱신 시 PnL에 반영)
-  fundingIntervalMs?: number; // 펀딩 주기 (ms) — 코인별 다름 (기본 8h)
-  entryGapPercent?: number; // 숏/롱 체결가 갭 (%) — orderbook 기반
+  isSnipe?: boolean;        // true = ?�???�나?�핑 (?�령 ???�동 �?��)
+  fundingReceived?: number; // snipe: ?�???�령 ?�수
+  entryFee: number;         // 진입 ?�수�?(WS 가�?갱신 ??PnL??반영)
+  fundingIntervalMs?: number; // ?�??주기 (ms) ??코인�??�름 (기본 8h)
+  entryGapPercent?: number; // ??�?체결가 �?(%) ??orderbook 기반
 }
 
 export interface SimStateSnapshot {
@@ -176,8 +176,8 @@ export interface SnipeStateSnapshot {
 
 export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx'];
 
-// ── Per-exchange fee matrix (VIP0 / basic tier, USDT-M futures) ──
-// Source: official fee schedules as of 2026-03
+// Per-exchange fee matrix used by all profit/guard calculations.
+// Baseline is the referral max-discount preset.
 export interface ExchangeFees {
   taker: number;  // decimal (0.0005 = 0.05%)
   maker: number;  // decimal (0.0002 = 0.02%)
@@ -286,13 +286,19 @@ export function getResolvedTimingConfig(config?: Partial<TimingConfig> | null): 
   return sanitized ? sanitized : { ...DEFAULT_TIMING_CONFIG };
 }
 
+export const EXCHANGE_FEE_PRESET_ID = 'referral_max';
+export const EXCHANGE_FEE_PRESET_LABEL = 'REFERRAL MAX';
+export const EXCHANGE_FEE_PRESET_NOTE = 'Referral max-discount fee table is applied by default.';
+
+// Referral max-discount default table (USDT-M futures).
+// User feeOverrides still take precedence when provided.
 export const EXCHANGE_FEES: Record<ExchangeId, ExchangeFees> = {
-  binance: { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
-  bybit:   { taker: 0.00055, maker: 0.00020 },  // 0.055% / 0.020%
-  okx:     { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
-  bitget:  { taker: 0.00060, maker: 0.00020 },  // 0.060% / 0.020%
-  gate:    { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
-  bingx:   { taker: 0.00050, maker: 0.00020 },  // 0.050% / 0.020%
+  binance: { taker: 0.00040, maker: 0.00016 },  // 0.040% / 0.016%
+  bybit:   { taker: 0.00044, maker: 0.00016 },  // 0.044% / 0.016%
+  okx:     { taker: 0.00040, maker: 0.00016 },  // 0.040% / 0.016%
+  bitget:  { taker: 0.00048, maker: 0.00016 },  // 0.048% / 0.016%
+  gate:    { taker: 0.00040, maker: 0.00016 },  // 0.040% / 0.016%
+  bingx:   { taker: 0.00040, maker: 0.00016 },  // 0.040% / 0.016%
 };
 
 /** Get round-trip fee for a hedge pair (entry + exit on both sides) */
@@ -348,16 +354,16 @@ export function getHedgeFeesWithOverrides(
 }
 
 /**
- * ★ 통합 순수익 계산식 — 모든 진입 판단/표시에 이 함수를 사용
+ * ???�합 ?�수??계산????모든 진입 ?�단/?�시?????�수�??�용
  *
  * netSpreadPct = spreadPct - entryGapPct*1.1 - hedgeFeePct - safetyMarginPct
  *
- * @param spreadPercent   - 명목 스프레드 (%)
- * @param entryGapPct     - 진입 가격 갭 (%) — 양수 = 진입 손실
- * @param hedgeFeePct     - 왕복 수수료 (%) — getHedgeFees * 100
- * @param safetyMarginPct - 안전 마진 (%) — 기본 0.015 (1.5bps)
+ * @param spreadPercent   - 명목 ?�프?�드 (%)
+ * @param entryGapPct     - 진입 가�?�?(%) ???�수 = 진입 ?�실
+ * @param hedgeFeePct     - ?�복 ?�수�?(%) ??getHedgeFees * 100
+ * @param safetyMarginPct - ?�전 마진 (%) ??기본 0.015 (1.5bps)
  */
-export const SAFETY_MARGIN_PCT = 0.015; // 1.5bps — 전역 상수 (슬리피지 가드가 별도 보호)
+export const SAFETY_MARGIN_PCT = 0.015; // 1.5bps ???�역 ?�수 (?�리?��? 가?��? 별도 보호)
 
 export function calcNetSpreadPercent(
   spreadPercent: number,
@@ -369,17 +375,17 @@ export function calcNetSpreadPercent(
 }
 
 /**
- * ★ Equal-notional 스나이프 순수익 계산
+ * ??Equal-notional ?�나?�프 ?�수??계산
  *
- * 양쪽 동일 notional → 가격 변동 헷징 100%, 펀딩 = notional × spread.
- * 거래소 간 가격 괴리(basis)는 같은 거래소에서 열고 닫으므로 비용 아님.
- * 실제 비용: 개별 거래소 슬리피지(입출구) + 왕복 수수료.
+ * ?�쪽 ?�일 notional ??가�?변???�징 100%, ?�??= notional × spread.
+ * 거래??�?가�?괴리(basis)??같�? 거래?�에???�고 ?�으므�?비용 ?�님.
+ * ?�제 비용: 개별 거래???�리?��?(?�출�? + ?�복 ?�수�?
  *
- * @param spreadPercent     - 명목 스프레드 (%)
- * @param shortSlippagePct  - 숏 거래소 슬리피지 (%)
- * @param longSlippagePct   - 롱 거래소 슬리피지 (%)
- * @param hedgeFeePct       - 왕복 수수료 (%) — getHedgeFees * 100
- * @param safetyMarginPct   - 안전 마진 (%)
+ * @param spreadPercent     - 명목 ?�프?�드 (%)
+ * @param shortSlippagePct  - ??거래???�리?��? (%)
+ * @param longSlippagePct   - �?거래???�리?��? (%)
+ * @param hedgeFeePct       - ?�복 ?�수�?(%) ??getHedgeFees * 100
+ * @param safetyMarginPct   - ?�전 마진 (%)
  */
 export function calcHedgedNetSpreadPercent(
   spreadPercent: number,
@@ -388,7 +394,7 @@ export function calcHedgedNetSpreadPercent(
   hedgeFeePct: number,
   safetyMarginPct: number = SAFETY_MARGIN_PCT,
 ): number {
-  // 슬리피지: 입구+출구 양쪽 = × 2
+  // ?�리?��?: ?�구+출구 ?�쪽 = × 2
   const roundTripSlippagePct = (shortSlippagePct + longSlippagePct) * 2;
   return spreadPercent - roundTripSlippagePct - hedgeFeePct - safetyMarginPct;
 }
@@ -400,3 +406,4 @@ export const TRACKED_SYMBOLS = [
   'TRX', 'MATIC', 'FIL', 'SAND', 'MANA', 'AXS', 'AAVE', 'EOS', 'XLM', 'VET',
   'ICP', 'HBAR', 'FTM', 'ALGO', 'RUNE', 'THETA', 'EGLD', 'FLOW', 'ETC', 'XMR',
 ];
+
