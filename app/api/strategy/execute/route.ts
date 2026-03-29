@@ -65,9 +65,10 @@ export async function POST(req: NextRequest) {
       apiConfigs?: Partial<Record<ExchangeId, ApiConfig>>;
       pairId?: string;
       feeOverrides?: FeeOverrides;
+      maxSlippagePercent?: number;
     };
 
-    const { opportunity, investmentUSDT, leverage, apiConfigs, feeOverrides } = body;
+    const { opportunity, investmentUSDT, leverage, apiConfigs, feeOverrides, maxSlippagePercent } = body;
     const normalizedFeeOverrides = sanitizeFeeOverrides(feeOverrides);
     const pairId = typeof body.pairId === 'string' && body.pairId.trim()
       ? body.pairId.trim()
@@ -88,6 +89,17 @@ export async function POST(req: NextRequest) {
     }
     if (!hasValidFeeOverrides(feeOverrides)) {
       return NextResponse.json({ success: false, error: 'Invalid feeOverrides' }, { status: 400 });
+    }
+    if (
+      maxSlippagePercent !== undefined
+      && (
+        typeof maxSlippagePercent !== 'number'
+        || !Number.isFinite(maxSlippagePercent)
+        || maxSlippagePercent <= 0
+        || maxSlippagePercent > 10
+      )
+    ) {
+      return NextResponse.json({ success: false, error: 'Invalid maxSlippagePercent (0, 10]' }, { status: 400 });
     }
 
     // 서버 측 암호화 키 저장소 우선, fallback으로 클라이언트 전송 키 사용
@@ -144,8 +156,8 @@ export async function POST(req: NextRequest) {
       fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
     ]);
 
-    // 2a. Slippage guard — 1.5% 이상이면 거래 차단
-    const MAX_SLIPPAGE_PCT = 1.5;
+    // 2a. Slippage guard — configured max slippage (default 1.5%)
+    const MAX_SLIPPAGE_PCT = maxSlippagePercent ?? 1.5;
     if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
       const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
       const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;

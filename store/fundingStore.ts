@@ -29,6 +29,12 @@ import {
   makeOpportunityId,
 } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
+import {
+  RATES_POLL_INTERVAL_MS,
+  SNIPE_CHECK_INTERVAL_MS,
+  SIM_SYNC_INTERVAL_MS,
+  POSITIONS_POLL_INTERVAL_MS,
+} from '@/lib/polling';
 import { sendTelegramMessage, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
 import {
   DEFAULT_TIMING_CONFIG,
@@ -178,6 +184,7 @@ function buildSchedulerConfig(
     maxConcurrentPairs: 5,
     feeOverrides: strategyConfig.feeOverrides,
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
+    maxSlippagePercent: strategyConfig.maxSlippagePercent,
     minVolume24hUSD: strategyConfig.minVolume24hUSD,
   };
 }
@@ -223,6 +230,8 @@ function buildServerSimSchedulerConfig(
     enabledExchanges,
     feeOverrides: strategyConfig.feeOverrides,
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
+    maxSlippagePercent: strategyConfig.maxSlippagePercent,
+    minVolume24hUSD: strategyConfig.minVolume24hUSD,
   };
 }
 
@@ -783,6 +792,10 @@ function makeApiHeaders(config: ApiConfig): Record<string, string> {
 
 let logCounter = 0;
 let ratesRefreshInFlight = false;
+const RATE_FETCH_TIMEOUT_MS = 20_000;
+const RATE_RETRY_DELAY_MS = 1_500;
+const RATE_RETRY_TIMEOUT_MS = 15_000;
+const EXCHANGE_STATUS_STALE_OK_MS = 90_000;
 
 function makeLog(level: LogLevel, message: string, exchange?: ExchangeId, detail?: string): LogEntry {
   return {
@@ -1377,8 +1390,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const leverageChanged = next.leverage !== previousConfig.leverage;
     const minSpreadChanged = next.minSpreadPercent !== previousConfig.minSpreadPercent;
     const feeChanged = JSON.stringify(next.feeOverrides ?? {}) !== JSON.stringify(previousConfig.feeOverrides ?? {});
+    const maxSlippageChanged = next.maxSlippagePercent !== previousConfig.maxSlippagePercent;
+    const minVolumeChanged = next.minVolume24hUSD !== previousConfig.minVolume24hUSD;
     const timingChanged = JSON.stringify(next.timingConfig ?? DEFAULT_TIMING_CONFIG) !== JSON.stringify(previousConfig.timingConfig ?? DEFAULT_TIMING_CONFIG);
-    const schedulerRelevantChanged = investmentChanged || leverageChanged || minSpreadChanged || feeChanged || timingChanged;
+    const schedulerRelevantChanged = investmentChanged
+      || leverageChanged
+      || minSpreadChanged
+      || feeChanged
+      || maxSlippageChanged
+      || minVolumeChanged
+      || timingChanged;
 
     set((s) => {
       const opportunities = buildOpportunitiesFromRates(s.fundingRates, next, s);
@@ -1480,6 +1501,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     try {
       const enabled = get().enabledExchanges;
       console.log('[refreshRates] start:', enabled.join(','));
+      const markExchangeFetchFailure = (exchangeId: ExchangeId, errorMessage: string) => {
+        set(s => {
+          const hasExistingRates = s.fundingRates.some(r => r.exchange === exchangeId);
+          const hasFreshSnapshot = !!s.lastRatesUpdate
+            && (Date.now() - s.lastRatesUpdate) <= EXCHANGE_STATUS_STALE_OK_MS;
+          const keepOk = hasExistingRates && hasFreshSnapshot;
+          return {
+            exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: keepOk ? 'ok' : 'error' },
+            exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: errorMessage },
+          };
+        });
+      };
 
     // 비활성 거래소 데이터 제거 (OFF한 거래소가 기회 계산에 남는 것 방지)
     set(s => ({
@@ -1489,10 +1522,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     // 거래소별 개별 fetch — 먼저 응답 오는 거래소부터 즉시 반영
     await Promise.allSettled(
       enabled.map(async (exchangeId) => {
-        set(s => ({ exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'loading' } }));
+        const current = get();
+        const hasExistingRates = current.fundingRates.some(r => r.exchange === exchangeId);
+        if (!hasExistingRates || current.exchangeFetchStatus[exchangeId] === 'error') {
+          set(s => ({ exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'loading' } }));
+        }
         try {
           const res = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, {
-            signal: AbortSignal.timeout(45000),
+            signal: AbortSignal.timeout(RATE_FETCH_TIMEOUT_MS),
           });
           const json = await res.json() as {
             success: boolean;
@@ -1562,11 +1599,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               }
             }
           } else {
-            // success:false 또는 데이터 0건 → 5초 후 재시도
+            // success:false 또는 데이터 0건 → 짧은 대기 후 재시도
             const errMsg = json.error || '데이터 없음';
-            console.warn(`[refreshRates] ${exchangeId} 1차 실패(응답): ${errMsg} — 5초 후 재시도`);
-            await new Promise(r => setTimeout(r, 5000));
-            const retryRes2 = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, { signal: AbortSignal.timeout(30000) });
+            console.warn(`[refreshRates] ${exchangeId} 1차 실패(응답): ${errMsg} — ${RATE_RETRY_DELAY_MS / 1000}초 후 재시도`);
+            await new Promise(r => setTimeout(r, RATE_RETRY_DELAY_MS));
+            const retryRes2 = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, { signal: AbortSignal.timeout(RATE_RETRY_TIMEOUT_MS) });
             const retryJson2 = await retryRes2.json() as typeof json;
             if (retryJson2.success && retryJson2.data.rates.length > 0) {
               console.log(`[refreshRates] ${exchangeId} 재시도 성공: ${retryJson2.data.rates.length}개`);
@@ -1592,19 +1629,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               });
             } else {
               console.warn(`[refreshRates] ${exchangeId} 재시도도 실패: ${retryJson2.error || '데이터 없음'}`);
-              set(s => ({
-                exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'error' },
-                exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: retryJson2.error || errMsg },
-              }));
+              markExchangeFetchFailure(exchangeId, retryJson2.error || errMsg);
             }
           }
         } catch (err) {
-          // 네트워크/타임아웃 에러 → 5초 후 재시도
-          console.warn(`[refreshRates] ${exchangeId} 1차 실패(네트워크) — 5초 후 재시도:`, (err as Error).message);
+          // 네트워크/타임아웃 에러 → 짧은 대기 후 재시도
+          console.warn(`[refreshRates] ${exchangeId} 1차 실패(네트워크) — ${RATE_RETRY_DELAY_MS / 1000}초 후 재시도:`, (err as Error).message);
           try {
-            await new Promise(r => setTimeout(r, 5000));
+            await new Promise(r => setTimeout(r, RATE_RETRY_DELAY_MS));
             const retryRes = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, {
-              signal: AbortSignal.timeout(30000),
+              signal: AbortSignal.timeout(RATE_RETRY_TIMEOUT_MS),
             });
             const retryJson = await retryRes.json() as {
               success: boolean;
@@ -1639,10 +1673,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             }
           } catch (retryErr) {
             console.warn(`[refreshRates] ${exchangeId} 재시도도 실패:`, (retryErr as Error).message);
-            set(s => ({
-              exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'error' },
-              exchangeFetchErrors: { ...s.exchangeFetchErrors, [exchangeId]: (retryErr as Error).message },
-            }));
+            markExchangeFetchFailure(exchangeId, (retryErr as Error).message);
           }
         }
       }),
@@ -1980,7 +2011,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           saveSimMode(snapshot.simulationMode);
         })
         .catch(() => {});
-    }, 3_000);
+    }, RATES_POLL_INTERVAL_MS);
 
     // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)
     const snipeCheckInterval = setInterval(() => {
@@ -1988,7 +2019,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         get().revalidateScheduledSnipes();
         get().scheduleAllSnipes();
       }
-    }, 1_000);
+    }, SNIPE_CHECK_INTERVAL_MS);
 
     // 3초 간격 SIM 서버 상태 동기화 (API 호출 — 매초는 과도)
     const simSyncInterval = setInterval(() => {
@@ -2014,7 +2045,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           })
           .catch(() => {});
       }
-    }, 3_000);
+    }, SIM_SYNC_INTERVAL_MS);
 
     const positionsInterval = setInterval(() => {
       get().refreshPositions();
@@ -2031,7 +2062,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (get().simulationMode && !get().simSnipeActive) {
         get().redistributeBalances();
       }
-    }, 10_000);
+    }, POSITIONS_POLL_INTERVAL_MS);
 
     set({ _ratesInterval: ratesInterval, _positionsInterval: positionsInterval, _snipeCheckInterval: snipeCheckInterval, _simSyncInterval: simSyncInterval });
   },
@@ -2447,6 +2478,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           leverage: strategyConfig.leverage,
           pairId,
           feeOverrides: strategyConfig.feeOverrides,
+          maxSlippagePercent: strategyConfig.maxSlippagePercent,
           // apiConfigs는 서버 측 암호화 저장소에서 로드 (클라이언트 전송 X)
         }),
       });
@@ -3233,7 +3265,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   setExchangeFilter: (v) => set({ exchangeFilter: v }),
   setPositionToClose: (v) => set({ positionToClose: v }),
 
-  // ── 예약 코인 실시간 재검증: 8초마다 — netProfit ≤ 0 즉시 해제 + 더 좋은 기회로 교체 ──
+  // ── 예약 코인 실시간 재검증: 1초 간격 체크 — netProfit ≤ 0 즉시 해제 + 더 좋은 기회로 교체 ──
   revalidateScheduledSnipes() {
     const {
       snipeTargets,

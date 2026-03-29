@@ -29,6 +29,27 @@ function validateConfig(config: ServerSimSchedulerConfig) {
   if (!hasValidTimingConfig(config.timingConfig)) {
     return 'Invalid timingConfig';
   }
+  if (
+    config.maxSlippagePercent !== undefined
+    && (
+      typeof config.maxSlippagePercent !== 'number'
+      || !Number.isFinite(config.maxSlippagePercent)
+      || config.maxSlippagePercent <= 0
+      || config.maxSlippagePercent > 10
+    )
+  ) {
+    return 'Invalid maxSlippagePercent (0, 10]';
+  }
+  if (
+    config.minVolume24hUSD !== undefined
+    && (
+      typeof config.minVolume24hUSD !== 'number'
+      || !Number.isFinite(config.minVolume24hUSD)
+      || config.minVolume24hUSD < 0
+    )
+  ) {
+    return 'Invalid minVolume24hUSD (>= 0)';
+  }
   return null;
 }
 

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES } from '@/lib/types';
+import { RATES_POLL_INTERVAL_MS } from '@/lib/polling';
 
 export default function DataStatusBar() {
   const {
@@ -14,7 +15,6 @@ export default function DataStatusBar() {
     enabledExchanges,
   } = useFundingStore();
 
-  // #10: Live-updating elapsed time
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -23,6 +23,7 @@ export default function DataStatusBar() {
 
   const okCount = enabledExchanges.filter(ex => exchangeFetchStatus[ex] === 'ok').length;
   const totalRates = fundingRates.length;
+  const pollingSeconds = Math.max(1, Math.round(RATES_POLL_INTERVAL_MS / 1000));
 
   const getStatusColor = (status: string | undefined) => {
     switch (status) {
@@ -64,10 +65,11 @@ export default function DataStatusBar() {
         flexWrap: 'wrap',
       }}
     >
-      {/* Global status */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <div style={{
-          width: 8, height: 8, borderRadius: '50%',
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
           background: globalColor,
           boxShadow: ratesStatus === 'success' ? `0 0 6px ${globalColor}` : 'none',
           animation: isLoadingRates ? 'pulse-glow 1s ease-in-out infinite' : 'none',
@@ -82,7 +84,6 @@ export default function DataStatusBar() {
 
       <div style={{ width: 1, height: 16, background: 'var(--color-border)' }} />
 
-      {/* Per-exchange status */}
       {enabledExchanges.map(ex => {
         const status = exchangeFetchStatus[ex];
         const color = getStatusColor(status);
@@ -91,12 +92,15 @@ export default function DataStatusBar() {
         return (
           <div key={ex} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <div style={{
-              width: 6, height: 6, borderRadius: '50%',
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
               background: color,
               boxShadow: status === 'ok' ? `0 0 4px ${color}` : 'none',
             }} />
             <span style={{
-              fontSize: 10, fontWeight: 600,
+              fontSize: 10,
+              fontWeight: 600,
               color: status === 'ok' ? exColor : 'var(--color-text-muted)',
             }}>
               {EXCHANGE_NAMES[ex]}
@@ -115,7 +119,6 @@ export default function DataStatusBar() {
 
       <div style={{ flex: 1 }} />
 
-      {/* Total rates + polling info */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {totalRates > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
@@ -129,11 +132,13 @@ export default function DataStatusBar() {
           </div>
         )}
         <div style={{
-          fontSize: 9, color: 'var(--color-text-muted)',
-          padding: '2px 6px', borderRadius: 4,
+          fontSize: 9,
+          color: 'var(--color-text-muted)',
+          padding: '2px 6px',
+          borderRadius: 4,
           background: 'var(--bg-accent)',
         }}>
-          8초 폴링
+          {pollingSeconds}초 폴링
         </div>
       </div>
     </div>

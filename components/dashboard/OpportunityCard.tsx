@@ -244,6 +244,8 @@ export default function OpportunityCard() {
                 maxConcurrentPairs: 5,
                 feeOverrides: state.strategyConfig.feeOverrides,
                 timingConfig: state.strategyConfig.timingConfig,
+                maxSlippagePercent: state.strategyConfig.maxSlippagePercent,
+                minVolume24hUSD: state.strategyConfig.minVolume24hUSD,
               },
             }),
           });
@@ -277,6 +279,8 @@ export default function OpportunityCard() {
                 enabledExchanges: state.enabledExchanges,
                 feeOverrides: state.strategyConfig.feeOverrides,
                 timingConfig: state.strategyConfig.timingConfig,
+                maxSlippagePercent: state.strategyConfig.maxSlippagePercent,
+                minVolume24hUSD: state.strategyConfig.minVolume24hUSD,
               },
             }),
           });
