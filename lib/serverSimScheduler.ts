@@ -403,7 +403,8 @@ class ServerSimScheduler {
       getOrCreateServerSimState(this.config.enabledExchanges, this.config.investmentUSDT);
       this.startLoop();
       this.saveState();
-      await this.refreshRatesAndPlans();
+      // rates 로딩은 백그라운드 — API 즉시 응답
+      void this.refreshRatesAndPlans();
       return this.getStatus();
     });
   }
