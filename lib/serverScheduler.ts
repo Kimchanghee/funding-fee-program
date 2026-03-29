@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from 'path';
 import {
   closePosition,
+  fetchBalance,
   fetchFundingHistory as fetchFundingHistoryFromExchange,
   fetchFundingRates,
   fetchMarketFillPrice,
@@ -524,6 +525,37 @@ class ServerScheduler {
 
     try {
       const targetNotional = this.config.investmentUSDT * this.config.leverage;
+      const requiredShortBalance = this.config.investmentUSDT
+        + (targetNotional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides));
+      const requiredLongBalance = this.config.investmentUSDT
+        + (targetNotional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
+      const [shortBalance, longBalance] = await Promise.all([
+        fetchBalance(opportunity.shortExchange, shortConfig),
+        fetchBalance(opportunity.longExchange, longConfig),
+      ]);
+
+      if (shortBalance.availableUSDT < requiredShortBalance || longBalance.availableUSDT < requiredLongBalance) {
+        this.log(
+          'warning',
+          `entry blocked by balance check | asset=${asset} ` +
+          `${opportunity.shortExchange}=${shortBalance.availableUSDT.toFixed(2)}/${requiredShortBalance.toFixed(2)} ` +
+          `${opportunity.longExchange}=${longBalance.availableUSDT.toFixed(2)}/${requiredLongBalance.toFixed(2)}`,
+        );
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'insufficient_balance',
+          detail: `required:${opportunity.shortExchange}=${requiredShortBalance.toFixed(2)},${opportunity.longExchange}=${requiredLongBalance.toFixed(2)} available:${opportunity.shortExchange}=${shortBalance.availableUSDT.toFixed(2)},${opportunity.longExchange}=${longBalance.availableUSDT.toFixed(2)}`,
+        }]);
+        return;
+      }
+
       const [shortFill, longFill] = await Promise.all([
         fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
         fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),

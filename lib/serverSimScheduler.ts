@@ -172,11 +172,18 @@ function planWindowAllocations(
   const allocations = new Map<string, number>();
   const allocationStep = Math.max(25, Math.min(strategyConfig.investmentUSDT / 5, 250));
   const minAllocation = Math.min(Math.max(10, strategyConfig.investmentUSDT * 0.1), allocationStep);
+  const getCostFactor = (exchange: ExchangeId) => (
+    1 + (strategyConfig.leverage * getExchangeFee(exchange, 'taker', strategyConfig.feeOverrides))
+  );
 
   const getCap = (opportunity: ArbitrageOpportunity) => {
     const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
     const longAvail = availableBalance[opportunity.longExchange] ?? 0;
-    const maxByBalance = Math.max(0, Math.min(shortAvail, longAvail));
+    const shortFactor = getCostFactor(opportunity.shortExchange);
+    const longFactor = getCostFactor(opportunity.longExchange);
+    const maxByShort = shortFactor > 0 ? shortAvail / shortFactor : 0;
+    const maxByLong = longFactor > 0 ? longAvail / longFactor : 0;
+    const maxByBalance = Math.max(0, Math.min(maxByShort, maxByLong));
     if (strategyConfig.compoundInvesting) {
       return maxByBalance * 0.9;
     }
@@ -213,18 +220,20 @@ function planWindowAllocations(
     const allocated = allocations.get(opportunityId) ?? 0;
     const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
     const longAvail = availableBalance[opportunity.longExchange] ?? 0;
+    const shortFactor = getCostFactor(opportunity.shortExchange);
+    const longFactor = getCostFactor(opportunity.longExchange);
     const chunk = Math.min(
       allocationStep,
       getCap(opportunity) - allocated,
-      shortAvail,
-      longAvail,
     );
 
     if (chunk < minAllocation) break;
 
+    const shortCost = chunk * shortFactor;
+    const longCost = chunk * longFactor;
     allocations.set(opportunityId, allocated + chunk);
-    availableBalance[opportunity.shortExchange] = Math.max(0, shortAvail - chunk);
-    availableBalance[opportunity.longExchange] = Math.max(0, longAvail - chunk);
+    availableBalance[opportunity.shortExchange] = Math.max(0, shortAvail - shortCost);
+    availableBalance[opportunity.longExchange] = Math.max(0, longAvail - longCost);
     totalAllocated += chunk;
   }
 

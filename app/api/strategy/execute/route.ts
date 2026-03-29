@@ -3,6 +3,7 @@ import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides } from '
 import { SUPPORTED_EXCHANGES, getExchangeFee, getHedgeFeesWithOverrides, calcHedgedNetSpreadPercent, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
 import {
   openPositionExact,
+  fetchBalance,
   fetchMarketFillPrice,
   closePosition,
   getPartialExecution,
@@ -103,6 +104,39 @@ export async function POST(req: NextRequest) {
 
     // ── 100% Hedge: 양쪽 오더북 동시 조회 → 동일 notional 수량 계산 → 동시 실행 ──
     const targetNotional = investmentUSDT * leverage;
+    const shortEntryFeeEstimate = targetNotional * getExchangeFee(
+      opportunity.shortExchange,
+      'taker',
+      normalizedFeeOverrides,
+    );
+    const longEntryFeeEstimate = targetNotional * getExchangeFee(
+      opportunity.longExchange,
+      'taker',
+      normalizedFeeOverrides,
+    );
+    const requiredShortBalance = investmentUSDT + shortEntryFeeEstimate;
+    const requiredLongBalance = investmentUSDT + longEntryFeeEstimate;
+
+    const [shortBalance, longBalance] = await Promise.all([
+      fetchBalance(opportunity.shortExchange, shortConfig),
+      fetchBalance(opportunity.longExchange, longConfig),
+    ]);
+
+    if (shortBalance.availableUSDT < requiredShortBalance || longBalance.availableUSDT < requiredLongBalance) {
+      return NextResponse.json({
+        success: false,
+        error: `잔고 부족: ${opportunity.shortExchange} ${shortBalance.availableUSDT.toFixed(2)} / 필요 ${requiredShortBalance.toFixed(2)}, ${opportunity.longExchange} ${longBalance.availableUSDT.toFixed(2)} / 필요 ${requiredLongBalance.toFixed(2)}`,
+        reason: 'insufficient_balance',
+        required: {
+          [opportunity.shortExchange]: requiredShortBalance,
+          [opportunity.longExchange]: requiredLongBalance,
+        },
+        available: {
+          [opportunity.shortExchange]: shortBalance.availableUSDT,
+          [opportunity.longExchange]: longBalance.availableUSDT,
+        },
+      });
+    }
 
     // 1. Pre-fetch orderbooks from both exchanges simultaneously
     const [shortFill, longFill] = await Promise.all([

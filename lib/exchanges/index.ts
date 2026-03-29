@@ -295,28 +295,57 @@ export async function fetchFundingRates(
 
 export async function fetchBalance(id: ExchangeId, config: ApiConfig): Promise<Balance> {
   const ex = makeExchange(id, config);
+  const toFiniteNumber = (value: unknown): number | undefined => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+  };
+  const pickNumber = (...values: unknown[]): number => {
+    for (const value of values) {
+      const parsed = toFiniteNumber(value);
+      if (parsed !== undefined) return parsed;
+    }
+    return 0;
+  };
   try {
     const bal = await ex.fetchBalance();
     const usdt = bal['USDT'] ?? bal['usdt'];
+    const totalUSDT = pickNumber(
+      usdt?.total,
+      bal?.total?.USDT,
+      bal?.total?.usdt,
+      bal?.USDT?.total,
+      bal?.usdt?.total,
+    );
+    const availableUSDT = pickNumber(
+      usdt?.free,
+      bal?.free?.USDT,
+      bal?.free?.usdt,
+      bal?.USDT?.free,
+      bal?.usdt?.free,
+    );
+    const usedUSDT = pickNumber(
+      usdt?.used,
+      bal?.used?.USDT,
+      bal?.used?.usdt,
+      bal?.USDT?.used,
+      bal?.usdt?.used,
+    );
     return {
       exchange: id,
-      totalUSDT: (usdt?.total as number) || 0,
-      availableUSDT: (usdt?.free as number) || 0,
-      usedUSDT: (usdt?.used as number) || 0,
+      totalUSDT,
+      availableUSDT,
+      usedUSDT,
       unrealizedPnl: 0,
       status: 'connected',
       updatedAt: Date.now(),
     };
-  } catch {
-    return {
-      exchange: id,
-      totalUSDT: 0,
-      availableUSDT: 0,
-      usedUSDT: 0,
-      unrealizedPnl: 0,
-      status: 'error',
-      updatedAt: Date.now(),
-    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`[${id}] fetchBalance failed: ${message}`);
   }
 }
 

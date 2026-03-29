@@ -359,11 +359,13 @@ function getEffectiveNotional(
   const longBal = isSimulation
     ? (simBalances[opp.longExchange] ?? 0)
     : (realBalances[opp.longExchange]?.availableUSDT ?? 0);
-  const maxPerSide = Math.max(0, Math.min(shortBal, longBal) * 0.9);
+  const minPerSideBalance = Math.max(0, Math.min(shortBal, longBal));
+  if (minPerSideBalance <= 0) return 0;
   const targetPerSide = investmentOverrideUSDT ?? config.investmentUSDT;
-  const perSide = maxPerSide > 0
-    ? Math.min(targetPerSide, maxPerSide)
-    : targetPerSide;
+  const cappedPerSide = config.compoundInvesting
+    ? Math.min(targetPerSide, minPerSideBalance * 0.9)
+    : Math.min(targetPerSide, minPerSideBalance);
+  const perSide = Math.max(cappedPerSide, 0);
   return Math.max(perSide, 0) * config.leverage;
 }
 
@@ -551,11 +553,18 @@ function planWindowAllocations(
   const allocations = new Map<string, number>();
   const allocationStep = Math.max(25, Math.min(strategyConfig.investmentUSDT / 5, 250));
   const minAllocation = Math.min(Math.max(10, strategyConfig.investmentUSDT * 0.1), allocationStep);
+  const getCostFactor = (exchange: ExchangeId) => (
+    1 + (strategyConfig.leverage * getConfiguredExchangeFee(strategyConfig, exchange, 'taker'))
+  );
 
   const getCap = (opportunity: ArbitrageOpportunity) => {
     const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
     const longAvail = availableBalance[opportunity.longExchange] ?? 0;
-    const maxByBalance = Math.max(0, Math.min(shortAvail, longAvail));
+    const shortFactor = getCostFactor(opportunity.shortExchange);
+    const longFactor = getCostFactor(opportunity.longExchange);
+    const maxByShort = shortFactor > 0 ? shortAvail / shortFactor : 0;
+    const maxByLong = longFactor > 0 ? longAvail / longFactor : 0;
+    const maxByBalance = Math.max(0, Math.min(maxByShort, maxByLong));
     if (strategyConfig.compoundInvesting) {
       return maxByBalance * 0.9;
     }
@@ -592,18 +601,20 @@ function planWindowAllocations(
     const allocated = allocations.get(opportunityId) ?? 0;
     const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
     const longAvail = availableBalance[opportunity.longExchange] ?? 0;
+    const shortFactor = getCostFactor(opportunity.shortExchange);
+    const longFactor = getCostFactor(opportunity.longExchange);
     const chunk = Math.min(
       allocationStep,
       getCap(opportunity) - allocated,
-      shortAvail,
-      longAvail,
     );
 
     if (chunk < minAllocation) break;
 
+    const shortCost = chunk * shortFactor;
+    const longCost = chunk * longFactor;
     allocations.set(opportunityId, allocated + chunk);
-    availableBalance[opportunity.shortExchange] = Math.max(0, shortAvail - chunk);
-    availableBalance[opportunity.longExchange] = Math.max(0, longAvail - chunk);
+    availableBalance[opportunity.shortExchange] = Math.max(0, shortAvail - shortCost);
+    availableBalance[opportunity.longExchange] = Math.max(0, longAvail - longCost);
     totalAllocated += chunk;
   }
 
@@ -1758,15 +1769,38 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       .filter(([exchange]) => enabled.includes(exchange));
     if (activeConfigs.length === 0) return;
 
-    const next: Partial<Record<ExchangeId, Balance>> = {};
+    const previous = get().balances;
+    const next: Partial<Record<ExchangeId, Balance>> = { ...previous };
 
     await Promise.allSettled(
       activeConfigs.map(async ([exchange, config]) => {
-        const res = await fetch(`/api/exchanges/${exchange}/balance`, {
-          headers: makeApiHeaders(config),
-        });
-        const json = await res.json() as { success: boolean; data: Balance };
-        if (json.success) next[exchange] = json.data;
+        try {
+          const res = await fetch(`/api/exchanges/${exchange}/balance`, {
+            headers: makeApiHeaders(config),
+          });
+          const json = await res.json().catch(() => null) as {
+            success?: boolean;
+            data?: Balance;
+            error?: string;
+          } | null;
+          if (!res.ok || !json?.success || !json.data || json.data.status !== 'connected') {
+            throw new Error(json?.error || `HTTP ${res.status}`);
+          }
+          next[exchange] = json.data;
+        } catch {
+          // Keep last good snapshot to avoid transient API errors being interpreted as $0 balance.
+          if (!next[exchange]) {
+            next[exchange] = {
+              exchange,
+              totalUSDT: 0,
+              availableUSDT: 0,
+              usedUSDT: 0,
+              unrealizedPnl: 0,
+              status: 'error',
+              updatedAt: Date.now(),
+            };
+          }
+        }
       }),
     );
 
@@ -3519,8 +3553,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const opp = findOpportunityById(opportunities, parseSnipeKey(tKey).opportunityId);
       if (!opp) continue;
       const reservePerSide = snipeAllocations[tKey] ?? strategyConfig.investmentUSDT;
-      availableBalance[opp.shortExchange] = Math.max(0, (availableBalance[opp.shortExchange] ?? 0) - reservePerSide);
-      availableBalance[opp.longExchange] = Math.max(0, (availableBalance[opp.longExchange] ?? 0) - reservePerSide);
+      const shortCostFactor = 1 + (strategyConfig.leverage * getConfiguredExchangeFee(strategyConfig, opp.shortExchange, 'taker'));
+      const longCostFactor = 1 + (strategyConfig.leverage * getConfiguredExchangeFee(strategyConfig, opp.longExchange, 'taker'));
+      availableBalance[opp.shortExchange] = Math.max(
+        0,
+        (availableBalance[opp.shortExchange] ?? 0) - (reservePerSide * shortCostFactor),
+      );
+      availableBalance[opp.longExchange] = Math.max(
+        0,
+        (availableBalance[opp.longExchange] ?? 0) - (reservePerSide * longCostFactor),
+      );
       getOpportunityLegKeys(opp).forEach((legKey) => occupiedLegs.add(legKey));
     }
 
