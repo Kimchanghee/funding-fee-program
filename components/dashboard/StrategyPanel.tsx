@@ -9,6 +9,8 @@ import { getTelegramConfig, saveTelegramConfig, sendTelegramMessage } from '@/li
 
 export default function StrategyPanel() {
   const { strategyConfig, setStrategyConfig, setShowStrategyPanel, opportunities, realSpreads } = useFundingStore();
+  const maxSlippagePercent = strategyConfig.maxSlippagePercent ?? 1.5;
+  const minVolume24hUSD = strategyConfig.minVolume24hUSD ?? 7_500_000;
   const best = opportunities[0];
   const realSpread = best ? (realSpreads[best.id ?? ''] ?? realSpreads[best.baseAsset]) : null;
   const hasRealSpread = !!(realSpread && Date.now() - realSpread.updatedAt < 30_000);
@@ -113,6 +115,42 @@ export default function StrategyPanel() {
             />
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
               이 값 이상일 때만 자동 진입 알림/실행
+            </div>
+          </div>
+
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
+              최대 슬리피지 (%): <strong style={{ color: 'var(--color-text)' }}>{maxSlippagePercent}%</strong>
+            </label>
+            <input
+              className="input-field"
+              type="number"
+              min={0.1}
+              max={10}
+              step={0.1}
+              value={maxSlippagePercent}
+              onChange={e => setStrategyConfig({ maxSlippagePercent: Number(e.target.value) })}
+            />
+            <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+              진입 전 오더북 검증에서 이 값 초과 시 차단
+            </div>
+          </div>
+
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
+              최소 24h 거래량 (USD): <strong style={{ color: 'var(--color-text)' }}>${minVolume24hUSD.toLocaleString()}</strong>
+            </label>
+            <input
+              className="input-field"
+              type="number"
+              min={0}
+              max={1000000000}
+              step={500000}
+              value={minVolume24hUSD}
+              onChange={e => setStrategyConfig({ minVolume24hUSD: Number(e.target.value) })}
+            />
+            <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+              저유동성 종목 제외 기준 (0 입력 시 비활성)
             </div>
           </div>
 
