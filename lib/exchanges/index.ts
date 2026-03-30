@@ -349,6 +349,52 @@ export async function fetchBalance(id: ExchangeId, config: ApiConfig): Promise<B
   }
 }
 
+/**
+ * Fetch actual account trading fees from exchange API.
+ * Returns maker/taker fees for the account's current VIP/fee tier.
+ * Falls back to null if the exchange doesn't support fee queries or if it fails.
+ */
+export async function fetchAccountFees(
+  id: ExchangeId,
+  config: ApiConfig,
+  symbol?: string,
+): Promise<{ maker: number; taker: number } | null> {
+  const ex = makeExchange(id, config);
+  try {
+    await ensureMarkets(ex, id, config);
+    // CCXT's fetchTradingFee returns { maker, taker } for the account's tier
+    const fee = await Promise.race([
+      symbol
+        ? ex.fetchTradingFee(symbol) as Promise<any>
+        : ex.fetchTradingFees() as Promise<any>,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+    ]);
+
+    if (!fee) return null;
+
+    // fetchTradingFees returns a map; pick a representative symbol or first entry
+    if (!symbol && typeof fee === 'object') {
+      const firstKey = Object.keys(fee).find(k => k.includes('USDT'));
+      const entry = firstKey ? fee[firstKey] : Object.values(fee)[0];
+      if (entry && typeof entry === 'object') {
+        const maker = (entry as any).maker;
+        const taker = (entry as any).taker;
+        if (typeof maker === 'number' && typeof taker === 'number') {
+          return { maker, taker };
+        }
+      }
+      return null;
+    }
+
+    if (typeof fee.maker === 'number' && typeof fee.taker === 'number') {
+      return { maker: fee.maker, taker: fee.taker };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchPositions(id: ExchangeId, config: ApiConfig): Promise<Position[]> {
   const ex = makeExchange(id, config);
   try {
@@ -481,8 +527,9 @@ export function calcOrderbookImpactBps(
   const analysis = analyzeOrderbook(levels, notionalUSDT, side);
   const impactBps = Math.abs((analysis.fillPrice - midPrice) / midPrice) * 10000;
 
-  // Walk levels to find max notional within per-side impact cap (6bps = half of 12bps round-trip)
-  const perSideCapBps = 6;
+  // Walk levels to find max notional within per-side impact cap.
+  // per-side 3bps × 2 legs = 6bps entry, × 2 (entry+exit) = 12bps round-trip = MAX_ROUND_TRIP_IMPACT_BPS
+  const perSideCapBps = 3;
   let depthCapNotional = 0;
   for (const [price, qty] of levels) {
     const levelImpactBps = Math.abs((price - midPrice) / midPrice) * 10000;

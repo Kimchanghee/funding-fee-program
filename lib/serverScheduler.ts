@@ -19,13 +19,21 @@ import {
   getPairMaxSettlementWaitMs,
   hasTierCExchange,
   pairSupportsConfirmedClose,
+  pairUsesInstantaneousRate,
 } from './exchangeProfiles';
 import { appendTrades, type TradeEvent } from './fileLogger';
 import {
   findOpportunities,
   getOpportunityId,
   getOpportunityLegKeys,
+  calcConservativeEV,
+  calcDriftBuffer,
 } from './opportunities';
+import {
+  createExecutionState,
+  transitionPhase,
+  completeExecution,
+} from './executionState';
 import { loadAllServerApiConfigs } from './serverKeyStore';
 import {
   makeServerPositionKey,
@@ -42,6 +50,10 @@ import {
   sanitizeTimingConfig,
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_FUNDING_TIMESTAMP_DIFF_MS,
+  MAX_ROUND_TRIP_IMPACT_BPS,
+  MAX_HEDGE_MISMATCH_PCT,
+  MIN_FREE_MARGIN_PCT,
+  MAX_ORPHAN_LEG_MS,
   HEDGE_RATIO_MIN,
   HEDGE_RATIO_MAX,
   type ApiConfig,
@@ -550,8 +562,15 @@ class ServerScheduler {
     this.scheduledEntries.delete(opportunityId);
     this.saveState();
 
+    // State machine: create and track
+    createExecutionState(
+      opportunityId, asset, opportunity.shortExchange, opportunity.longExchange,
+    );
+    transitionPhase(opportunityId, 'precheck');
+
     if (!this.active) {
       this.log('warning', `entry skipped while inactive | asset=${asset}`);
+      completeExecution(opportunityId, 'aborted');
       return;
     }
 
@@ -671,20 +690,17 @@ class ServerScheduler {
         return;
       }
 
-      const [shortFill, longFill] = await Promise.all([
-        fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
-        fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
-      ]);
-
-      // ── Slippage guard: 설정값 이상이면 거래 차단 (기본 1.5%) ──
-      const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
-      if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
-        const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
-        const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;
-        const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
+      // ── Free margin guard: block if available/total ratio is too low ──
+      const shortFreeRatio = shortBalance.totalUSDT > 0
+        ? (shortBalance.availableUSDT / shortBalance.totalUSDT) * 100 : 0;
+      const longFreeRatio = longBalance.totalUSDT > 0
+        ? (longBalance.availableUSDT / longBalance.totalUSDT) * 100 : 0;
+      if (shortFreeRatio < MIN_FREE_MARGIN_PCT || longFreeRatio < MIN_FREE_MARGIN_PCT) {
         this.log(
           'warning',
-          `entry blocked by slippage guard | asset=${asset} ${worstSide}(${worstExchange}) slippage=${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}% | short(${opportunity.shortExchange})=${shortFill.slippagePercent.toFixed(4)}% long(${opportunity.longExchange})=${longFill.slippagePercent.toFixed(4)}%`,
+          `entry blocked by free margin | asset=${asset} ` +
+          `${opportunity.shortExchange}=${shortFreeRatio.toFixed(1)}% ` +
+          `${opportunity.longExchange}=${longFreeRatio.toFixed(1)}% min=${MIN_FREE_MARGIN_PCT}%`,
         );
         this.recordTrades([{
           timestamp: Date.now(),
@@ -695,18 +711,75 @@ class ServerScheduler {
           longExchange: opportunity.longExchange,
           spread: opportunity.spread,
           spreadPercent: opportunity.spreadPercent,
-          reason: 'slippage_exceeded',
-          detail: `slippage_${worstSide}(${worstExchange}):${worstSlippage.toFixed(6)}% max:${MAX_SLIPPAGE_PCT}% short(${opportunity.shortExchange}):${shortFill.slippagePercent.toFixed(6)}% long(${opportunity.longExchange}):${longFill.slippagePercent.toFixed(6)}%`,
+          reason: 'free_margin_low',
+          detail: `${opportunity.shortExchange}:${shortFreeRatio.toFixed(1)}% ${opportunity.longExchange}:${longFreeRatio.toFixed(1)}% min:${MIN_FREE_MARGIN_PCT}%`,
         }]);
         return;
       }
 
+      const [shortFill, longFill] = await Promise.all([
+        fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
+        fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
+      ]);
+
+      // ── Liquidity guard: impact-based (v2) or slippage-based (legacy) ──
+      if (snipeConfig.useImpactGuards) {
+        const roundTripImpactBps = (shortFill.slippagePercent + longFill.slippagePercent) * 2 * 100;
+        const cap = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
+        if (roundTripImpactBps > cap) {
+          this.log(
+            'warning',
+            `entry blocked by impact guard | asset=${asset} roundTrip=${roundTripImpactBps.toFixed(1)}bps > ${cap}bps`,
+          );
+          this.recordTrades([{
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: false,
+            baseAsset: asset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: opportunity.spread,
+            spreadPercent: opportunity.spreadPercent,
+            reason: 'impact_exceeded',
+            detail: `roundTripImpactBps:${roundTripImpactBps.toFixed(1)} cap:${cap}`,
+          }]);
+          return;
+        }
+      } else {
+        const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
+        if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
+          const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
+          const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;
+          const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
+          this.log(
+            'warning',
+            `entry blocked by slippage guard | asset=${asset} ${worstSide}(${worstExchange}) slippage=${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}%`,
+          );
+          this.recordTrades([{
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: false,
+            baseAsset: asset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: opportunity.spread,
+            spreadPercent: opportunity.spreadPercent,
+            reason: 'slippage_exceeded',
+            detail: `slippage_${worstSide}(${worstExchange}):${worstSlippage.toFixed(6)}% max:${MAX_SLIPPAGE_PCT}%`,
+          }]);
+          return;
+        }
+      }
+
+      // ── Entry gap guard ──
       const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
-      // ★ 거래소 간 가격 괴리도 슬리피지와 동일 기준 적용
-      if (Math.abs(entryGapPct) > MAX_SLIPPAGE_PCT) {
+      const entryGapThreshold = snipeConfig.useImpactGuards
+        ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 100
+        : (this.config.maxSlippagePercent ?? 1.5);
+      if (Math.abs(entryGapPct) > entryGapThreshold) {
         this.log(
           'warning',
-          `entry blocked by cross-exchange gap | asset=${asset} entryGap=${entryGapPct.toFixed(4)}% > max=${MAX_SLIPPAGE_PCT}% (short=${shortFill.fillPrice} long=${longFill.fillPrice})`,
+          `entry blocked by cross-exchange gap | asset=${asset} entryGap=${entryGapPct.toFixed(4)}% > ${entryGapThreshold.toFixed(4)}%`,
         );
         this.recordTrades([{
           timestamp: Date.now(),
@@ -718,24 +791,65 @@ class ServerScheduler {
           spread: opportunity.spread,
           spreadPercent: opportunity.spreadPercent,
           reason: 'entry_gap_exceeded',
-          detail: `entryGap:${entryGapPct.toFixed(6)}% max:${MAX_SLIPPAGE_PCT}% short=${shortFill.fillPrice} long=${longFill.fillPrice}`,
+          detail: `entryGap:${entryGapPct.toFixed(6)}% threshold:${entryGapThreshold.toFixed(6)}%`,
         }]);
         return;
       }
       const execHedgeFeePct = getHedgeFeesWithOverrides(
         opportunity.shortExchange, opportunity.longExchange, 'taker', this.config.feeOverrides,
       ) * 100;
-      const realNetSpread = calcHedgedNetSpreadPercent(
-        opportunity.spreadPercent,
-        shortFill.slippagePercent,
-        longFill.slippagePercent,
-        execHedgeFeePct,
-      );
 
-      if (realNetSpread <= 0) {
+      // ── Profitability gate: conservative EV (v2) or legacy spread (v1) ──
+      let profitabilityPassed = false;
+      let profitabilityDetail = '';
+
+      if (snipeConfig.useDriftBuffer) {
+        // v2: Conservative EV with drift buffers
+        const usesInstantRate = pairUsesInstantaneousRate(
+          opportunity.shortExchange, opportunity.longExchange,
+        );
+        const shortDrift = calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate);
+        const longDrift = calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate);
+        const roundTripFeeDec = execHedgeFeePct / 100;
+        const entryImpactDec = (shortFill.slippagePercent + longFill.slippagePercent) / 100;
+        const exitImpactDec = entryImpactDec; // assume symmetric
+
+        const ev = calcConservativeEV(
+          targetNotional,
+          opportunity.shortRate,
+          opportunity.longRate,
+          shortDrift,
+          longDrift,
+          roundTripFeeDec,
+          entryImpactDec,
+          exitImpactDec,
+        );
+
+        profitabilityPassed = ev.passesMinProfit && ev.passesEVRatio;
+        profitabilityDetail = `EV=$${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)} drift=${shortDrift.toFixed(6)}/${longDrift.toFixed(6)}`;
+
+        if (!profitabilityPassed) {
+          this.log(
+            'warning',
+            `entry blocked by conservative EV | asset=${asset} ${profitabilityDetail}`,
+          );
+        }
+      } else {
+        // v1: legacy spread-based check
+        const realNetSpread = calcHedgedNetSpreadPercent(
+          opportunity.spreadPercent,
+          shortFill.slippagePercent,
+          longFill.slippagePercent,
+          execHedgeFeePct,
+        );
+        profitabilityPassed = realNetSpread > 0;
+        profitabilityDetail = `netSpread=${realNetSpread.toFixed(4)}% shortSlip=${shortFill.slippagePercent.toFixed(4)}% longSlip=${longFill.slippagePercent.toFixed(4)}%`;
+      }
+
+      if (!profitabilityPassed) {
         this.log(
           'warning',
-          `entry blocked by profitability gate | asset=${asset} netSpread=${realNetSpread.toFixed(4)}% shortSlip=${shortFill.slippagePercent.toFixed(4)}% longSlip=${longFill.slippagePercent.toFixed(4)}%`,
+          `entry blocked by profitability gate | asset=${asset} ${profitabilityDetail}`,
         );
         this.recordTrades([{
           timestamp: Date.now(),
@@ -747,7 +861,7 @@ class ServerScheduler {
           spread: opportunity.spread,
           spreadPercent: opportunity.spreadPercent,
           reason: 'profitability_insufficient',
-          detail: `realNetSpread:${realNetSpread.toFixed(6)} shortSlip:${shortFill.slippagePercent.toFixed(6)} longSlip:${longFill.slippagePercent.toFixed(6)}`,
+          detail: profitabilityDetail,
         }]);
         return;
       }
@@ -784,6 +898,12 @@ class ServerScheduler {
         }
       }
 
+      // ── Execute both legs with orphan timing measurement ──
+      transitionPhase(opportunityId, 'submit_both');
+      let shortDoneAt = 0;
+      let longDoneAt = 0;
+      const execStartMs = Date.now();
+
       const [shortResult, longResult] = await Promise.allSettled([
         openPositionExact(
           opportunity.shortExchange,
@@ -795,7 +915,7 @@ class ServerScheduler {
           this.config.leverage,
           this.config.feeOverrides,
           snipeConfig.useIocLimitOnly,
-        ),
+        ).finally(() => { shortDoneAt = Date.now(); }),
         openPositionExact(
           opportunity.longExchange,
           longConfig,
@@ -806,11 +926,21 @@ class ServerScheduler {
           this.config.leverage,
           this.config.feeOverrides,
           snipeConfig.useIocLimitOnly,
-        ),
+        ).finally(() => { longDoneAt = Date.now(); }),
       ]);
 
       const shortOk = shortResult.status === 'fulfilled';
       const longOk = longResult.status === 'fulfilled';
+
+      // Orphan leg timing: how long was one leg exposed without the other
+      const orphanMs = Math.abs(shortDoneAt - longDoneAt);
+      const totalExecMs = Date.now() - execStartMs;
+      if (orphanMs > MAX_ORPHAN_LEG_MS) {
+        this.log(
+          'warning',
+          `orphan leg exposure ${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms | asset=${asset} totalExec=${totalExecMs}ms`,
+        );
+      }
       const shortFailure = shortResult.status === 'rejected' ? shortResult.reason : undefined;
       const longFailure = longResult.status === 'rejected' ? longResult.reason : undefined;
       const shortPartial = shortFailure ? getPartialExecution(shortFailure) : null;
@@ -865,6 +995,7 @@ class ServerScheduler {
         }
 
         this.stats.errors++;
+        completeExecution(opportunityId, 'error', { orphanLegMs: orphanMs });
         this.log(
           'error',
           `entry failed | asset=${asset} short=${shortOk ? 'rolled_back' : getErrorMessage(shortFailure)} ` +
@@ -886,6 +1017,41 @@ class ServerScheduler {
       }
 
       if (shortResult.status !== 'fulfilled' || longResult.status !== 'fulfilled') return;
+
+      // ── Hedge trim: reduce excess side if notional mismatch exceeds threshold ──
+      const shortNotional = shortResult.value.filledNotional;
+      const longNotional = longResult.value.filledNotional;
+      const notionalDiff = Math.abs(shortNotional - longNotional);
+      const maxNotional = Math.max(shortNotional, longNotional);
+      const diffPercent = maxNotional > 0 ? (notionalDiff / maxNotional) * 100 : 0;
+      const trimThreshold = snipeConfig.useStrictHedge ? MAX_HEDGE_MISMATCH_PCT : 2;
+
+      if (diffPercent > trimThreshold) {
+        const minNotional = Math.min(shortNotional, longNotional);
+        try {
+          if (shortNotional > longNotional) {
+            const excessQty = (shortNotional - minNotional) / shortResult.value.price;
+            await closePosition(
+              opportunity.shortExchange, shortConfig,
+              opportunity.shortSymbol, 'short', excessQty, this.config.feeOverrides,
+            );
+            shortResult.value.amount -= excessQty;
+            shortResult.value.filledNotional = minNotional;
+            this.log('info', `hedge trim | asset=${asset} short excess $${(shortNotional - minNotional).toFixed(2)} trimmed`);
+          } else {
+            const excessQty = (longNotional - minNotional) / longResult.value.price;
+            await closePosition(
+              opportunity.longExchange, longConfig,
+              opportunity.longSymbol, 'long', excessQty, this.config.feeOverrides,
+            );
+            longResult.value.amount -= excessQty;
+            longResult.value.filledNotional = minNotional;
+            this.log('info', `hedge trim | asset=${asset} long excess $${(longNotional - minNotional).toFixed(2)} trimmed`);
+          }
+        } catch (trimErr) {
+          this.log('warning', `hedge trim failed | asset=${asset} error=${getErrorMessage(trimErr)}`);
+        }
+      }
 
       const pairId = `srv-${Date.now()}-${opportunityId.replace(/[:]/g, '-')}`;
       const entryTime = Date.now();
@@ -914,6 +1080,7 @@ class ServerScheduler {
       this.activePositions.set(opportunityId, activePosition);
       this.persistServerMeta(activePosition);
       this.stats.totalEntries++;
+      transitionPhase(opportunityId, 'pending_funding');
 
       const expectedPerFunding = (shortResult.value.filledNotional * opportunity.shortRate)
         - (longResult.value.filledNotional * opportunity.longRate);
@@ -958,6 +1125,7 @@ class ServerScheduler {
       this.saveState();
     } catch (err) {
       this.stats.errors++;
+      completeExecution(opportunityId, 'error');
       this.log('error', `entry failed | asset=${asset} error=${(err as Error).message}`);
       this.recordTrades([{
         timestamp: Date.now(),

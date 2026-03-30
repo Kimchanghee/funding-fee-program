@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fetchFundingRates, fetchMarketFillPrice } from './exchanges';
+import { pairUsesInstantaneousRate } from './exchangeProfiles';
 import { appendTrades } from './fileLogger';
 import {
   findOpportunities,
@@ -9,10 +10,16 @@ import {
   getOpportunityIntervalHours,
   getOpportunityLegKeys,
   makeOpportunityId,
+  calcConservativeEV,
+  calcDriftBuffer,
 } from './opportunities';
 import {
   calcNetSpreadPercent,
   calcHedgedNetSpreadPercent,
+  DEFAULT_CONFIRMED_SNIPE_CONFIG,
+  MAX_ROUND_TRIP_IMPACT_BPS,
+  HEDGE_RATIO_MIN,
+  HEDGE_RATIO_MAX,
   getExchangeFee,
   getHedgeFeesWithOverrides,
   getResolvedTimingConfig,
@@ -1070,26 +1077,41 @@ class ServerSimScheduler {
     let longFillPrice = opportunity.longMarkPrice;
     let shortSlippagePercent = 0;
     let longSlippagePercent = 0;
+    const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     try {
       const [shortFill, longFill] = await Promise.all([
         fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
         fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
       ]);
-      // Keep aligned with /api/strategy/execute real path.
-      const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
-      if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
-        return {
-          success: false,
-          error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${MAX_SLIPPAGE_PCT}%`,
-        };
+      // v2: dual-mode guard — impact-based or legacy slippage
+      if (snipeConfig.useImpactGuards) {
+        const roundTripImpactBps = (shortFill.slippagePercent + longFill.slippagePercent) * 2 * 100;
+        const cap = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
+        if (roundTripImpactBps > cap) {
+          return { success: false, error: `impact exceeded: ${roundTripImpactBps.toFixed(1)}bps > ${cap}bps` };
+        }
+      } else {
+        const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
+        if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
+          return { success: false, error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${MAX_SLIPPAGE_PCT}%` };
+        }
       }
-      // ★ 거래소 간 가격 괴리도 슬리피지와 동일 기준 적용 — 괴리가 크면 헷징 불가
+      // Entry gap guard
       const preEntryGapPct = Math.abs(((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100);
-      if (preEntryGapPct > MAX_SLIPPAGE_PCT) {
-        return {
-          success: false,
-          error: `entry gap exceeded: ${preEntryGapPct.toFixed(4)}% > max=${MAX_SLIPPAGE_PCT}% (short=${shortFill.fillPrice} long=${longFill.fillPrice})`,
-        };
+      const gapThreshold = snipeConfig.useImpactGuards
+        ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 100
+        : (this.config.maxSlippagePercent ?? 1.5);
+      if (preEntryGapPct > gapThreshold) {
+        return { success: false, error: `entry gap exceeded: ${preEntryGapPct.toFixed(4)}% > ${gapThreshold.toFixed(4)}%` };
+      }
+      // v2: hedge ratio pre-check
+      if (snipeConfig.useStrictHedge) {
+        const shortQtyEst = notional / shortFill.fillPrice;
+        const longQtyEst = notional / longFill.fillPrice;
+        const hedgeRatio = Math.abs((longQtyEst * longFill.fillPrice) / (shortQtyEst * shortFill.fillPrice));
+        if (hedgeRatio < HEDGE_RATIO_MIN || hedgeRatio > HEDGE_RATIO_MAX) {
+          return { success: false, error: `hedge ratio ${hedgeRatio.toFixed(6)} outside [${HEDGE_RATIO_MIN}, ${HEDGE_RATIO_MAX}]` };
+        }
       }
 
       shortFillPrice = shortFill.fillPrice;
@@ -1105,13 +1127,30 @@ class ServerSimScheduler {
     const execHedgeFeePct = getHedgeFeesWithOverrides(
       opportunity.shortExchange, opportunity.longExchange, 'taker', this.config.feeOverrides,
     ) * 100;
-    // Keep simulation profitability gate aligned with real execution:
-    // fetchMarketFillPrice().slippagePercent is midPrice-based.
-    const realNetSpread = calcHedgedNetSpreadPercent(
-      opportunity.spreadPercent, shortSlippagePercent, longSlippagePercent, execHedgeFeePct,
-    );
-    if (realNetSpread <= 0) {
-      return { success: false, error: 'real net spread not profitable' };
+
+    // v2: conservative EV or legacy spread profitability gate
+    if (snipeConfig.useDriftBuffer) {
+      const usesInstantRate = pairUsesInstantaneousRate(
+        opportunity.shortExchange, opportunity.longExchange,
+      );
+      const shortDrift = calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate);
+      const longDrift = calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate);
+      const roundTripFeeDec = execHedgeFeePct / 100;
+      const entryImpactDec = (shortSlippagePercent + longSlippagePercent) / 100;
+      const ev = calcConservativeEV(
+        notional, opportunity.shortRate, opportunity.longRate,
+        shortDrift, longDrift, roundTripFeeDec, entryImpactDec, entryImpactDec,
+      );
+      if (!ev.passesMinProfit || !ev.passesEVRatio) {
+        return { success: false, error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}` };
+      }
+    } else {
+      const realNetSpread = calcHedgedNetSpreadPercent(
+        opportunity.spreadPercent, shortSlippagePercent, longSlippagePercent, execHedgeFeePct,
+      );
+      if (realNetSpread <= 0) {
+        return { success: false, error: 'real net spread not profitable' };
+      }
     }
 
     const shortEntryFee = notional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides);
