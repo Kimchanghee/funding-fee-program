@@ -627,7 +627,7 @@ export default function OpportunityCard() {
 
         {/* ═══ SECTION 2: Scheduled/Candidate Table ═══ */}
         {scheduledCoins.length > 0 && (
-          <div style={{ marginBottom: 0 }}>
+          <div style={{ marginBottom: 0, overflowX: 'auto' }}>
             {scheduledCount === 0 && activeCount === 0 && candidateCount > 0 && (
               <div style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -644,7 +644,8 @@ export default function OpportunityCard() {
             {/* Table Header */}
             <div className="opp-table-header" style={{
               display: 'grid',
-              gridTemplateColumns: '28px 62px 1fr 72px 72px 58px 80px 70px 60px 70px 56px 72px',
+              gridTemplateColumns: '24px 58px 1fr 64px 64px 50px 68px 62px 52px 64px 54px 64px',
+              minWidth: 680,
               gap: 4, padding: '6px 10px', marginBottom: 4,
               fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)',
               borderBottom: '1px solid var(--color-border)',
@@ -772,7 +773,8 @@ export default function OpportunityCard() {
                     onClick={() => setExpandedAsset(isExpanded ? null : item.id)}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '28px 62px 1fr 72px 72px 58px 80px 70px 60px 70px 56px 72px',
+                      gridTemplateColumns: '24px 58px 1fr 64px 64px 50px 68px 62px 52px 64px 54px 64px',
+                      minWidth: 680,
                       gap: 4, padding: '8px 10px',
                       alignItems: 'center',
                       cursor: 'pointer',
@@ -931,7 +933,8 @@ export default function OpportunityCard() {
                 emptyRows.push(
                   <div key={`empty-${i}`} style={{
                     display: 'grid',
-                    gridTemplateColumns: '28px 62px 1fr 72px 72px 58px 80px 70px 60px 70px 56px 72px',
+                    gridTemplateColumns: '24px 58px 1fr 64px 64px 50px 68px 62px 52px 64px 54px 64px',
+                    minWidth: 680,
                     gap: 4, padding: '8px 10px', height: ROW_HEIGHT,
                     alignItems: 'center', opacity: 0.2,
                   }}>
