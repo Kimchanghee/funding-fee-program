@@ -11,7 +11,6 @@ import {
   MAX_ROUND_TRIP_IMPACT_BPS,
   HEDGE_RATIO_MIN,
   HEDGE_RATIO_MAX,
-  MAX_HEDGE_MISMATCH_PCT,
 } from '@/lib/types';
 import {
   openPositionExact,
@@ -21,6 +20,7 @@ import {
   getPartialExecution,
   type ExecutedOrderSummary,
 } from '@/lib/exchanges';
+import { rebalanceExecutedHedge } from '@/lib/hedgeRebalance';
 import { loadAllServerApiConfigs } from '@/lib/serverKeyStore';
 import { makeServerPositionKey, upsertServerPositionMeta } from '@/lib/serverPositionMeta';
 
@@ -375,48 +375,35 @@ export async function POST(req: NextRequest) {
       ]);
     }
 
-    // Hedge balance check — trim excess side if notional diff > 2%
+    // Hedge balance check — trim excess side via shared helper
     let hedgeTrimNote: string | undefined;
     if (shortOk && longOk) {
-      const shortNotional = shortResult.value.filledNotional;
-      const longNotional = longResult.value.filledNotional;
-      const diff = Math.abs(shortNotional - longNotional);
-      const maxNotional = Math.max(shortNotional, longNotional);
-      const diffPercent = (diff / maxNotional) * 100;
       console.log(
         `[EXECUTE] ${opportunity.baseAsset} notional balance: ` +
-        `short=$${shortNotional.toFixed(2)} long=$${longNotional.toFixed(2)} ` +
-        `diff=$${diff.toFixed(2)} (${diffPercent.toFixed(3)}%)`,
+        `short=$${shortResult.value.filledNotional.toFixed(2)} long=$${longResult.value.filledNotional.toFixed(2)} ` +
+        `diff=$${Math.abs(shortResult.value.filledNotional - longResult.value.filledNotional).toFixed(2)}`,
       );
 
-      // 2% 초과 불균형 시 초과분 부분 청산으로 보정
-      // v2.1: 0.20% mismatch when strict hedge ON, legacy 2% otherwise
-      const trimThreshold = snipeConfig.useStrictHedge ? MAX_HEDGE_MISMATCH_PCT : 2;
-      if (diffPercent > trimThreshold) {
-        try {
-          const minNotional = Math.min(shortNotional, longNotional);
-          if (shortNotional > longNotional) {
-            // 숏이 더 큼 — 숏 초과분 청산
-            const excessQty = (shortNotional - minNotional) / shortResult.value.price;
-            await closePosition(
-              opportunity.shortExchange, shortConfig,
-              opportunity.shortSymbol, 'short', excessQty, normalizedFeeOverrides,
-            );
-            hedgeTrimNote = `숏 초과분 $${(shortNotional - minNotional).toFixed(2)} 트림 완료`;
-          } else {
-            // 롱이 더 큼 — 롱 초과분 청산
-            const excessQty = (longNotional - minNotional) / longResult.value.price;
-            await closePosition(
-              opportunity.longExchange, longConfig,
-              opportunity.longSymbol, 'long', excessQty, normalizedFeeOverrides,
-            );
-            hedgeTrimNote = `롱 초과분 $${(longNotional - minNotional).toFixed(2)} 트림 완료`;
-          }
+      try {
+        const trimResult = await rebalanceExecutedHedge({
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          shortConfig,
+          longConfig,
+          shortSymbol: opportunity.shortSymbol,
+          longSymbol: opportunity.longSymbol,
+          shortEntry: shortResult.value,
+          longEntry: longResult.value,
+          useStrictHedge: snipeConfig.useStrictHedge,
+          feeOverrides: normalizedFeeOverrides,
+        });
+        if (trimResult.trimmed) {
+          hedgeTrimNote = trimResult.detail;
           console.log(`[EXECUTE] ${opportunity.baseAsset} hedge trim: ${hedgeTrimNote}`);
-        } catch (trimErr) {
-          hedgeTrimNote = `헤지 트림 실패: ${(trimErr as Error).message} — 수동 확인 필요`;
-          console.error(`[EXECUTE] ${opportunity.baseAsset} trim error:`, trimErr);
         }
+      } catch (trimErr) {
+        hedgeTrimNote = `헤지 트림 실패: ${(trimErr as Error).message} — 수동 확인 필요`;
+        console.error(`[EXECUTE] ${opportunity.baseAsset} trim error:`, trimErr);
       }
     }
 

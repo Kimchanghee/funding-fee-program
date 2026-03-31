@@ -371,7 +371,7 @@ function ConfirmedSnipeSettings({
         <Info size={12} /> v2.1 Confirmed Snipe
       </div>
       <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 12 }}>
-        모든 토글 기본 OFF. 기존 전략 동작에 영향 없음.
+        모든 토글 기본 OFF. 단, 거래소 프로파일 기반 진입 타이밍과 Tier C 필터는 공통 적용됩니다.
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {toggles.map(({ key, label, desc }) => (

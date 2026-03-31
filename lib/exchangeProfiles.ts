@@ -25,8 +25,6 @@ export interface ExchangeProfile {
   supportsIocLimit: boolean;
   /** Enabled for REAL trading by default */
   realEnabledByDefault: boolean;
-  /** Funding interval/next time should use live metadata over profile defaults */
-  requiresLiveFundingMeta: boolean;
 }
 
 /**
@@ -51,7 +49,7 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-    requiresLiveFundingMeta: false,
+
   },
   bybit: {
     id: 'bybit',
@@ -64,7 +62,7 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-    requiresLiveFundingMeta: true,   // rate updates every minute
+
   },
   okx: {
     id: 'okx',
@@ -77,7 +75,7 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-    requiresLiveFundingMeta: true,   // instantaneous rate, variable settlement intervals
+
   },
   bitget: {
     id: 'bitget',
@@ -90,7 +88,7 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-    requiresLiveFundingMeta: false,
+
   },
   gate: {
     id: 'gate',
@@ -103,7 +101,7 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-    requiresLiveFundingMeta: false,
+
   },
   bingx: {
     id: 'bingx',
@@ -116,7 +114,7 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: false,
-    requiresLiveFundingMeta: true,   // settlement delay, 30s cutoff
+
   },
 };
 

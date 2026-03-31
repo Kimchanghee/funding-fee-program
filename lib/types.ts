@@ -401,8 +401,9 @@ export const MIN_DRIFT_BUFFER_BPS = 1; // 0.01%
 
 /**
  * v2.1 Confirmed Snipe configuration.
- * All features default to OFF — existing behavior is 100% preserved
- * unless explicitly enabled.
+ * All feature toggles default to OFF.
+ * However, scheduler-level exchange profile entry timing and Tier C filtering
+ * are applied independently of these toggles.
  */
 export interface ConfirmedSnipeConfig {
   /** Use impact-based guards instead of maxSlippagePercent */

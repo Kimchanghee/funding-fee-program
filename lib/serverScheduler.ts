@@ -22,6 +22,9 @@ import {
   pairUsesInstantaneousRate,
 } from './exchangeProfiles';
 import { appendTrades, type TradeEvent } from './fileLogger';
+import { rebalanceExecutedHedge } from './hedgeRebalance';
+import { refreshAllFeeCaches, resolveRuntimeFee } from './runtimeFeeCache';
+import { checkPairLiquidationDistance } from './liquidationGuard';
 import {
   findOpportunities,
   getOpportunityId,
@@ -42,7 +45,6 @@ import {
 } from './serverPositionMeta';
 import { sendTelegramMessage } from './telegram';
 import {
-  getExchangeFee,
   getHedgeFeesWithOverrides,
   calcHedgedNetSpreadPercent,
   getResolvedTimingConfig,
@@ -51,7 +53,6 @@ import {
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_FUNDING_TIMESTAMP_DIFF_MS,
   MAX_ROUND_TRIP_IMPACT_BPS,
-  MAX_HEDGE_MISMATCH_PCT,
   MIN_FREE_MARGIN_PCT,
   MAX_ORPHAN_LEG_MS,
   HEDGE_RATIO_MIN,
@@ -65,8 +66,9 @@ import {
   type FundingRate,
   type TimingConfig,
 } from './types';
+import { getDataDir } from './dataDir';
 
-const DATA_DIR = join(process.cwd(), 'data');
+const DATA_DIR = getDataDir();
 const STATE_FILE = join(DATA_DIR, 'scheduler-state.json');
 const LOG_FILE = join(DATA_DIR, 'scheduler.log');
 const CLOSE_RETRY_DELAY_MS = 30_000;
@@ -409,10 +411,22 @@ class ServerScheduler {
     this.pollInterval = setInterval(() => void this.poll(), 5_000);
   }
 
+  private lastFeeCacheRefresh = 0;
+  private static FEE_CACHE_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
   private async poll() {
     if (!this.active) return;
 
     this.lastPollTime = Date.now();
+
+    // Periodically refresh runtime fee cache from exchange APIs
+    if (Date.now() - this.lastFeeCacheRefresh > ServerScheduler.FEE_CACHE_REFRESH_INTERVAL_MS) {
+      this.lastFeeCacheRefresh = Date.now();
+      const apiConfigs = loadAllServerApiConfigs();
+      refreshAllFeeCaches(apiConfigs).catch((err) => {
+        this.log('warning', `fee cache refresh failed: ${getErrorMessage(err)}`);
+      });
+    }
 
     try {
       const results = await Promise.allSettled(
@@ -660,9 +674,9 @@ class ServerScheduler {
       }
 
       const requiredShortBalance = (targetNotional / this.config.leverage)
-        + (targetNotional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides));
+        + (targetNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides));
       const requiredLongBalance = (targetNotional / this.config.leverage)
-        + (targetNotional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
+        + (targetNotional * resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
       const [shortBalance, longBalance] = await Promise.all([
         fetchBalance(opportunity.shortExchange, shortConfig),
         fetchBalance(opportunity.longExchange, longConfig),
@@ -715,6 +729,36 @@ class ServerScheduler {
           detail: `${opportunity.shortExchange}:${shortFreeRatio.toFixed(1)}% ${opportunity.longExchange}:${longFreeRatio.toFixed(1)}% min:${MIN_FREE_MARGIN_PCT}%`,
         }]);
         return;
+      }
+
+      // ── Liquidation distance guard ──
+      try {
+        const liqCheck = await checkPairLiquidationDistance(
+          opportunity.shortExchange, opportunity.longExchange,
+          shortConfig, longConfig,
+          opportunity.shortSymbol, opportunity.longSymbol,
+        );
+        if (!liqCheck.safe) {
+          this.log(
+            'warning',
+            `entry blocked by liquidation distance | asset=${asset} ${liqCheck.detail}`,
+          );
+          this.recordTrades([{
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: false,
+            baseAsset: asset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: opportunity.spread,
+            spreadPercent: opportunity.spreadPercent,
+            reason: 'liq_distance_low',
+            detail: liqCheck.detail,
+          }]);
+          return;
+        }
+      } catch (liqErr) {
+        this.log('warning', `liquidation distance check failed (proceeding) | asset=${asset} error=${getErrorMessage(liqErr)}`);
       }
 
       const [shortFill, longFill] = await Promise.all([
@@ -899,6 +943,7 @@ class ServerScheduler {
       }
 
       // ── Execute both legs with orphan timing measurement ──
+      transitionPhase(opportunityId, 'arm');
       transitionPhase(opportunityId, 'submit_both');
       let shortDoneAt = 0;
       let longDoneAt = 0;
@@ -935,18 +980,56 @@ class ServerScheduler {
       // Orphan leg timing: how long was one leg exposed without the other
       const orphanMs = Math.abs(shortDoneAt - longDoneAt);
       const totalExecMs = Date.now() - execStartMs;
-      if (orphanMs > MAX_ORPHAN_LEG_MS) {
+
+      // Hard enforcement: if orphan exceeds cap AND both legs succeeded, rollback both
+      if (orphanMs > MAX_ORPHAN_LEG_MS && shortResult.status === 'fulfilled' && longResult.status === 'fulfilled') {
         this.log(
           'warning',
-          `orphan leg exposure ${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms | asset=${asset} totalExec=${totalExecMs}ms`,
+          `orphan leg exceeded — forced rollback | asset=${asset} orphan=${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms totalExec=${totalExecMs}ms`,
+        );
+
+        await Promise.allSettled([
+          this.rollbackSingleEntry(
+            opportunity.shortExchange, shortConfig, opportunity.shortSymbol,
+            'short', shortResult.value.amount, asset, 'orphan_leg_exceeded',
+          ),
+          this.rollbackSingleEntry(
+            opportunity.longExchange, longConfig, opportunity.longSymbol,
+            'long', longResult.value.amount, asset, 'orphan_leg_exceeded',
+          ),
+        ]);
+
+        completeExecution(opportunityId, 'forced_close', { orphanLegMs: orphanMs });
+
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'orphan_leg_exceeded',
+          detail: `orphanMs:${orphanMs} cap:${MAX_ORPHAN_LEG_MS} totalExec:${totalExecMs}`,
+        }]);
+        this.saveState();
+        return;
+      } else if (orphanMs > MAX_ORPHAN_LEG_MS) {
+        // One leg failed anyway — log for telemetry
+        this.log(
+          'warning',
+          `orphan leg exposure ${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms | asset=${asset} totalExec=${totalExecMs}ms (leg failure handles rollback)`,
         );
       }
+
       const shortFailure = shortResult.status === 'rejected' ? shortResult.reason : undefined;
       const longFailure = longResult.status === 'rejected' ? longResult.reason : undefined;
       const shortPartial = shortFailure ? getPartialExecution(shortFailure) : null;
       const longPartial = longFailure ? getPartialExecution(longFailure) : null;
 
       if (!shortOk || !longOk) {
+        transitionPhase(opportunityId, shortOk || longOk ? 'one_leg_filled' : 'hedge_or_abort');
         const rollbackTargets = [
           ...(shortOk ? [{
             exchange: opportunity.shortExchange,
@@ -1018,39 +1101,29 @@ class ServerScheduler {
 
       if (shortResult.status !== 'fulfilled' || longResult.status !== 'fulfilled') return;
 
-      // ── Hedge trim: reduce excess side if notional mismatch exceeds threshold ──
-      const shortNotional = shortResult.value.filledNotional;
-      const longNotional = longResult.value.filledNotional;
-      const notionalDiff = Math.abs(shortNotional - longNotional);
-      const maxNotional = Math.max(shortNotional, longNotional);
-      const diffPercent = maxNotional > 0 ? (notionalDiff / maxNotional) * 100 : 0;
-      const trimThreshold = snipeConfig.useStrictHedge ? MAX_HEDGE_MISMATCH_PCT : 2;
-
-      if (diffPercent > trimThreshold) {
-        const minNotional = Math.min(shortNotional, longNotional);
-        try {
-          if (shortNotional > longNotional) {
-            const excessQty = (shortNotional - minNotional) / shortResult.value.price;
-            await closePosition(
-              opportunity.shortExchange, shortConfig,
-              opportunity.shortSymbol, 'short', excessQty, this.config.feeOverrides,
-            );
-            shortResult.value.amount -= excessQty;
-            shortResult.value.filledNotional = minNotional;
-            this.log('info', `hedge trim | asset=${asset} short excess $${(shortNotional - minNotional).toFixed(2)} trimmed`);
-          } else {
-            const excessQty = (longNotional - minNotional) / longResult.value.price;
-            await closePosition(
-              opportunity.longExchange, longConfig,
-              opportunity.longSymbol, 'long', excessQty, this.config.feeOverrides,
-            );
-            longResult.value.amount -= excessQty;
-            longResult.value.filledNotional = minNotional;
-            this.log('info', `hedge trim | asset=${asset} long excess $${(longNotional - minNotional).toFixed(2)} trimmed`);
-          }
-        } catch (trimErr) {
-          this.log('warning', `hedge trim failed | asset=${asset} error=${getErrorMessage(trimErr)}`);
+      // ── Hedge trim: reduce excess side via shared helper ──
+      try {
+        const trimResult = await rebalanceExecutedHedge({
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          shortConfig,
+          longConfig,
+          shortSymbol: opportunity.shortSymbol,
+          longSymbol: opportunity.longSymbol,
+          shortEntry: shortResult.value,
+          longEntry: longResult.value,
+          useStrictHedge: snipeConfig.useStrictHedge,
+          feeOverrides: this.config.feeOverrides,
+        });
+        if (trimResult.trimmed) {
+          if (trimResult.shortAmount !== undefined) shortResult.value.amount = trimResult.shortAmount;
+          if (trimResult.longAmount !== undefined) longResult.value.amount = trimResult.longAmount;
+          if (trimResult.shortFilledNotional !== undefined) shortResult.value.filledNotional = trimResult.shortFilledNotional;
+          if (trimResult.longFilledNotional !== undefined) longResult.value.filledNotional = trimResult.longFilledNotional;
+          this.log('info', `hedge trim | asset=${asset} ${trimResult.detail}`);
         }
+      } catch (trimErr) {
+        this.log('warning', `hedge trim failed | asset=${asset} error=${getErrorMessage(trimErr)}`);
       }
 
       const pairId = `srv-${Date.now()}-${opportunityId.replace(/[:]/g, '-')}`;
@@ -1086,8 +1159,8 @@ class ServerScheduler {
         - (longResult.value.filledNotional * opportunity.longRate);
       const expectedTotalRoundTripFees = shortResult.value.estimatedFee
         + longResult.value.estimatedFee
-        + (shortResult.value.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides))
-        + (longResult.value.filledNotional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
+        + (shortResult.value.filledNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides))
+        + (longResult.value.filledNotional * resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
 
       this.recordTrades([{
         timestamp: entryTime,
@@ -1182,6 +1255,7 @@ class ServerScheduler {
       let shortSettled = false;
       let longSettled = false;
 
+      transitionPhase(opportunityId, 'wait_settlement_confirm');
       this.log('info', `close: waiting for funding confirmation | asset=${asset} maxWait=${maxWaitMs / 1000}s`);
 
       while (Date.now() < deadline && (!shortSettled || !longSettled)) {
@@ -1224,6 +1298,7 @@ class ServerScheduler {
       }
     }
 
+    transitionPhase(opportunityId, 'flatten');
     this.log('info', `close started | asset=${asset} attempt=${position.closeAttempts + 1}`);
 
     try {
@@ -1401,6 +1476,7 @@ class ServerScheduler {
           return acc;
         }, []);
 
+      transitionPhase(opportunityId, 'reconcile');
       const fundingVerification = await this.verifyFunding(position, shortConfig, longConfig);
       const fundingByLeg = new Map<string, number>();
 
@@ -1477,6 +1553,13 @@ class ServerScheduler {
             : `fundingVerified:false errors:${fundingVerification.errors.join(' | ') || 'none'}`,
         },
       ]);
+
+      transitionPhase(opportunityId, 'cooldown');
+      completeExecution(opportunityId, 'success', {
+        fundingCaptured: fundingVerification.verified,
+        settlementConfirmed: fundingVerification.verified,
+        evRealized: totalPnl,
+      });
 
       this.activePositions.delete(opportunityId);
       this.stats.totalCloses++;

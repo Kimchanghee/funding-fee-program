@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { fetchFundingRates, fetchMarketFillPrice } from './exchanges';
-import { pairUsesInstantaneousRate } from './exchangeProfiles';
+import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
+import { pairUsesInstantaneousRate, hasTierCExchange } from './exchangeProfiles';
 import { appendTrades } from './fileLogger';
 import {
   findOpportunities,
@@ -18,6 +18,8 @@ import {
   calcHedgedNetSpreadPercent,
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_ROUND_TRIP_IMPACT_BPS,
+  MAX_FUNDING_TIMESTAMP_DIFF_MS,
+  MIN_FREE_MARGIN_PCT,
   HEDGE_RATIO_MIN,
   HEDGE_RATIO_MAX,
   getExchangeFee,
@@ -43,8 +45,9 @@ import {
   resetServerSimState,
   saveServerSimState,
 } from './serverSimState';
+import { getDataDir } from './dataDir';
 
-const DATA_DIR = join(process.cwd(), 'data');
+const DATA_DIR = getDataDir();
 const STATE_FILE = join(DATA_DIR, 'sim-scheduler-state.json');
 const LOOP_INTERVAL_MS = 1_000;
 const RATES_REFRESH_INTERVAL_MS = 1_000;
@@ -751,15 +754,30 @@ class ServerSimScheduler {
       occupiedLegs.add(makePositionLegKey(position.exchange, position.symbol));
     }
 
+    const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     const candidates = this.opportunities.filter((opportunity) => {
       if (!this.config.enabledExchanges.includes(opportunity.shortExchange) || !this.config.enabledExchanges.includes(opportunity.longExchange)) {
         return false;
+      }
+      // v2: Tier C filter
+      if (hasTierCExchange(opportunity.shortExchange, opportunity.longExchange)) {
+        const tierCEx = opportunity.shortExchange === 'bingx' ? opportunity.shortExchange : opportunity.longExchange;
+        if (!this.config.enabledExchanges.includes(tierCEx)) return false;
       }
       if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
         return false;
       }
       if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
         return false;
+      }
+      // v2: funding timestamp alignment
+      if (snipeConfig.useConfirmedClose) {
+        const shortRate = this.latestRates.find(r => r.exchange === opportunity.shortExchange && r.symbol === opportunity.shortSymbol);
+        const longRate = this.latestRates.find(r => r.exchange === opportunity.longExchange && r.symbol === opportunity.longSymbol);
+        if (shortRate && longRate) {
+          const tsDiff = Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
+          if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) return false;
+        }
       }
       const targetTime = opportunity.nextFundingTime - timing.entryLeadMs;
       if (targetTime <= now) {
@@ -1066,18 +1084,57 @@ class ServerSimScheduler {
       return { success: false, error: 'position already active for route' };
     }
 
+    // v2: Tier C filter — skip unless explicitly enabled
+    if (hasTierCExchange(opportunity.shortExchange, opportunity.longExchange)) {
+      const tierCEx = opportunity.shortExchange === 'bingx' ? opportunity.shortExchange : opportunity.longExchange;
+      if (!this.config.enabledExchanges.includes(tierCEx)) {
+        return { success: false, error: `Tier C exchange ${tierCEx} not enabled` };
+      }
+    }
+
     const margin = Math.max(0, investmentUSDT);
     const leverage = this.config.leverage;
-    const notional = margin * leverage;
-    if (notional <= 0 || opportunity.shortMarkPrice <= 0 || opportunity.longMarkPrice <= 0) {
+    const baseNotional = margin * leverage;
+    if (baseNotional <= 0 || opportunity.shortMarkPrice <= 0 || opportunity.longMarkPrice <= 0) {
       return { success: false, error: 'invalid notional or mark price' };
+    }
+
+    const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+
+    // v2: dynamic notional based on orderbook depth
+    let notional = baseNotional;
+    if (snipeConfig.useDynamicNotional) {
+      try {
+        const [shortOb, longOb] = await Promise.all([
+          fetchOrderbook(opportunity.shortExchange, opportunity.shortSymbol, 50),
+          fetchOrderbook(opportunity.longExchange, opportunity.longSymbol, 50),
+        ]);
+        const shortImpact = calcOrderbookImpactBps(shortOb.bids, shortOb.asks, baseNotional, 'sell');
+        const longImpact = calcOrderbookImpactBps(longOb.bids, longOb.asks, baseNotional, 'buy');
+        notional = Math.min(baseNotional, shortImpact.depthCapNotional, longImpact.depthCapNotional, snipeConfig.dynamicNotionalCap);
+        if (notional < 100) {
+          return { success: false, error: `depth too shallow: $${notional.toFixed(0)}` };
+        }
+      } catch {
+        // Fallback to base notional
+      }
+    }
+
+    // v2: free margin guard (simulated)
+    const shortBal = state.simBalances[opportunity.shortExchange] ?? 0;
+    const longBal = state.simBalances[opportunity.longExchange] ?? 0;
+    const shortInitial = state.simInitialBalances[opportunity.shortExchange] ?? 1;
+    const longInitial = state.simInitialBalances[opportunity.longExchange] ?? 1;
+    const shortFreeRatio = shortInitial > 0 ? (shortBal / shortInitial) * 100 : 0;
+    const longFreeRatio = longInitial > 0 ? (longBal / longInitial) * 100 : 0;
+    if (shortFreeRatio < MIN_FREE_MARGIN_PCT || longFreeRatio < MIN_FREE_MARGIN_PCT) {
+      return { success: false, error: `free margin low: ${opportunity.shortExchange}=${shortFreeRatio.toFixed(1)}% ${opportunity.longExchange}=${longFreeRatio.toFixed(1)}%` };
     }
 
     let shortFillPrice = opportunity.shortMarkPrice;
     let longFillPrice = opportunity.longMarkPrice;
     let shortSlippagePercent = 0;
     let longSlippagePercent = 0;
-    const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     try {
       const [shortFill, longFill] = await Promise.all([
         fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
