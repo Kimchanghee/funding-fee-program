@@ -3,6 +3,7 @@ import * as ccxt from 'ccxt';
 import type { ApiConfig, ExchangeId, FundingRate, Balance, Position, OrderLiquidity, FeeOverrides } from '../types';
 import { TRACKED_SYMBOLS, getExchangeFee } from '../types';
 import { normalizeFundingRate } from './utils';
+import { fetchFundingRatesViaWs, fetchOrderbookViaWs } from './wsPublicData';
 
 export interface ExecutedOrderSummary {
   orderId: string;
@@ -54,6 +55,15 @@ function buildExecutionSummary(
 const publicExchangeCache = new Map<ExchangeId, any>();
 const MAX_PRIVATE_CACHE = 20;
 const privateExchangeCache = new Map<string, any>();
+const wsFallbackWarnAt = new Map<string, number>();
+
+function warnWsFallback(key: string, message: string): void {
+  const now = Date.now();
+  const last = wsFallbackWarnAt.get(key) ?? 0;
+  if (now - last < 30_000) return;
+  wsFallbackWarnAt.set(key, now);
+  console.warn(message);
+}
 
 function getPublicExchange(id: ExchangeId): any {
   let ex = publicExchangeCache.get(id);
@@ -218,6 +228,14 @@ export async function fetchFundingRates(
   config?: ApiConfig,
   symbols?: string[],
 ): Promise<FundingRate[]> {
+  try {
+    const wsRates = await fetchFundingRatesViaWs(id, symbols);
+    if (wsRates.length > 0) return wsRates;
+  } catch (wsErr) {
+    // WS-first path: keep REST fallback for exchanges/channels that do not expose funding over WS.
+    warnWsFallback(`funding:${id}`, `[WS] ${id} funding fallback to REST: ${(wsErr as Error).message}`);
+  }
+
   let ex = makeExchange(id, config);
   // Build a set of base symbols (e.g. "BTC/USDT") for flexible matching
   // This handles format differences across exchanges:
@@ -226,13 +244,10 @@ export async function fetchFundingRates(
     ? new Set(symbols.map((s) => s.replace(/:.*$/, '')))
     : null;
 
-  console.log(`[CCXT] ${id}: loadMarkets 시작`);
   ex = await ensureMarkets(ex, id, config);
-  console.log(`[CCXT] ${id}: loadMarkets 완료`);
 
   try {
     // ── Bulk fetch (1 API call) with 12s timeout ──
-    console.log(`[CCXT] ${id}: fetchFundingRates 시작`);
     const frs = await Promise.race([
       ex.fetchFundingRates() as Promise<Record<string, any>>,
       new Promise<never>((_, reject) =>
@@ -495,6 +510,15 @@ export async function fetchOrderbook(
   symbol: string,
   depth = 50,
 ): Promise<{ bids: number[][]; asks: number[][] }> {
+  try {
+    return await fetchOrderbookViaWs(id, symbol, depth);
+  } catch (wsErr) {
+    warnWsFallback(
+      `orderbook:${id}:${symbol}`,
+      `[WS] ${id} orderbook fallback to REST (${symbol}): ${(wsErr as Error).message}`,
+    );
+  }
+
   let ex = getPublicExchange(id);
   ex = await ensureMarkets(ex, id);
   return await Promise.race([
@@ -613,12 +637,7 @@ export async function openPosition(
     await ex.setLeverage(leverage, symbol).catch(() => {});
 
     // 1. Fetch orderbook for price analysis
-    const ob = await Promise.race([
-      ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 3000),
-      ),
-    ]);
+    const ob = await fetchOrderbook(id, symbol, 50);
 
     const levels = side === 'long' ? ob.asks : ob.bids;
     if (!levels || levels.length === 0) {
@@ -906,12 +925,7 @@ export async function openPositionExact(
     try {
       // Post-Only maker price: for buy, use slightly below limitPrice; for sell, slightly above
       // This ensures we're providing liquidity, not taking it
-      const ob = await Promise.race([
-        ex.fetchOrderBook(symbol, 5) as Promise<{ asks: number[][]; bids: number[][] }>,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('OB timeout')), 3000),
-        ),
-      ]);
+      const ob = await fetchOrderbook(id, symbol, 5);
 
       const makerPrice = side === 'long'
         ? Math.min(ob.bids?.[0]?.[0] || limitPrice * 0.999, limitPrice)
@@ -1098,12 +1112,7 @@ export async function closePosition(
   let cSize = 1;
   try {
     ex = await ensureMarkets(ex, id, config);
-    const ob = await Promise.race([
-      ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 3000),
-      ),
-    ]);
+    const ob = await fetchOrderbook(id, symbol, 50);
 
     const levels = side === 'long' ? ob.bids : ob.asks;
     if (!levels || levels.length === 0) throw new Error('empty orderbook');
@@ -1326,15 +1335,7 @@ export async function fetchMarketFillPrice(
   side: 'buy' | 'sell',
   notionalUSDT: number,
 ): Promise<{ fillPrice: number; slippagePercent: number; midPrice: number; worstPrice: number }> {
-  const rawEx = getPublicExchange(id);
-  const ex = await ensureMarkets(rawEx, id);
-
-  const ob = await Promise.race([
-    ex.fetchOrderBook(symbol, 50) as Promise<{ asks: number[][]; bids: number[][] }>,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 3000),
-    ),
-  ]);
+  const ob = await fetchOrderbook(id, symbol, 50);
 
   // buy (long) eats asks, sell (short) eats bids
   const levels = side === 'buy' ? ob.asks : ob.bids;
