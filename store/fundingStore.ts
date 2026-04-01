@@ -2481,6 +2481,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           pairId,
           feeOverrides: strategyConfig.feeOverrides,
           maxSlippagePercent: strategyConfig.maxSlippagePercent,
+          confirmedSnipeConfig: strategyConfig.confirmedSnipeConfig,
           // apiConfigs는 서버 측 암호화 저장소에서 로드 (클라이언트 전송 X)
         }),
       });

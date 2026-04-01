@@ -71,6 +71,7 @@ const STATE_FILE = join(DATA_DIR, 'scheduler-state.json');
 const LOG_FILE = join(DATA_DIR, 'scheduler.log');
 const CLOSE_RETRY_DELAY_MS = 30_000;
 const FUNDING_MATCH_WINDOW_MS = 10 * 60 * 1000;
+const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -449,6 +450,13 @@ class ServerScheduler {
         this.config.feeOverrides,
         this.config.minVolume24hUSD,
       );
+      const minVolume24hUSD = this.config.minVolume24hUSD ?? 0;
+      const volumeByExchangeAsset = new Map<string, number>();
+      for (const rate of rates) {
+        if (typeof rate.quoteVolume24h === 'number' && Number.isFinite(rate.quoteVolume24h)) {
+          volumeByExchangeAsset.set(`${rate.exchange}:${rate.baseAsset}`, rate.quoteVolume24h);
+        }
+      }
 
       const occupiedLegs = this.getOccupiedLegs();
 
@@ -464,6 +472,16 @@ class ServerScheduler {
         if (opportunity.nextFundingTime < this.lastPollTime) return false;
         if (opportunity.spreadPercent < this.config.minSpreadPercent) return false;
         if (opportunity.netProfit <= 0) return false;
+        if (minVolume24hUSD > 0) {
+          const shortVol = volumeByExchangeAsset.get(`${opportunity.shortExchange}:${opportunity.baseAsset}`);
+          const longVol = volumeByExchangeAsset.get(`${opportunity.longExchange}:${opportunity.baseAsset}`);
+          if (
+            (shortVol !== undefined && shortVol < minVolume24hUSD)
+            || (longVol !== undefined && longVol < minVolume24hUSD)
+          ) {
+            return false;
+          }
+        }
 
         // v2.1: strict funding timestamp alignment (3s) when confirmed snipe is active
         const snipeCfg = getSnipeConfig(this.config.confirmedSnipeConfig);
@@ -613,6 +631,130 @@ class ServerScheduler {
 
     try {
       const snipeConfig = getSnipeConfig(this.config.confirmedSnipeConfig);
+      let shortRateForDecision = opportunity.shortRate;
+      let longRateForDecision = opportunity.longRate;
+      let spreadForDecision = opportunity.spread;
+      let spreadPercentForDecision = opportunity.spreadPercent;
+      try {
+        const [shortRates, longRates] = await Promise.all([
+          fetchFundingRates(opportunity.shortExchange, undefined, [opportunity.shortSymbol]),
+          fetchFundingRates(opportunity.longExchange, undefined, [opportunity.longSymbol]),
+        ]);
+        const shortLiveRate = shortRates.find((rate) => rate.symbol === opportunity.shortSymbol)
+          ?? shortRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+        const longLiveRate = longRates.find((rate) => rate.symbol === opportunity.longSymbol)
+          ?? longRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+        if (!shortLiveRate || !longLiveRate) {
+          this.log(
+            'warning',
+            `entry blocked by funding revalidate miss | asset=${asset} short=${shortRates.length} long=${longRates.length}`,
+          );
+          this.recordTrades([{
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: false,
+            baseAsset: asset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: opportunity.spread,
+            spreadPercent: opportunity.spreadPercent,
+            reason: 'funding_revalidate_missing',
+            detail: `shortRates:${shortRates.length} longRates:${longRates.length}`,
+          }]);
+          return;
+        }
+
+        const liveSpread = shortLiveRate.rate - longLiveRate.rate;
+        const liveSpreadPercent = liveSpread * 100;
+        if (liveSpread <= 0 || liveSpreadPercent < this.config.minSpreadPercent) {
+          this.log(
+            'warning',
+            `entry blocked by live spread revalidate | asset=${asset} spread=${liveSpreadPercent.toFixed(4)}% min=${this.config.minSpreadPercent.toFixed(4)}%`,
+          );
+          this.recordTrades([{
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: false,
+            baseAsset: asset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: liveSpread,
+            spreadPercent: liveSpreadPercent,
+            reason: 'live_spread_reverted',
+            detail: `liveSpread:${liveSpreadPercent.toFixed(6)} minSpread:${this.config.minSpreadPercent.toFixed(6)}`,
+          }]);
+          return;
+        }
+
+        const shortFundingShiftMs = Math.abs(shortLiveRate.nextFundingTime - targetFundingTime);
+        const longFundingShiftMs = Math.abs(longLiveRate.nextFundingTime - targetFundingTime);
+        if (shortFundingShiftMs > LIVE_FUNDING_TIME_DRIFT_MS || longFundingShiftMs > LIVE_FUNDING_TIME_DRIFT_MS) {
+          this.log(
+            'warning',
+            `entry blocked by funding window shift | asset=${asset} shortShift=${shortFundingShiftMs}ms longShift=${longFundingShiftMs}ms`,
+          );
+          this.recordTrades([{
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: false,
+            baseAsset: asset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: liveSpread,
+            spreadPercent: liveSpreadPercent,
+            reason: 'funding_window_shifted',
+            detail: `shortShiftMs:${shortFundingShiftMs} longShiftMs:${longFundingShiftMs} cap:${LIVE_FUNDING_TIME_DRIFT_MS}`,
+          }]);
+          return;
+        }
+
+        if (snipeConfig.useConfirmedClose) {
+          const tsDiff = Math.abs(shortLiveRate.nextFundingTime - longLiveRate.nextFundingTime);
+          if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) {
+            this.log(
+              'warning',
+              `entry blocked by funding timestamp mismatch | asset=${asset} diff=${tsDiff}ms`,
+            );
+            this.recordTrades([{
+              timestamp: Date.now(),
+              type: 'guard_block',
+              simulation: false,
+              baseAsset: asset,
+              shortExchange: opportunity.shortExchange,
+              longExchange: opportunity.longExchange,
+              spread: liveSpread,
+              spreadPercent: liveSpreadPercent,
+              reason: 'funding_timestamp_mismatch',
+              detail: `diffMs:${tsDiff} cap:${MAX_FUNDING_TIMESTAMP_DIFF_MS}`,
+            }]);
+            return;
+          }
+        }
+
+        shortRateForDecision = shortLiveRate.rate;
+        longRateForDecision = longLiveRate.rate;
+        spreadForDecision = liveSpread;
+        spreadPercentForDecision = liveSpreadPercent;
+      } catch (revalidateErr) {
+        this.log(
+          'warning',
+          `entry blocked by funding revalidate error | asset=${asset} error=${getErrorMessage(revalidateErr)}`,
+        );
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'funding_revalidate_failed',
+          detail: getErrorMessage(revalidateErr),
+        }]);
+        return;
+      }
+
       const baseNotional = this.config.investmentUSDT * this.config.leverage;
       let targetNotional = baseNotional;
 
@@ -897,16 +1039,20 @@ class ServerScheduler {
         const usesInstantRate = pairUsesInstantaneousRate(
           opportunity.shortExchange, opportunity.longExchange,
         );
-        const shortDrift = calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate);
-        const longDrift = calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate);
+        const shortDrift = snipeConfig.useDriftBuffer
+          ? calcDriftBuffer(shortRateForDecision, undefined, usesInstantRate)
+          : 0;
+        const longDrift = snipeConfig.useDriftBuffer
+          ? calcDriftBuffer(longRateForDecision, undefined, usesInstantRate)
+          : 0;
         const roundTripFeeDec = execHedgeFeePct / 100;
         const entryImpactDec = (shortFill.slippagePercent + longFill.slippagePercent) / 100;
         const exitImpactDec = entryImpactDec;
 
         const ev = calcConservativeEV(
           targetNotional,
-          opportunity.shortRate,
-          opportunity.longRate,
+          shortRateForDecision,
+          longRateForDecision,
           shortDrift,
           longDrift,
           roundTripFeeDec,
@@ -1191,8 +1337,8 @@ class ServerScheduler {
       this.stats.totalEntries++;
       transitionPhase(opportunityId, 'pending_funding');
 
-      const expectedPerFunding = (shortResult.value.filledNotional * opportunity.shortRate)
-        - (longResult.value.filledNotional * opportunity.longRate);
+      const expectedPerFunding = (shortResult.value.filledNotional * shortRateForDecision)
+        - (longResult.value.filledNotional * longRateForDecision);
       const expectedTotalRoundTripFees = shortResult.value.estimatedFee
         + longResult.value.estimatedFee
         + (shortResult.value.filledNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides))
@@ -1205,8 +1351,8 @@ class ServerScheduler {
         baseAsset: asset,
         shortExchange: opportunity.shortExchange,
         longExchange: opportunity.longExchange,
-        spread: opportunity.spread,
-        spreadPercent: opportunity.spreadPercent,
+        spread: spreadForDecision,
+        spreadPercent: spreadPercentForDecision,
         margin: this.config.investmentUSDT,
         leverage: this.config.leverage,
         notional: Math.min(shortResult.value.filledNotional, longResult.value.filledNotional),
@@ -1228,7 +1374,7 @@ class ServerScheduler {
         `entry complete | asset=${asset} short=$${shortResult.value.filledNotional.toFixed(2)} long=$${longResult.value.filledNotional.toFixed(2)} pairId=${pairId}`,
       );
       void sendTelegramMessage(
-        `[Server] ${asset} entry complete\nshort ${opportunity.shortExchange.toUpperCase()} $${shortResult.value.filledNotional.toFixed(2)}\nlong ${opportunity.longExchange.toUpperCase()} $${longResult.value.filledNotional.toFixed(2)}\nspread: +${opportunity.spreadPercent.toFixed(4)}%`,
+        `[Server] ${asset} entry complete\nshort ${opportunity.shortExchange.toUpperCase()} $${shortResult.value.filledNotional.toFixed(2)}\nlong ${opportunity.longExchange.toUpperCase()} $${longResult.value.filledNotional.toFixed(2)}\nspread: +${spreadPercentForDecision.toFixed(4)}%`,
       );
 
       this.saveState();

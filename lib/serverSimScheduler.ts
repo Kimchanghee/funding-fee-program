@@ -1212,8 +1212,12 @@ class ServerSimScheduler {
       const usesInstantRate = pairUsesInstantaneousRate(
         opportunity.shortExchange, opportunity.longExchange,
       );
-      const shortDrift = calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate);
-      const longDrift = calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate);
+      const shortDrift = snipeConfig.useDriftBuffer
+        ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
+        : 0;
+      const longDrift = snipeConfig.useDriftBuffer
+        ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
+        : 0;
       const roundTripFeeDec = execHedgeFeePct / 100;
       const entryImpactDec = (shortSlippagePercent + longSlippagePercent) / 100;
       const ev = calcConservativeEV(

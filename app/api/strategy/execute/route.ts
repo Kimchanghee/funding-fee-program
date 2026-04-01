@@ -16,6 +16,7 @@ import { checkPairLiquidationDistance } from '@/lib/liquidationGuard';
 import {
   openPositionExact,
   fetchBalance,
+  fetchFundingRates,
   fetchMarketFillPrice,
   closePosition,
   getPartialExecution,
@@ -25,12 +26,11 @@ import { rebalanceExecutedHedge } from '@/lib/hedgeRebalance';
 import { resolveRuntimeFee, resolveRuntimeFeeDetailed, refreshFeeCache } from '@/lib/runtimeFeeCache';
 import { loadAllServerApiConfigs } from '@/lib/serverKeyStore';
 import { makeServerPositionKey, upsertServerPositionMeta } from '@/lib/serverPositionMeta';
+import { hasRequiredApiCredentials } from '@/lib/apiCredentials';
 
-function isValidApiConfig(config: unknown): config is ApiConfig {
+function isValidApiConfig(exchange: ExchangeId, config: unknown): config is ApiConfig {
   if (!config || typeof config !== 'object') return false;
-  const c = config as Record<string, unknown>;
-  return typeof c.apiKey === 'string' && c.apiKey.length > 0
-    && typeof c.secret === 'string' && c.secret.length > 0;
+  return hasRequiredApiCredentials(exchange, config as Partial<ApiConfig>);
 }
 
 function getErrorMessage(error: unknown): string {
@@ -86,6 +86,8 @@ export async function POST(req: NextRequest) {
     const { opportunity, investmentUSDT, leverage, apiConfigs, feeOverrides, maxSlippagePercent } = body;
     const snipeConfig = body.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     const normalizedFeeOverrides = sanitizeFeeOverrides(feeOverrides);
+    let shortRateForDecision = opportunity?.shortRate ?? 0;
+    let longRateForDecision = opportunity?.longRate ?? 0;
     const pairId = typeof body.pairId === 'string' && body.pairId.trim()
       ? body.pairId.trim()
       : `api-${Date.now()}-${opportunity?.baseAsset ?? 'pair'}`;
@@ -123,7 +125,10 @@ export async function POST(req: NextRequest) {
     const shortConfig = serverConfigs[opportunity.shortExchange] ?? apiConfigs?.[opportunity.shortExchange];
     const longConfig = serverConfigs[opportunity.longExchange] ?? apiConfigs?.[opportunity.longExchange];
 
-    if (!isValidApiConfig(shortConfig) || !isValidApiConfig(longConfig)) {
+    if (
+      !isValidApiConfig(opportunity.shortExchange, shortConfig)
+      || !isValidApiConfig(opportunity.longExchange, longConfig)
+    ) {
       return NextResponse.json(
         { success: false, error: 'Missing or invalid API credentials for one or both exchanges' },
         { status: 400 },
@@ -220,6 +225,44 @@ export async function POST(req: NextRequest) {
       }, { status: 503 });
     }
 
+    // Revalidate live funding right before execution to avoid stale-route entries.
+    try {
+      const [shortRates, longRates] = await Promise.all([
+        fetchFundingRates(opportunity.shortExchange, undefined, [opportunity.shortSymbol]),
+        fetchFundingRates(opportunity.longExchange, undefined, [opportunity.longSymbol]),
+      ]);
+      const shortLiveRate = shortRates.find((rate) => rate.symbol === opportunity.shortSymbol)
+        ?? shortRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+      const longLiveRate = longRates.find((rate) => rate.symbol === opportunity.longSymbol)
+        ?? longRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+
+      if (!shortLiveRate || !longLiveRate) {
+        return NextResponse.json({
+          success: false,
+          error: `Live funding revalidate failed: short=${shortRates.length}, long=${longRates.length}`,
+          reason: 'funding_revalidate_missing',
+        }, { status: 503 });
+      }
+
+      const liveSpread = shortLiveRate.rate - longLiveRate.rate;
+      if (liveSpread <= 0) {
+        return NextResponse.json({
+          success: false,
+          error: `Live spread reverted: ${(liveSpread * 100).toFixed(4)}%`,
+          reason: 'live_spread_reverted',
+        });
+      }
+
+      shortRateForDecision = shortLiveRate.rate;
+      longRateForDecision = longLiveRate.rate;
+    } catch (revalidateErr) {
+      return NextResponse.json({
+        success: false,
+        error: `Live funding revalidate error: ${getErrorMessage(revalidateErr)}`,
+        reason: 'funding_revalidate_failed',
+      }, { status: 503 });
+    }
+
     // 1. Pre-fetch orderbooks from both exchanges simultaneously
     const [shortFill, longFill] = await Promise.all([
       fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
@@ -299,13 +342,17 @@ export async function POST(req: NextRequest) {
       const usesInstantRate = pairUsesInstantaneousRate(
         opportunity.shortExchange, opportunity.longExchange,
       );
-      const shortDrift = calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate);
-      const longDrift = calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate);
+      const shortDrift = snipeConfig.useDriftBuffer
+        ? calcDriftBuffer(shortRateForDecision, undefined, usesInstantRate)
+        : 0;
+      const longDrift = snipeConfig.useDriftBuffer
+        ? calcDriftBuffer(longRateForDecision, undefined, usesInstantRate)
+        : 0;
       const roundTripFeeDec = execHedgeFeePct / 100;
       const entryImpactDec = (shortFill.slippagePercent + longFill.slippagePercent) / 100;
       const ev = calcConservativeEV(
         targetNotional,
-        opportunity.shortRate, opportunity.longRate,
+        shortRateForDecision, longRateForDecision,
         shortDrift, longDrift,
         roundTripFeeDec, entryImpactDec, entryImpactDec,
       );
