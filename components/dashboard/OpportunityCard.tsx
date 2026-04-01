@@ -7,6 +7,7 @@ import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportu
 import { estimateProfit } from '@/lib/opportunities';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { buildManagedOpportunityItems, type ManagedOpportunityItem } from '@/lib/managedOpportunities';
+import { hasRequiredApiCredentials, getMissingApiCredentialFields } from '@/lib/apiCredentials';
 
 /* ─── Tiny countdown hook ─── */
 function useCountdown(targetMs: number) {
@@ -121,7 +122,7 @@ export default function OpportunityCard() {
     snipeTargets, snipeAllocations, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
-    simBalances, balances, fundingRates,
+    simBalances, balances, fundingRates, enabledExchanges,
   } = useFundingStore();
 
   const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
@@ -226,9 +227,25 @@ export default function OpportunityCard() {
     } else {
       // ── 시작 ──
       const state = useFundingStore.getState();
-      const totalCapital = state.strategyConfig.investmentUSDT * 2 * state.enabledExchanges.length;
+      const realEnabledExchanges = state.enabledExchanges
+        .filter((exchange) => hasRequiredApiCredentials(exchange, state.apiConfigs[exchange]));
+      const totalCapital = simulationMode
+        ? state.strategyConfig.investmentUSDT * 2 * state.enabledExchanges.length
+        : state.strategyConfig.investmentUSDT * 2 * realEnabledExchanges.length;
 
       if (!simulationMode) {
+        if (realEnabledExchanges.length < 2) {
+          const missingByExchange = state.enabledExchanges
+            .map((exchange) => {
+              const missing = getMissingApiCredentialFields(exchange, state.apiConfigs[exchange]);
+              if (missing.length === 0) return null;
+              return `${exchange.toUpperCase()}(${missing.join('/')})`;
+            })
+            .filter((item): item is string => item !== null);
+          const detail = missingByExchange.length > 0 ? ` Missing: ${missingByExchange.join(', ')}` : '';
+          setToastMsg({ text: `[REAL] Need valid API credentials on at least 2 exchanges.${detail}`, type: 'error' });
+          return;
+        }
         // REAL: 서버 스케줄러 시작을 먼저 확인 → 성공 후에만 상태를 ON으로
         try {
           const res = await fetch('/api/scheduler', {
@@ -240,7 +257,7 @@ export default function OpportunityCard() {
                 investmentUSDT: state.strategyConfig.investmentUSDT,
                 leverage: state.strategyConfig.leverage,
                 minSpreadPercent: state.strategyConfig.minSpreadPercent,
-                enabledExchanges: state.enabledExchanges,
+                enabledExchanges: realEnabledExchanges,
                 maxConcurrentPairs: 5,
                 feeOverrides: state.strategyConfig.feeOverrides,
                 timingConfig: state.strategyConfig.timingConfig,
@@ -329,9 +346,12 @@ export default function OpportunityCard() {
 
   const perExchangeInvestment = strategyConfig.investmentUSDT;
   const best = opportunities[0];
-  const hasShortConfig = best ? !!apiConfigs[best.shortExchange] : false;
-  const hasLongConfig = best ? !!apiConfigs[best.longExchange] : false;
-  const canExecute = simulationMode ? true : hasShortConfig && hasLongConfig;
+  const configuredRealExchangeCount = enabledExchanges.filter((exchange) => {
+    return hasRequiredApiCredentials(exchange, apiConfigs[exchange]);
+  }).length;
+  const canExecute = simulationMode
+    ? true
+    : configuredRealExchangeCount >= 2;
 
   // ── Build scheduled list: snipe targets + active positions mapped to opportunities ──
   // ★ realSpreads 포함: 거래소 간 가격 괴리가 큰 항목은 memo 단계에서 즉시 제거
@@ -555,7 +575,7 @@ export default function OpportunityCard() {
             )}
             {!canExecute && !isRunning && !simulationMode && best && (
               <div style={{ fontSize: 10, color: 'var(--color-warning)', textAlign: 'center' }}>
-                {`${!hasShortConfig ? best.shortExchange.toUpperCase() : best.longExchange.toUpperCase()} API 키 필요`}
+                REAL requires valid API credentials on at least 2 enabled exchanges.
               </div>
             )}
           </div>
