@@ -548,8 +548,8 @@ export default function OpportunityCard() {
                 className={`btn ${snipeActive ? 'snipe-scheduled' : ''}`}
                 style={{
                   padding: '12px 20px', fontSize: 13, fontWeight: 800, borderRadius: 10,
-                  cursor: (!canExecute || !best) ? 'not-allowed' : 'pointer',
-                  opacity: (!canExecute || !best) ? 0.5 : 1,
+                  cursor: !best ? 'not-allowed' : 'pointer',
+                  opacity: !best ? 0.5 : 1,
                   background: snipeActive
                     ? 'linear-gradient(135deg, rgba(16,185,129,0.15), rgba(16,185,129,0.08))'
                     : 'linear-gradient(135deg, #10b981, #059669)',
@@ -557,7 +557,7 @@ export default function OpportunityCard() {
                   color: snipeActive ? '#10b981' : '#fff',
                   display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
                 }}
-                disabled={!canExecute || !best}
+                disabled={!best}
                 onClick={handleSnipe}
               >
                 {snipeActive ? (
