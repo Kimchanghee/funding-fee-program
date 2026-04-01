@@ -1412,7 +1412,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       saveStrategyConfig(next);
 
       // investmentUSDT 변경 시 시뮬 잔고 동기화 (포지션 없을 때만)
-      if (investmentChanged && s.simulationMode && s.simPositions.length === 0) {
+      if (investmentChanged && s.simPositions.length === 0) {
         const newBal = {} as Record<ExchangeId, number>;
         for (const ex of SUPPORTED_EXCHANGES) {
           newBal[ex] = s.enabledExchanges.includes(ex) ? next.investmentUSDT * 2 : 0;
@@ -2774,6 +2774,25 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ simulationMode: next });
     // 모드 상태 영속화
     saveSimMode(next);
+    if (next && get().simPositions.length === 0) {
+      // Keep SIM balances aligned with config on SIM mode entry when no open positions.
+      void fetch('/api/sim-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'reconfigure',
+          enabledExchanges: get().enabledExchanges,
+          investmentUSDT: get().strategyConfig.investmentUSDT,
+        }),
+      })
+        .then(r => r.json())
+        .then((res: { success?: boolean; data?: SimStateSnapshot }) => {
+          if (res.success && res.data) {
+            applyServerSimStateSnapshot(set, res.data, { force: true });
+          }
+        })
+        .catch(() => {});
+    }
     try {
       const sharedState = await updateSharedSnipeStateSnapshot({ simulationMode: next });
       applySharedSnipeStateSnapshot(set, sharedState);
