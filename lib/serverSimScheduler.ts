@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
 import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs, getPairMaxSettlementWaitMs } from './exchangeProfiles';
+import { resolveRuntimeFee } from './runtimeFeeCache';
 import { appendTrades } from './fileLogger';
 import {
   findOpportunities,
@@ -990,7 +991,7 @@ class ServerSimScheduler {
     }
 
     const exitNotional = position.size * exitPrice;
-    const exitFee = exitNotional * getExchangeFee(position.exchange, 'taker', this.config.feeOverrides);
+    const exitFee = exitNotional * resolveRuntimeFee(position.exchange, 'taker', this.config.feeOverrides);
     const pricePnl = position.side === 'short'
       ? (position.entryPrice - exitPrice) * position.size
       : (exitPrice - position.entryPrice) * position.size;
@@ -1132,8 +1133,8 @@ class ServerSimScheduler {
         if (notional < 100) {
           return { success: false, error: `depth too shallow: $${notional.toFixed(0)}` };
         }
-      } catch {
-        // Fallback to base notional
+      } catch (err) {
+        return { success: false, error: `orderbook unavailable for dynamic notional: ${(err as Error).message ?? err}` };
       }
     }
 
@@ -1198,12 +1199,13 @@ class ServerSimScheduler {
     // Sign convention: (longFill - shortFill) / shortFill. Positive means worse entry.
     const entryGapPercent = ((longFillPrice - shortFillPrice) / shortFillPrice) * 100;
 
-    const execHedgeFeePct = getHedgeFeesWithOverrides(
-      opportunity.shortExchange, opportunity.longExchange, 'taker', this.config.feeOverrides,
-    ) * 100;
+    const execHedgeFeePct = (
+      resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides)
+      + resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides)
+    ) * 2 * 100;
 
-    // v2: conservative EV or legacy spread profitability gate
-    if (snipeConfig.useDriftBuffer) {
+    // Conservative EV — always forced ON (matches REAL fail-safe policy)
+    {
       const usesInstantRate = pairUsesInstantaneousRate(
         opportunity.shortExchange, opportunity.longExchange,
       );
@@ -1218,17 +1220,10 @@ class ServerSimScheduler {
       if (!ev.passesMinProfit || !ev.passesEVRatio) {
         return { success: false, error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}` };
       }
-    } else {
-      const realNetSpread = calcHedgedNetSpreadPercent(
-        opportunity.spreadPercent, shortSlippagePercent, longSlippagePercent, execHedgeFeePct,
-      );
-      if (realNetSpread <= 0) {
-        return { success: false, error: 'real net spread not profitable' };
-      }
     }
 
-    const shortEntryFee = notional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides);
-    const longEntryFee = notional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides);
+    const shortEntryFee = notional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides);
+    const longEntryFee = notional * resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides);
     const shortCostPerSide = margin + shortEntryFee;
     const longMargin = margin;
     const longCostPerSide = longMargin + longEntryFee;
@@ -1327,8 +1322,8 @@ class ServerSimScheduler {
     };
 
     const perFunding = notional * opportunity.shortRate - notional * opportunity.longRate;
-    const totalRoundTripFees = notional * getExchangeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides) * 2
-      + notional * getExchangeFee(opportunity.longExchange, 'taker', this.config.feeOverrides) * 2;
+    const totalRoundTripFees = notional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides) * 2
+      + notional * resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides) * 2;
     const netProfit = perFunding - totalRoundTripFees;
 
     const nextState: SimStateSnapshot = {

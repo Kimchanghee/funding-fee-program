@@ -45,7 +45,6 @@ import {
 } from './serverPositionMeta';
 import { sendTelegramMessage } from './telegram';
 import {
-  calcHedgedNetSpreadPercent,
   getResolvedTimingConfig,
   sanitizeFeeOverrides,
   sanitizeTimingConfig,
@@ -893,10 +892,8 @@ class ServerScheduler {
       let profitabilityDetail = '';
       let evDecisionValue: number | undefined;
 
-      // REAL: always use conservative EV regardless of toggle (fail-safe policy)
-      const useConservativeEV = true; // forced in REAL — snipeConfig.useDriftBuffer is legacy fallback
-      if (useConservativeEV) {
-        // v2: Conservative EV with drift buffers
+      // Conservative EV — always forced ON in REAL (fail-safe policy)
+      {
         const usesInstantRate = pairUsesInstantaneousRate(
           opportunity.shortExchange, opportunity.longExchange,
         );
@@ -904,7 +901,7 @@ class ServerScheduler {
         const longDrift = calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate);
         const roundTripFeeDec = execHedgeFeePct / 100;
         const entryImpactDec = (shortFill.slippagePercent + longFill.slippagePercent) / 100;
-        const exitImpactDec = entryImpactDec; // assume symmetric
+        const exitImpactDec = entryImpactDec;
 
         const ev = calcConservativeEV(
           targetNotional,
@@ -927,16 +924,6 @@ class ServerScheduler {
             `entry blocked by conservative EV | asset=${asset} ${profitabilityDetail}`,
           );
         }
-      } else {
-        // v1: legacy spread-based check
-        const realNetSpread = calcHedgedNetSpreadPercent(
-          opportunity.spreadPercent,
-          shortFill.slippagePercent,
-          longFill.slippagePercent,
-          execHedgeFeePct,
-        );
-        profitabilityPassed = realNetSpread > 0;
-        profitabilityDetail = `netSpread=${realNetSpread.toFixed(4)}% shortSlip=${shortFill.slippagePercent.toFixed(4)}% longSlip=${longFill.slippagePercent.toFixed(4)}%`;
       }
 
       if (!profitabilityPassed) {

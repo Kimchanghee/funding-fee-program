@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides, ConfirmedSnipeConfig } from '@/lib/types';
 import {
   SUPPORTED_EXCHANGES,
-  calcHedgedNetSpreadPercent,
   hasValidFeeOverrides,
   sanitizeFeeOverrides,
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
@@ -140,9 +139,14 @@ export async function POST(req: NextRequest) {
     const longFeeInfo = resolveRuntimeFeeDetailed(opportunity.longExchange, 'taker', normalizedFeeOverrides);
     if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
       console.log(
-        `[EXECUTE] ${opportunity.baseAsset} WARNING — fee source fallback: ` +
+        `[EXECUTE] ${opportunity.baseAsset} BLOCKED — fee cache unavailable: ` +
         `${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source}`,
       );
+      return NextResponse.json({
+        success: false,
+        error: `실계정 fee cache 확보 실패: ${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source}`,
+        reason: 'fee_cache_unavailable',
+      }, { status: 503 });
     }
 
     // ── 100% Hedge: 양쪽 오더북 동시 조회 → 동일 notional 수량 계산 → 동시 실행 ──
@@ -285,16 +289,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2c. Pre-execution profitability gate — conservative EV (v2) or legacy spread (v1)
+    // 2c. Pre-execution profitability gate — conservative EV (always forced ON)
     const execHedgeFeePct = (
       resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides)
       + resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides)
     ) * 2 * 100;
 
-    // REAL: always use conservative EV regardless of toggle (fail-safe policy)
-    const useConservativeEV = true;
-    if (useConservativeEV) {
-      // v2: Conservative EV with drift buffers — matches scheduler logic
+    {
       const usesInstantRate = pairUsesInstantaneousRate(
         opportunity.shortExchange, opportunity.longExchange,
       );
@@ -324,35 +325,6 @@ export async function POST(req: NextRequest) {
       }
       console.log(
         `[EXECUTE] ${opportunity.baseAsset} conservative EV OK: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
-      );
-    } else {
-      // v1: legacy spread-based check
-      const realNetSpread = calcHedgedNetSpreadPercent(
-        opportunity.spreadPercent,
-        shortFill.slippagePercent,
-        longFill.slippagePercent,
-        execHedgeFeePct,
-      );
-
-      if (realNetSpread <= 0) {
-        console.log(
-          `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 실시간 수익성 미달: ` +
-          `스프레드=${opportunity.spreadPercent.toFixed(4)}% 진입갭=${entryGapPct.toFixed(4)}% ` +
-          `shortSlip=${shortFill.slippagePercent.toFixed(4)}% longSlip=${longFill.slippagePercent.toFixed(4)}% → 순수익=${realNetSpread.toFixed(4)}%`,
-        );
-        return NextResponse.json({
-          success: false,
-          error: `실시간 수익성 미달: 순스프레드 ${realNetSpread.toFixed(4)}% ≤ 0 (진입갭 ${entryGapPct.toFixed(4)}%)`,
-          reason: 'profitability_insufficient',
-          entryGapPct,
-          shortSlippage: shortFill.slippagePercent,
-          longSlippage: longFill.slippagePercent,
-          realNetSpread,
-        });
-      }
-      console.log(
-        `[EXECUTE] ${opportunity.baseAsset} profitability OK: ` +
-        `순스프레드=${realNetSpread.toFixed(4)}% (진입갭=${entryGapPct.toFixed(4)}%)`,
       );
     }
 

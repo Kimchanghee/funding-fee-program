@@ -5,7 +5,6 @@
 
 export type ExecutionPhase =
   | 'idle'
-  | 'discover'
   | 'precheck'
   | 'arm'
   | 'submit_both'
