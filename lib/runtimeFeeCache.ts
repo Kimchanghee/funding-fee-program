@@ -71,6 +71,27 @@ export function resolveRuntimeFee(
   return getExchangeFee(exchange, orderType, overrides);
 }
 
+export type FeeSource = 'runtime' | 'override' | 'preset';
+
+/**
+ * Resolve fee with source information — used to enforce runtime fee availability in REAL mode.
+ */
+export function resolveRuntimeFeeDetailed(
+  exchange: ExchangeId,
+  orderType: 'maker' | 'taker',
+  overrides?: FeeOverrides,
+): { fee: number; source: FeeSource; fresh: boolean } {
+  const cached = runtimeFees.get(exchange);
+  if (cached && Date.now() - cached.fetchedAt < FEE_CACHE_TTL_MS) {
+    return { fee: cached[orderType], source: 'runtime', fresh: true };
+  }
+  const overrideFees = overrides?.[exchange];
+  if (overrideFees && typeof overrideFees[orderType] === 'number') {
+    return { fee: overrideFees[orderType], source: 'override', fresh: false };
+  }
+  return { fee: getExchangeFee(exchange, orderType, overrides), source: 'preset', fresh: false };
+}
+
 /**
  * Get the current runtime fee cache state (for diagnostics).
  */

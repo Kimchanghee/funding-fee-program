@@ -23,7 +23,7 @@ import {
 } from './exchangeProfiles';
 import { appendTrades, type TradeEvent } from './fileLogger';
 import { rebalanceExecutedHedge } from './hedgeRebalance';
-import { refreshAllFeeCaches, resolveRuntimeFee } from './runtimeFeeCache';
+import { refreshAllFeeCaches, resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
 import { checkPairLiquidationDistance } from './liquidationGuard';
 import {
   findOpportunities,
@@ -667,9 +667,21 @@ class ServerScheduler {
         } catch (err) {
           this.log(
             'warning',
-            `dynamic notional fallback to base | asset=${asset} error=${getErrorMessage(err)}`,
+            `entry blocked — orderbook unavailable for dynamic notional | asset=${asset} error=${getErrorMessage(err)}`,
           );
-          // Fall back to base notional if orderbook fetch fails
+          this.recordTrades([{
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: false,
+            baseAsset: asset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: opportunity.spread,
+            spreadPercent: opportunity.spreadPercent,
+            reason: 'orderbook_unavailable',
+            detail: getErrorMessage(err),
+          }]);
+          return;
         }
       }
 
@@ -758,7 +770,20 @@ class ServerScheduler {
           return;
         }
       } catch (liqErr) {
-        this.log('warning', `liquidation distance check failed (proceeding) | asset=${asset} error=${getErrorMessage(liqErr)}`);
+        this.log('warning', `entry blocked by liquidation check failure | asset=${asset} error=${getErrorMessage(liqErr)}`);
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'liq_check_failed',
+          detail: getErrorMessage(liqErr),
+        }]);
+        return;
       }
 
       const [shortFill, longFill] = await Promise.all([
@@ -839,18 +864,38 @@ class ServerScheduler {
         }]);
         return;
       }
-      // v2: use runtime fee cache for profitability gate (falls back to overrides/preset)
-      const execHedgeFeePct = (
-        resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides)
-        + resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides)
-      ) * 2 * 100;
+      // v2: use runtime fee cache for profitability gate — warn if falling back to preset
+      const shortFeeInfo = resolveRuntimeFeeDetailed(opportunity.shortExchange, 'taker', this.config.feeOverrides);
+      const longFeeInfo = resolveRuntimeFeeDetailed(opportunity.longExchange, 'taker', this.config.feeOverrides);
+      if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
+        this.log(
+          'warning',
+          `entry blocked — runtime fee unavailable | asset=${asset} ${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source}`,
+        );
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'fee_cache_unavailable',
+          detail: `${opportunity.shortExchange}:${shortFeeInfo.source} ${opportunity.longExchange}:${longFeeInfo.source}`,
+        }]);
+        return;
+      }
+      const execHedgeFeePct = (shortFeeInfo.fee + longFeeInfo.fee) * 2 * 100;
 
       // ── Profitability gate: conservative EV (v2) or legacy spread (v1) ──
       let profitabilityPassed = false;
       let profitabilityDetail = '';
       let evDecisionValue: number | undefined;
 
-      if (snipeConfig.useDriftBuffer) {
+      // REAL: always use conservative EV regardless of toggle (fail-safe policy)
+      const useConservativeEV = true; // forced in REAL — snipeConfig.useDriftBuffer is legacy fallback
+      if (useConservativeEV) {
         // v2: Conservative EV with drift buffers
         const usesInstantRate = pairUsesInstantaneousRate(
           opportunity.shortExchange, opportunity.longExchange,
@@ -1292,6 +1337,43 @@ class ServerScheduler {
         }
 
         if (Date.now() + pollIntervalMs >= deadline) break;
+
+        // Settlement wait breaker: abort if adverse price movement exceeds threshold
+        const MAX_SETTLEMENT_ADVERSE_BPS = 4;
+        try {
+          const [shortMark, longMark] = await Promise.all([
+            fetchMarketFillPrice(position.opportunity.shortExchange, position.opportunity.shortSymbol, 'sell', 1000).then(f => f.fillPrice),
+            fetchMarketFillPrice(position.opportunity.longExchange, position.opportunity.longSymbol, 'buy', 1000).then(f => f.fillPrice),
+          ]);
+          // Short leg: adverse = price went up; Long leg: adverse = price went down
+          const shortAdverseBps = ((shortMark - position.shortEntry.price) / position.shortEntry.price) * 10000;
+          const longAdverseBps = ((position.longEntry.price - longMark) / position.longEntry.price) * 10000;
+          const worstAdverseBps = Math.max(shortAdverseBps, longAdverseBps);
+          if (worstAdverseBps > MAX_SETTLEMENT_ADVERSE_BPS) {
+            this.log(
+              'warning',
+              `settlement wait breaker fired | asset=${asset} adverseBps=${worstAdverseBps.toFixed(1)} > ${MAX_SETTLEMENT_ADVERSE_BPS}`,
+            );
+            break; // exit wait loop → immediate flatten
+          }
+        } catch { /* non-blocking */ }
+
+        // Hold-time liquidation distance monitor
+        try {
+          const liqCheck = await checkPairLiquidationDistance(
+            position.opportunity.shortExchange, position.opportunity.longExchange,
+            shortConfig, longConfig,
+            position.opportunity.shortSymbol, position.opportunity.longSymbol,
+          );
+          if (liqCheck.critical) {
+            this.log(
+              'warning',
+              `critical liq distance during settlement wait — force closing | asset=${asset} ${liqCheck.detail}`,
+            );
+            break; // exit wait loop → immediate flatten
+          }
+        } catch { /* non-blocking — continue wait */ }
+
         await this.sleep(pollIntervalMs);
       }
 

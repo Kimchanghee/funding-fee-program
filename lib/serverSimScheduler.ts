@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
-import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs } from './exchangeProfiles';
+import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs, getPairMaxSettlementWaitMs } from './exchangeProfiles';
 import { appendTrades } from './fileLogger';
 import {
   findOpportunities,
@@ -905,11 +905,20 @@ class ServerSimScheduler {
 
       const updatedFundingReceived = (position.fundingReceived ?? 0) + 1;
       if (position.isSnipe && position.pairId && updatedFundingReceived >= 1) {
-        // v2: confirmed close — fire at funding time (settlement wait is modeled as instant in SIM)
+        // v2: confirmed close — model settlement wait window for realistic SIM KPI
         const simSnipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
-        const closeAt = simSnipeConfig.useConfirmedClose
-          ? Math.max(Date.now(), position.nextFundingTime)
-          : Math.max(Date.now(), position.nextFundingTime + closeDelayMs);
+        let settlementWaitMs = closeDelayMs;
+        if (simSnipeConfig.useConfirmedClose && position.pairId) {
+          const pair = state.simPositions.find(
+            p => p.pairId === position.pairId && p.simId !== position.simId,
+          );
+          if (pair) {
+            const shortEx = position.side === 'short' ? position.exchange : pair.exchange;
+            const longEx = position.side === 'long' ? position.exchange : pair.exchange;
+            settlementWaitMs = getPairMaxSettlementWaitMs(shortEx, longEx);
+          }
+        }
+        const closeAt = Math.max(Date.now(), position.nextFundingTime + settlementWaitMs);
         this.pendingAutoCloses.set(position.pairId, closeAt);
       }
 

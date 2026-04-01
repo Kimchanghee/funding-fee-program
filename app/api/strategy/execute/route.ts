@@ -23,7 +23,7 @@ import {
   type ExecutedOrderSummary,
 } from '@/lib/exchanges';
 import { rebalanceExecutedHedge } from '@/lib/hedgeRebalance';
-import { resolveRuntimeFee } from '@/lib/runtimeFeeCache';
+import { resolveRuntimeFee, resolveRuntimeFeeDetailed, refreshFeeCache } from '@/lib/runtimeFeeCache';
 import { loadAllServerApiConfigs } from '@/lib/serverKeyStore';
 import { makeServerPositionKey, upsertServerPositionMeta } from '@/lib/serverPositionMeta';
 
@@ -131,6 +131,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // ── Refresh runtime fee cache for both exchanges ──
+    await Promise.allSettled([
+      refreshFeeCache(opportunity.shortExchange, shortConfig, opportunity.shortSymbol),
+      refreshFeeCache(opportunity.longExchange, longConfig, opportunity.longSymbol),
+    ]);
+    const shortFeeInfo = resolveRuntimeFeeDetailed(opportunity.shortExchange, 'taker', normalizedFeeOverrides);
+    const longFeeInfo = resolveRuntimeFeeDetailed(opportunity.longExchange, 'taker', normalizedFeeOverrides);
+    if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
+      console.log(
+        `[EXECUTE] ${opportunity.baseAsset} WARNING — fee source fallback: ` +
+        `${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source}`,
+      );
+    }
+
     // ── 100% Hedge: 양쪽 오더북 동시 조회 → 동일 notional 수량 계산 → 동시 실행 ──
     const targetNotional = investmentUSDT * leverage;
     const shortEntryFeeEstimate = targetNotional * resolveRuntimeFee(
@@ -194,7 +208,13 @@ export async function POST(req: NextRequest) {
           reason: 'liq_distance_low',
         });
       }
-    } catch { /* proceed if check fails */ }
+    } catch (liqErr) {
+      return NextResponse.json({
+        success: false,
+        error: `청산가 거리 체크 실패: ${getErrorMessage(liqErr)}`,
+        reason: 'liq_check_failed',
+      }, { status: 503 });
+    }
 
     // 1. Pre-fetch orderbooks from both exchanges simultaneously
     const [shortFill, longFill] = await Promise.all([
@@ -271,7 +291,9 @@ export async function POST(req: NextRequest) {
       + resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides)
     ) * 2 * 100;
 
-    if (snipeConfig.useDriftBuffer) {
+    // REAL: always use conservative EV regardless of toggle (fail-safe policy)
+    const useConservativeEV = true;
+    if (useConservativeEV) {
       // v2: Conservative EV with drift buffers — matches scheduler logic
       const usesInstantRate = pairUsesInstantaneousRate(
         opportunity.shortExchange, opportunity.longExchange,
