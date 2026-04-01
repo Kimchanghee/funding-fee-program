@@ -80,7 +80,7 @@ function getErrorMessage(error: unknown): string {
   return 'unknown';
 }
 
-/** Resolve v2.1 config — missing = all OFF (existing behavior) */
+/** Resolve v2.1 config — missing = all toggles OFF (profile timing & Tier C still apply) */
 function getSnipeConfig(config?: ConfirmedSnipeConfig): ConfirmedSnipeConfig {
   return config ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
 }
@@ -95,7 +95,7 @@ export interface SchedulerConfig {
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%)
   minVolume24hUSD?: number; // 최소 24시간 거래량 (USD)
-  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all features OFF
+  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all toggles OFF (profile timing & Tier C still apply)
 }
 
 interface SchedulerStats {
@@ -126,6 +126,7 @@ interface PersistedActivePosition {
   targetFundingTime: number;
   closeAt: number;
   closeAttempts: number;
+  evDecision?: number;
 }
 
 interface PersistedState {
@@ -846,6 +847,7 @@ class ServerScheduler {
       // ── Profitability gate: conservative EV (v2) or legacy spread (v1) ──
       let profitabilityPassed = false;
       let profitabilityDetail = '';
+      let evDecisionValue: number | undefined;
 
       if (snipeConfig.useDriftBuffer) {
         // v2: Conservative EV with drift buffers
@@ -870,6 +872,7 @@ class ServerScheduler {
         );
 
         profitabilityPassed = ev.passesMinProfit && ev.passesEVRatio;
+        evDecisionValue = ev.expectedNetUSD;
         profitabilityDetail = `EV=$${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)} drift=${shortDrift.toFixed(6)}/${longDrift.toFixed(6)}`;
 
         if (!profitabilityPassed) {
@@ -1147,6 +1150,7 @@ class ServerScheduler {
         targetFundingTime,
         closeAt,
         closeAttempts: 0,
+        evDecision: evDecisionValue,
         closeTimer: this.scheduleCloseTimer(opportunityId, closeAt),
       };
 
@@ -1298,6 +1302,7 @@ class ServerScheduler {
       }
     }
 
+    transitionPhase(opportunityId, 'confirmed_close');
     transitionPhase(opportunityId, 'flatten');
     this.log('info', `close started | asset=${asset} attempt=${position.closeAttempts + 1}`);
 
@@ -1558,6 +1563,7 @@ class ServerScheduler {
       completeExecution(opportunityId, 'success', {
         fundingCaptured: fundingVerification.verified,
         settlementConfirmed: fundingVerification.verified,
+        evDecision: position.evDecision,
         evRealized: totalPnl,
       });
 

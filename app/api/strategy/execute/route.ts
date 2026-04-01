@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides, ConfirmedSnipeConfig } from '@/lib/types';
 import {
   SUPPORTED_EXCHANGES,
-  getExchangeFee,
   getHedgeFeesWithOverrides,
   calcHedgedNetSpreadPercent,
   hasValidFeeOverrides,
@@ -21,6 +20,7 @@ import {
   type ExecutedOrderSummary,
 } from '@/lib/exchanges';
 import { rebalanceExecutedHedge } from '@/lib/hedgeRebalance';
+import { resolveRuntimeFee } from '@/lib/runtimeFeeCache';
 import { loadAllServerApiConfigs } from '@/lib/serverKeyStore';
 import { makeServerPositionKey, upsertServerPositionMeta } from '@/lib/serverPositionMeta';
 
@@ -130,12 +130,12 @@ export async function POST(req: NextRequest) {
 
     // ── 100% Hedge: 양쪽 오더북 동시 조회 → 동일 notional 수량 계산 → 동시 실행 ──
     const targetNotional = investmentUSDT * leverage;
-    const shortEntryFeeEstimate = targetNotional * getExchangeFee(
+    const shortEntryFeeEstimate = targetNotional * resolveRuntimeFee(
       opportunity.shortExchange,
       'taker',
       normalizedFeeOverrides,
     );
-    const longEntryFeeEstimate = targetNotional * getExchangeFee(
+    const longEntryFeeEstimate = targetNotional * resolveRuntimeFee(
       opportunity.longExchange,
       'taker',
       normalizedFeeOverrides,
@@ -437,8 +437,8 @@ export async function POST(req: NextRequest) {
     const expectedTotalRoundTripFees = shortOk && longOk
       ? shortResult.value.estimatedFee
         + longResult.value.estimatedFee
-        + (shortResult.value.filledNotional * getExchangeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides))
-        + (longResult.value.filledNotional * getExchangeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides))
+        + (shortResult.value.filledNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides))
+        + (longResult.value.filledNotional * resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides))
       : undefined;
 
     return NextResponse.json({

@@ -118,7 +118,7 @@ export interface StrategyConfig {
   timingConfig?: TimingConfig; // ?�나?�프/?�??검�??�?�밍 ?�정
   maxSlippagePercent?: number; // 최�? ?�리?��? % (기본 1.5%) ?????�상?�면 ?�동??부족으�??�터�?
   minVolume24hUSD?: number; // 최소 24?�간 거래??(USD) ??기본 $7,500,000 (??00?�원)
-  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all features OFF
+  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all toggles OFF (profile timing & Tier C still apply)
 }
 
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';

@@ -267,7 +267,7 @@ export interface ServerSimSchedulerConfig {
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // maximum slippage percent (default 1.5%)
   minVolume24hUSD?: number; // minimum 24h volume in USD
-  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all features OFF
+  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all toggles OFF (profile timing & Tier C still apply)
 }
 
 interface ScheduledSimEntry {
