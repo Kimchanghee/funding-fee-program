@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
 import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs, getPairMaxSettlementWaitMs } from './exchangeProfiles';
-import { resolveRuntimeFee } from './runtimeFeeCache';
+import { resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
 import { appendTrades } from './fileLogger';
 import {
   findOpportunities,
@@ -23,8 +23,6 @@ import {
   MIN_FREE_MARGIN_PCT,
   HEDGE_RATIO_MIN,
   HEDGE_RATIO_MAX,
-  getExchangeFee,
-  getHedgeFeesWithOverrides,
   getResolvedTimingConfig,
   sanitizeFeeOverrides,
   sanitizeTimingConfig,
@@ -145,12 +143,10 @@ function getOpportunityYieldScore(
   opportunity: ArbitrageOpportunity,
   feeOverrides?: FeeOverrides,
 ): number {
-  const hedgeFeePct = getHedgeFeesWithOverrides(
-    opportunity.shortExchange,
-    opportunity.longExchange,
-    'taker',
-    feeOverrides,
-  ) * 100;
+  const hedgeFeePct = (
+    resolveRuntimeFee(opportunity.shortExchange, 'taker', feeOverrides)
+    + resolveRuntimeFee(opportunity.longExchange, 'taker', feeOverrides)
+  ) * 2 * 100;
   const netSpreadPercent = Math.max(0, calcNetSpreadPercent(opportunity.spreadPercent, 0, hedgeFeePct));
   return Math.max(0, netSpreadPercent / getOpportunityIntervalHours(opportunity));
 }
@@ -186,7 +182,7 @@ function planWindowAllocations(
   const allocationStep = Math.max(25, Math.min(strategyConfig.investmentUSDT / 5, 250));
   const minAllocation = Math.min(Math.max(10, strategyConfig.investmentUSDT * 0.1), allocationStep);
   const getCostFactor = (exchange: ExchangeId) => (
-    1 + (strategyConfig.leverage * getExchangeFee(exchange, 'taker', strategyConfig.feeOverrides))
+    1 + (strategyConfig.leverage * resolveRuntimeFee(exchange, 'taker', strategyConfig.feeOverrides))
   );
 
   const getCap = (opportunity: ArbitrageOpportunity) => {
@@ -613,9 +609,10 @@ class ServerSimScheduler {
           fetchMarketFillPrice(entry.opportunity.longExchange, entry.opportunity.longSymbol, 'buy', notional),
         ]);
 
-        const revalHedgeFeePct = getHedgeFeesWithOverrides(
-          entry.opportunity.shortExchange, entry.opportunity.longExchange, 'taker', this.config.feeOverrides,
-        ) * 100;
+        const revalHedgeFeePct = (
+          resolveRuntimeFee(entry.opportunity.shortExchange, 'taker', this.config.feeOverrides)
+          + resolveRuntimeFee(entry.opportunity.longExchange, 'taker', this.config.feeOverrides)
+        ) * 2 * 100;
         const realNetSpread = calcHedgedNetSpreadPercent(
           entry.opportunity.spreadPercent,
           shortFill.slippagePercent,
@@ -631,9 +628,10 @@ class ServerSimScheduler {
               fetchMarketFillPrice(flipped.shortExchange, flipped.shortSymbol, 'sell', notional),
               fetchMarketFillPrice(flipped.longExchange, flipped.longSymbol, 'buy', notional),
             ]);
-            const flipHedgeFeePct = getHedgeFeesWithOverrides(
-              flipped.shortExchange, flipped.longExchange, 'taker', this.config.feeOverrides,
-            ) * 100;
+            const flipHedgeFeePct = (
+              resolveRuntimeFee(flipped.shortExchange, 'taker', this.config.feeOverrides)
+              + resolveRuntimeFee(flipped.longExchange, 'taker', this.config.feeOverrides)
+            ) * 2 * 100;
             const flippedNetSpread = calcHedgedNetSpreadPercent(
               flipped.spreadPercent,
               flipShortFill.slippagePercent,
@@ -1199,10 +1197,15 @@ class ServerSimScheduler {
     // Sign convention: (longFill - shortFill) / shortFill. Positive means worse entry.
     const entryGapPercent = ((longFillPrice - shortFillPrice) / shortFillPrice) * 100;
 
-    const execHedgeFeePct = (
-      resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides)
-      + resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides)
-    ) * 2 * 100;
+    // SIM: warn (but don't block) when fee falls back to preset — for KPI accuracy tracking
+    const shortFeeInfo = resolveRuntimeFeeDetailed(opportunity.shortExchange, 'taker', this.config.feeOverrides);
+    const longFeeInfo = resolveRuntimeFeeDetailed(opportunity.longExchange, 'taker', this.config.feeOverrides);
+    if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
+      console.warn(
+        `[SIM] fee source fallback: ${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source} — KPI may diverge from REAL`,
+      );
+    }
+    const execHedgeFeePct = (shortFeeInfo.fee + longFeeInfo.fee) * 2 * 100;
 
     // Conservative EV — always forced ON (matches REAL fail-safe policy)
     {

@@ -26,28 +26,26 @@ export async function getLiquidationDistance(
   config: ApiConfig,
   symbol: string,
 ): Promise<LiqDistanceResult> {
-  try {
-    const positions = await fetchPositions(exchange, config);
-    const pos = positions.find(
-      (p) => p.symbol === symbol || p.displaySymbol === symbol.replace(':USDT', ''),
-    );
+  // Do NOT catch errors here — let them propagate to the caller's fail-closed handler.
+  // Only return null distancePct when there is genuinely no matching position.
+  const positions = await fetchPositions(exchange, config);
+  const pos = positions.find(
+    (p) => p.symbol === symbol || p.displaySymbol === symbol.replace(':USDT', ''),
+  );
 
-    if (!pos || !pos.markPrice || !pos.liquidationPrice || pos.liquidationPrice === 0) {
-      return { distancePct: null, markPrice: null, liquidationPrice: null };
-    }
-
-    const distancePct = Math.abs(
-      (pos.markPrice - pos.liquidationPrice) / pos.markPrice,
-    ) * 100;
-
-    return {
-      distancePct,
-      markPrice: pos.markPrice,
-      liquidationPrice: pos.liquidationPrice,
-    };
-  } catch {
+  if (!pos || !pos.markPrice || !pos.liquidationPrice || pos.liquidationPrice === 0) {
     return { distancePct: null, markPrice: null, liquidationPrice: null };
   }
+
+  const distancePct = Math.abs(
+    (pos.markPrice - pos.liquidationPrice) / pos.markPrice,
+  ) * 100;
+
+  return {
+    distancePct,
+    markPrice: pos.markPrice,
+    liquidationPrice: pos.liquidationPrice,
+  };
 }
 
 /**

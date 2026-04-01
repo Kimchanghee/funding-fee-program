@@ -6,7 +6,6 @@
 export type ExecutionPhase =
   | 'idle'
   | 'precheck'
-  | 'arm'
   | 'submit_both'
   | 'one_leg_filled'
   | 'hedge_or_abort'

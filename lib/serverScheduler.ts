@@ -979,7 +979,6 @@ class ServerScheduler {
       }
 
       // ── Execute both legs with orphan timing measurement ──
-      transitionPhase(opportunityId, 'arm');
       transitionPhase(opportunityId, 'submit_both');
       let shortDoneAt = 0;
       let longDoneAt = 0;
