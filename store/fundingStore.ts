@@ -293,8 +293,13 @@ function snapshotHasRealData(state: SimStateSnapshot): boolean {
   return state.simPositions.length > 0
     || state.fundingHistory.length > 0
     || state.simTotalFundingEarned !== 0
+    || state.simTotalTopUps !== 0
     || state.simTotalFees !== 0
-    || state.simTotalClosedPnl !== 0;
+    || state.simTotalClosedPnl !== 0
+    || SUPPORTED_EXCHANGES.some((exchange) => (
+      (state.simBalances[exchange] ?? 0) > 0
+      || (state.simInitialBalances[exchange] ?? 0) > 0
+    ));
 }
 
 function applyServerSimStateSnapshot(
@@ -309,8 +314,13 @@ function applyServerSimStateSnapshot(
     const localHasData = local.simPositions.length > 0
       || local.fundingHistory.length > 0
       || local.simTotalFundingEarned !== 0
+      || local.simTotalTopUps !== 0
       || local.simTotalFees !== 0
-      || local.simTotalClosedPnl !== 0;
+      || local.simTotalClosedPnl !== 0
+      || SUPPORTED_EXCHANGES.some((exchange) => (
+        (local.simBalances[exchange] ?? 0) > 0
+        || (local.simInitialBalances[exchange] ?? 0) > 0
+      ));
     if (localHasData && !snapshotHasRealData(snapshot)) {
       return;
     }
@@ -1263,7 +1273,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       void fetchServerSimSchedulerStatus()
         .then((simScheduler) => {
-          applyServerSimStateSnapshot(set, simScheduler.state, { force: true });
+          applyServerSimStateSnapshot(set, simScheduler.state, { getState: get });
           set({
             simSnipeActive: !!simScheduler.active,
             snipeTargets: simScheduler.snipeTargets ?? {},
@@ -1475,7 +1485,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       );
       void fetchServerSimSchedulerStatus()
         .then((status) => {
-          applyServerSimStateSnapshot(set, status.state, { force: true });
+          applyServerSimStateSnapshot(set, status.state, { getState: get });
           set({
             simSnipeActive: !!status.active,
             snipeTargets: status.snipeTargets ?? {},
@@ -2028,7 +2038,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (get().simSnipeActive || get().simulationMode) {
         void fetchServerSimSchedulerStatus()
           .then((status) => {
-            applyServerSimStateSnapshot(set, status.state, { force: true });
+            applyServerSimStateSnapshot(set, status.state, { getState: get });
             set({
               simSnipeActive: !!status.active,
               snipeTargets: {
@@ -3444,7 +3454,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     if (get().simSnipeActive) {
       void fetchServerSimSchedulerStatus()
         .then((status) => {
-          applyServerSimStateSnapshot(set, status.state, { force: true });
+          applyServerSimStateSnapshot(set, status.state, { getState: get });
           set({
             simSnipeActive: !!status.active,
             snipeTargets: {
