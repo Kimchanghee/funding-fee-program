@@ -7,9 +7,13 @@ import {
   sanitizeFeeOverrides,
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_ROUND_TRIP_IMPACT_BPS,
+  MIN_FREE_MARGIN_PCT,
   HEDGE_RATIO_MIN,
   HEDGE_RATIO_MAX,
 } from '@/lib/types';
+import { pairUsesInstantaneousRate } from '@/lib/exchangeProfiles';
+import { calcConservativeEV, calcDriftBuffer } from '@/lib/opportunities';
+import { checkPairLiquidationDistance } from '@/lib/liquidationGuard';
 import {
   openPositionExact,
   fetchBalance,
@@ -163,6 +167,35 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Free margin guard
+    const shortFreeRatio = shortBalance.totalUSDT > 0
+      ? (shortBalance.availableUSDT / shortBalance.totalUSDT) * 100 : 0;
+    const longFreeRatio = longBalance.totalUSDT > 0
+      ? (longBalance.availableUSDT / longBalance.totalUSDT) * 100 : 0;
+    if (shortFreeRatio < MIN_FREE_MARGIN_PCT || longFreeRatio < MIN_FREE_MARGIN_PCT) {
+      return NextResponse.json({
+        success: false,
+        error: `Free margin 부족: ${opportunity.shortExchange}=${shortFreeRatio.toFixed(1)}% ${opportunity.longExchange}=${longFreeRatio.toFixed(1)}% (min ${MIN_FREE_MARGIN_PCT}%)`,
+        reason: 'free_margin_low',
+      });
+    }
+
+    // Liquidation distance guard
+    try {
+      const liqCheck = await checkPairLiquidationDistance(
+        opportunity.shortExchange, opportunity.longExchange,
+        shortConfig, longConfig,
+        opportunity.shortSymbol, opportunity.longSymbol,
+      );
+      if (!liqCheck.safe) {
+        return NextResponse.json({
+          success: false,
+          error: `청산가 거리 부족: ${liqCheck.detail}`,
+          reason: 'liq_distance_low',
+        });
+      }
+    } catch { /* proceed if check fails */ }
+
     // 1. Pre-fetch orderbooks from both exchanges simultaneously
     const [shortFill, longFill] = await Promise.all([
       fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
@@ -232,40 +265,74 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2c. Pre-execution profitability gate — equal-notional 스나이프 수익성 재검증
-    // v2: use runtime fee cache for profitability gate
+    // 2c. Pre-execution profitability gate — conservative EV (v2) or legacy spread (v1)
     const execHedgeFeePct = (
       resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides)
       + resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides)
     ) * 2 * 100;
-    const realNetSpread = calcHedgedNetSpreadPercent(
-      opportunity.spreadPercent,
-      shortFill.slippagePercent,
-      longFill.slippagePercent,
-      execHedgeFeePct,
-    );
 
-    if (realNetSpread <= 0) {
-      console.log(
-        `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 실시간 수익성 미달: ` +
-        `스프레드=${opportunity.spreadPercent.toFixed(4)}% 진입갭=${entryGapPct.toFixed(4)}% ` +
-        `shortSlip=${shortFill.slippagePercent.toFixed(4)}% longSlip=${longFill.slippagePercent.toFixed(4)}% → 순수익=${realNetSpread.toFixed(4)}%`,
+    if (snipeConfig.useDriftBuffer) {
+      // v2: Conservative EV with drift buffers — matches scheduler logic
+      const usesInstantRate = pairUsesInstantaneousRate(
+        opportunity.shortExchange, opportunity.longExchange,
       );
-      return NextResponse.json({
-        success: false,
-        error: `실시간 수익성 미달: 순스프레드 ${realNetSpread.toFixed(4)}% ≤ 0 (진입갭 ${entryGapPct.toFixed(4)}%)`,
-        reason: 'profitability_insufficient',
-        entryGapPct,
-        shortSlippage: shortFill.slippagePercent,
-        longSlippage: longFill.slippagePercent,
-        realNetSpread,
-      });
-    }
+      const shortDrift = calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate);
+      const longDrift = calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate);
+      const roundTripFeeDec = execHedgeFeePct / 100;
+      const entryImpactDec = (shortFill.slippagePercent + longFill.slippagePercent) / 100;
+      const ev = calcConservativeEV(
+        targetNotional,
+        opportunity.shortRate, opportunity.longRate,
+        shortDrift, longDrift,
+        roundTripFeeDec, entryImpactDec, entryImpactDec,
+      );
 
-    console.log(
-      `[EXECUTE] ${opportunity.baseAsset} profitability OK: ` +
-      `순스프레드=${realNetSpread.toFixed(4)}% (진입갭=${entryGapPct.toFixed(4)}%)`,
-    );
+      if (!ev.passesMinProfit || !ev.passesEVRatio) {
+        console.log(
+          `[EXECUTE] ${opportunity.baseAsset} BLOCKED — conservative EV: ` +
+          `$${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
+        );
+        return NextResponse.json({
+          success: false,
+          error: `Conservative EV 미달: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
+          reason: 'profitability_insufficient',
+          expectedNetUSD: ev.expectedNetUSD,
+          evRatio: ev.evRatio,
+        });
+      }
+      console.log(
+        `[EXECUTE] ${opportunity.baseAsset} conservative EV OK: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
+      );
+    } else {
+      // v1: legacy spread-based check
+      const realNetSpread = calcHedgedNetSpreadPercent(
+        opportunity.spreadPercent,
+        shortFill.slippagePercent,
+        longFill.slippagePercent,
+        execHedgeFeePct,
+      );
+
+      if (realNetSpread <= 0) {
+        console.log(
+          `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 실시간 수익성 미달: ` +
+          `스프레드=${opportunity.spreadPercent.toFixed(4)}% 진입갭=${entryGapPct.toFixed(4)}% ` +
+          `shortSlip=${shortFill.slippagePercent.toFixed(4)}% longSlip=${longFill.slippagePercent.toFixed(4)}% → 순수익=${realNetSpread.toFixed(4)}%`,
+        );
+        return NextResponse.json({
+          success: false,
+          error: `실시간 수익성 미달: 순스프레드 ${realNetSpread.toFixed(4)}% ≤ 0 (진입갭 ${entryGapPct.toFixed(4)}%)`,
+          reason: 'profitability_insufficient',
+          entryGapPct,
+          shortSlippage: shortFill.slippagePercent,
+          longSlippage: longFill.slippagePercent,
+          realNetSpread,
+        });
+      }
+      console.log(
+        `[EXECUTE] ${opportunity.baseAsset} profitability OK: ` +
+        `순스프레드=${realNetSpread.toFixed(4)}% (진입갭=${entryGapPct.toFixed(4)}%)`,
+      );
+    }
 
     // 3. Calculate precise quantities for equal USD exposure
     const shortQty = targetNotional / shortFill.fillPrice;
