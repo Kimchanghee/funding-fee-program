@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
-import { pairUsesInstantaneousRate, hasTierCExchange } from './exchangeProfiles';
+import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs } from './exchangeProfiles';
 import { appendTrades } from './fileLogger';
 import {
   findOpportunities,
@@ -779,7 +779,9 @@ class ServerSimScheduler {
           if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) return false;
         }
       }
-      const targetTime = opportunity.nextFundingTime - timing.entryLeadMs;
+      const profileLeadMs = getPairEntryLeadMs(opportunity.shortExchange, opportunity.longExchange);
+      const entryLeadMs = Math.max(profileLeadMs, timing.entryLeadMs);
+      const targetTime = opportunity.nextFundingTime - entryLeadMs;
       if (targetTime <= now) {
         return false;
       }
@@ -795,11 +797,13 @@ class ServerSimScheduler {
     const nextEntries = new Map<string, ScheduledSimEntry>();
     for (const plan of plans) {
       const opportunityId = getOpportunityId(plan.opportunity);
+      const profileLead = getPairEntryLeadMs(plan.opportunity.shortExchange, plan.opportunity.longExchange);
+      const entryLead = Math.max(profileLead, timing.entryLeadMs);
       nextEntries.set(opportunityId, {
         opportunityId,
         asset: plan.opportunity.baseAsset,
         opportunity: plan.opportunity,
-        targetTime: plan.opportunity.nextFundingTime - timing.entryLeadMs,
+        targetTime: plan.opportunity.nextFundingTime - entryLead,
         investmentUSDT: plan.investmentUSDT,
       });
     }
@@ -901,7 +905,11 @@ class ServerSimScheduler {
 
       const updatedFundingReceived = (position.fundingReceived ?? 0) + 1;
       if (position.isSnipe && position.pairId && updatedFundingReceived >= 1) {
-        const closeAt = Math.max(Date.now(), position.nextFundingTime + closeDelayMs);
+        // v2: confirmed close — fire at funding time (settlement wait is modeled as instant in SIM)
+        const simSnipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+        const closeAt = simSnipeConfig.useConfirmedClose
+          ? Math.max(Date.now(), position.nextFundingTime)
+          : Math.max(Date.now(), position.nextFundingTime + closeDelayMs);
         this.pendingAutoCloses.set(position.pairId, closeAt);
       }
 

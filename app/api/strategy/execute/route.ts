@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides, ConfirmedSnipeConfig } from '@/lib/types';
 import {
   SUPPORTED_EXCHANGES,
-  getHedgeFeesWithOverrides,
   calcHedgedNetSpreadPercent,
   hasValidFeeOverrides,
   sanitizeFeeOverrides,
@@ -234,9 +233,11 @@ export async function POST(req: NextRequest) {
     }
 
     // 2c. Pre-execution profitability gate — equal-notional 스나이프 수익성 재검증
-    const execHedgeFeePct = getHedgeFeesWithOverrides(
-      opportunity.shortExchange, opportunity.longExchange, 'taker', normalizedFeeOverrides,
-    ) * 100;
+    // v2: use runtime fee cache for profitability gate
+    const execHedgeFeePct = (
+      resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides)
+      + resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides)
+    ) * 2 * 100;
     const realNetSpread = calcHedgedNetSpreadPercent(
       opportunity.spreadPercent,
       shortFill.slippagePercent,

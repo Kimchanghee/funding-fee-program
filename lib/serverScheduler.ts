@@ -45,7 +45,6 @@ import {
 } from './serverPositionMeta';
 import { sendTelegramMessage } from './telegram';
 import {
-  getHedgeFeesWithOverrides,
   calcHedgedNetSpreadPercent,
   getResolvedTimingConfig,
   sanitizeFeeOverrides,
@@ -840,9 +839,11 @@ class ServerScheduler {
         }]);
         return;
       }
-      const execHedgeFeePct = getHedgeFeesWithOverrides(
-        opportunity.shortExchange, opportunity.longExchange, 'taker', this.config.feeOverrides,
-      ) * 100;
+      // v2: use runtime fee cache for profitability gate (falls back to overrides/preset)
+      const execHedgeFeePct = (
+        resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides)
+        + resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides)
+      ) * 2 * 100;
 
       // ── Profitability gate: conservative EV (v2) or legacy spread (v1) ──
       let profitabilityPassed = false;
