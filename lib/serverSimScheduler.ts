@@ -417,8 +417,32 @@ class ServerSimScheduler {
     return getResolvedTimingConfig(this.config.timingConfig);
   }
 
+  private shouldRepairEmptySimBalances(state: SimStateSnapshot): boolean {
+    if (this.config.enabledExchanges.length === 0 || this.config.investmentUSDT <= 0) {
+      return false;
+    }
+    if (
+      state.simPositions.length > 0
+      || state.fundingHistory.length > 0
+      || state.simTotalFundingEarned !== 0
+      || state.simTotalFees !== 0
+      || state.simTotalClosedPnl !== 0
+    ) {
+      return false;
+    }
+    return this.config.enabledExchanges.every((exchange) => (
+      (state.simBalances[exchange] ?? 0) <= 0
+      && (state.simInitialBalances[exchange] ?? 0) <= 0
+    ));
+  }
+
   private getState() {
-    return getOrCreateServerSimState(this.config.enabledExchanges, this.config.investmentUSDT);
+    const state = getOrCreateServerSimState(this.config.enabledExchanges, this.config.investmentUSDT);
+    if (!this.shouldRepairEmptySimBalances(state)) {
+      return state;
+    }
+    const repaired = createDefaultSimState(this.config.enabledExchanges, this.config.investmentUSDT);
+    return saveServerSimState(repaired);
   }
 
   private setState(state: SimStateSnapshot) {
