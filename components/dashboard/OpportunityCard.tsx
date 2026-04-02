@@ -868,24 +868,20 @@ export default function OpportunityCard() {
               if (item.status === 'opportunity' && itemPerSide < 1) return null;
               // realSpread는 슬리피지+수수료 이미 반영 → skipFees=true로 이중차감 방지
               const hasRealSpread = !!realSpread;
-              const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage, {
+              const executionProfit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage, {
                 skipFees: hasRealSpread,
                 feeOverrides: strategyConfig.feeOverrides,
                 paybackOverrides: strategyConfig.paybackOverrides,
               });
-              // 수수료 표시용: skipFees일 때도 실제 수수료 계산
-              const displayFeeProfit = hasRealSpread
-                ? estimateProfit(item.opp, itemPerSide, strategyConfig.leverage, {
-                    skipFees: false,
-                    feeOverrides: strategyConfig.feeOverrides,
-                    paybackOverrides: strategyConfig.paybackOverrides,
-                  })
-                : profit;
+              const displayFeeProfit = estimateProfit(item.opp, itemPerSide, strategyConfig.leverage, {
+                skipFees: false,
+                feeOverrides: strategyConfig.feeOverrides,
+                paybackOverrides: strategyConfig.paybackOverrides,
+              });
               const displayRawFees = displayFeeProfit.rawTotalFees;
               const displayTraderPayback = displayFeeProfit.traderFeePayback;
               const displayReferralPayback = displayFeeProfit.referralFeePayback;
-              // 마이너스 순수익: 활성 포지션만 항상 표시, 예약/후보는 숨김
-              if (profit.netPerFunding <= 0 && item.status !== 'active') return null;
+              if (executionProfit.netPerFunding <= 0 && item.status !== 'active') return null;
 
               visibleIdx++;
 
@@ -1005,8 +1001,8 @@ export default function OpportunityCard() {
 
                     {/* 펀딩수익 (gross) */}
                     <div className="opp-hide-mobile" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
-                      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: profit.perFunding >= 0 ? '#10b981' : '#ef4444' }}>
-                        {profit.perFunding >= 0 ? '+' : ''}${fmtNum(profit.perFunding)}
+                      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: displayFeeProfit.perFunding >= 0 ? '#10b981' : '#ef4444' }}>
+                        {displayFeeProfit.perFunding >= 0 ? '+' : ''}${fmtNum(displayFeeProfit.perFunding)}
                       </span>
                     </div>
 
@@ -1033,9 +1029,9 @@ export default function OpportunityCard() {
                     <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
                       <span className="mono" style={{
                         fontSize: 12, fontWeight: 700,
-                        color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444',
+                        color: displayFeeProfit.netPerFunding > 0 ? '#10b981' : '#ef4444',
                       }}>
-                        {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
+                        {displayFeeProfit.netPerFunding >= 0 ? '+' : ''}${fmtNum(displayFeeProfit.netPerFunding)}
                       </span>
                     </div>
 
@@ -1043,9 +1039,9 @@ export default function OpportunityCard() {
                     <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
                       <span className="mono" style={{
                         fontSize: 11, fontWeight: 700,
-                        color: profit.roiPerFunding >= 0 ? '#10b981' : '#ef4444',
+                        color: displayFeeProfit.roiPerFunding >= 0 ? '#10b981' : '#ef4444',
                       }}>
-                        {profit.roiPerFunding >= 0 ? '+' : ''}{fmtNum(profit.roiPerFunding, 3)}%
+                        {displayFeeProfit.roiPerFunding >= 0 ? '+' : ''}{fmtNum(displayFeeProfit.roiPerFunding, 3)}%
                       </span>
                     </div>
 
@@ -1069,7 +1065,7 @@ export default function OpportunityCard() {
                   {isExpanded && (
                     <CoinDetail
                       item={item}
-                      profit={profit}
+                      profit={displayFeeProfit}
                       compoundMode={compoundMode}
                       setCompoundMode={setCompoundMode}
                       simPositions={simPositions}
