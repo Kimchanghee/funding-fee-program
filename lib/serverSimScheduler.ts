@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
 import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs, getPairMaxSettlementWaitMs } from './exchangeProfiles';
+import { getEntryGapMetrics } from './entryGapGuard';
 import { resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
 import { appendTrades } from './fileLogger';
 import {
@@ -140,6 +141,20 @@ function buildStrategyLikeConfig(config: ServerSimSchedulerConfig): StrategyConf
     timingConfig: config.timingConfig,
     confirmedSnipeConfig: config.confirmedSnipeConfig,
   };
+}
+
+function mapSimEntryErrorToGuardReason(error?: string): string {
+  const normalized = (error ?? '').toLowerCase();
+  if (normalized.includes('slippage exceeded')) return 'slippage_exceeded';
+  if (normalized.includes('impact exceeded')) return 'impact_exceeded';
+  if (normalized.includes('entry gap')) return 'entry_gap_exceeded';
+  if (normalized.includes('insufficient sim balance')) return 'insufficient_balance';
+  if (normalized.includes('free margin low')) return 'free_margin_low';
+  if (normalized.includes('conservative ev failed')) return 'profitability_insufficient';
+  if (normalized.includes('orderbook')) return 'orderbook_unavailable';
+  if (normalized.includes('depth too shallow')) return 'depth_too_shallow';
+  if (normalized.includes('position already active')) return 'position_already_active';
+  return 'entry_failed';
 }
 
 function getOpportunityYieldScore(
@@ -853,7 +868,21 @@ class ServerSimScheduler {
 
       // 留덉?留?吏꾩엯 吏곸쟾???쒖꽭媛 ?ㅼ쭛?덈뒗 寃쎌슦瑜??鍮꾪빐 諛섎? 諛⑺뼢????踰????쒕룄?쒕떎.
       const flipped = flipOpportunityDirection(primaryOpportunity);
-      await this.executeOpportunity(flipped, entry.investmentUSDT, true);
+      const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true);
+      if (flippedResult.success) continue;
+
+      appendTrades([{
+        timestamp: Date.now(),
+        type: 'guard_block',
+        simulation: true,
+        baseAsset: primaryOpportunity.baseAsset,
+        shortExchange: primaryOpportunity.shortExchange,
+        longExchange: primaryOpportunity.longExchange,
+        spread: primaryOpportunity.spread,
+        spreadPercent: primaryOpportunity.spreadPercent,
+        reason: mapSimEntryErrorToGuardReason(primaryResult.error),
+        detail: `primary:${primaryResult.error ?? 'unknown'} | flipped:${flippedResult.error ?? 'unknown'}`,
+      }]);
     }
   }
 
@@ -1185,13 +1214,21 @@ class ServerSimScheduler {
           return { success: false, error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${MAX_SLIPPAGE_PCT}%` };
         }
       }
-      // Entry gap guard
-      const preEntryGapPct = Math.abs(((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100);
+      // Entry-gap drift guard: allow stable basis, block sudden divergence.
       const gapThreshold = snipeConfig.useImpactGuards
         ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 100
         : (this.config.maxSlippagePercent ?? 1.5);
-      if (preEntryGapPct > gapThreshold) {
-        return { success: false, error: `entry gap exceeded: ${preEntryGapPct.toFixed(4)}% > ${gapThreshold.toFixed(4)}%` };
+      const entryGap = getEntryGapMetrics({
+        shortPrice: shortFill.fillPrice,
+        longPrice: longFill.fillPrice,
+        baselineShortPrice: opportunity.shortMarkPrice,
+        baselineLongPrice: opportunity.longMarkPrice,
+      });
+      if (entryGap.driftPercent > gapThreshold) {
+        return {
+          success: false,
+          error: `entry gap drift exceeded: ${entryGap.driftPercent.toFixed(4)}% > ${gapThreshold.toFixed(4)}% (live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%)`,
+        };
       }
       // v2: hedge ratio pre-check
       if (snipeConfig.useStrictHedge) {
@@ -1211,7 +1248,13 @@ class ServerSimScheduler {
       return { success: false, error: `orderbook fetch failed — cannot validate slippage: ${(err as Error).message ?? err}` };
     }
     // Sign convention: (longFill - shortFill) / shortFill. Positive means worse entry.
-    const entryGapPercent = ((longFillPrice - shortFillPrice) / shortFillPrice) * 100;
+    const entryGap = getEntryGapMetrics({
+      shortPrice: shortFillPrice,
+      longPrice: longFillPrice,
+      baselineShortPrice: opportunity.shortMarkPrice,
+      baselineLongPrice: opportunity.longMarkPrice,
+    });
+    const entryGapPercent = entryGap.liveGapPercent;
 
     // SIM: warn (but don't block) when fee falls back to preset — for KPI accuracy tracking
     const shortFeeInfo = resolveRuntimeFeeDetailed(opportunity.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides);

@@ -22,6 +22,7 @@ import {
   pairUsesInstantaneousRate,
 } from './exchangeProfiles';
 import { appendTrades, type TradeEvent } from './fileLogger';
+import { getEntryGapMetrics } from './entryGapGuard';
 import { rebalanceExecutedHedge } from './hedgeRebalance';
 import { refreshAllFeeCaches, resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
 import { checkPairLiquidationDistance } from './liquidationGuard';
@@ -997,14 +998,19 @@ class ServerScheduler {
       }
 
       // ── Entry gap guard ──
-      const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
       const entryGapThreshold = snipeConfig.useImpactGuards
         ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 100
         : (this.config.maxSlippagePercent ?? 1.5);
-      if (Math.abs(entryGapPct) > entryGapThreshold) {
+      const entryGap = getEntryGapMetrics({
+        shortPrice: shortFill.fillPrice,
+        longPrice: longFill.fillPrice,
+        baselineShortPrice: opportunity.shortMarkPrice,
+        baselineLongPrice: opportunity.longMarkPrice,
+      });
+      if (entryGap.driftPercent > entryGapThreshold) {
         this.log(
           'warning',
-          `entry blocked by cross-exchange gap | asset=${asset} entryGap=${entryGapPct.toFixed(4)}% > ${entryGapThreshold.toFixed(4)}%`,
+          `entry blocked by gap drift | asset=${asset} drift=${entryGap.driftPercent.toFixed(4)}% (live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%) > ${entryGapThreshold.toFixed(4)}%`,
         );
         this.recordTrades([{
           timestamp: Date.now(),
@@ -1016,7 +1022,7 @@ class ServerScheduler {
           spread: opportunity.spread,
           spreadPercent: opportunity.spreadPercent,
           reason: 'entry_gap_exceeded',
-          detail: `entryGap:${entryGapPct.toFixed(6)}% threshold:${entryGapThreshold.toFixed(6)}%`,
+          detail: `entryGapDrift:${entryGap.driftPercent.toFixed(6)}% live:${entryGap.liveGapPercent.toFixed(6)}% base:${entryGap.baselineGapPercent.toFixed(6)}% threshold:${entryGapThreshold.toFixed(6)}%`,
         }]);
         return;
       }

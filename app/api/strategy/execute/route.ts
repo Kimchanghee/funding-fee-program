@@ -13,6 +13,7 @@ import {
   HEDGE_RATIO_MAX,
 } from '@/lib/types';
 import { pairUsesInstantaneousRate } from '@/lib/exchangeProfiles';
+import { getEntryGapMetrics } from '@/lib/entryGapGuard';
 import { calcConservativeEV, calcDriftBuffer } from '@/lib/opportunities';
 import { checkPairLiquidationDistance } from '@/lib/liquidationGuard';
 import {
@@ -329,24 +330,31 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2b. Cross-exchange entry gap guard
-    const entryGapPct = ((longFill.fillPrice - shortFill.fillPrice) / shortFill.fillPrice) * 100;
+    // 2b. Cross-exchange entry-gap drift guard
     // When impact guards are ON, entry gap is already covered by round-trip impact cap.
     // When OFF, use legacy slippage threshold.
     const entryGapThreshold = snipeConfig.useImpactGuards
       ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 100  // convert bps to %
       : (maxSlippagePercent ?? 1.5);
-    if (Math.abs(entryGapPct) > entryGapThreshold) {
+    const entryGap = getEntryGapMetrics({
+      shortPrice: shortFill.fillPrice,
+      longPrice: longFill.fillPrice,
+      baselineShortPrice: opportunity.shortMarkPrice,
+      baselineLongPrice: opportunity.longMarkPrice,
+    });
+    if (entryGap.driftPercent > entryGapThreshold) {
       console.log(
-        `[EXECUTE] ${opportunity.baseAsset} BLOCKED — 거래소 간 가격 괴리 초과: ` +
-        `entryGap=${entryGapPct.toFixed(4)}% > ${entryGapThreshold.toFixed(4)}% | ` +
-        `short(${opportunity.shortExchange})=${shortFill.fillPrice} long(${opportunity.longExchange})=${longFill.fillPrice}`,
+        `[EXECUTE] ${opportunity.baseAsset} BLOCKED — entry gap drift exceeded: ` +
+        `drift=${entryGap.driftPercent.toFixed(4)}% > ${entryGapThreshold.toFixed(4)}% | ` +
+        `live=${entryGap.liveGapPercent.toFixed(4)}% baseline=${entryGap.baselineGapPercent.toFixed(4)}%`,
       );
       return NextResponse.json({
         success: false,
-        error: `거래소 간 가격 괴리 초과: ${entryGapPct.toFixed(4)}% > ${entryGapThreshold.toFixed(4)}%`,
+        error: `Entry gap drift exceeded: ${entryGap.driftPercent.toFixed(4)}% > ${entryGapThreshold.toFixed(4)}%`,
         reason: 'entry_gap_exceeded',
-        entryGapPct,
+        entryGapPct: entryGap.liveGapPercent,
+        baselineGapPct: entryGap.baselineGapPercent,
+        entryGapDriftPct: entryGap.driftPercent,
         maxGap: entryGapThreshold,
       });
     }
@@ -592,3 +600,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
