@@ -1,5 +1,12 @@
 import type { FundingRate, ArbitrageOpportunity, ExchangeId, FeeOverrides, PaybackOverrides } from './types';
-import { getHedgeFeesWithOverrides, calcNetSpreadPercent, MIN_DRIFT_BUFFER_BPS, MIN_PROFIT_USD, MIN_EV_RATIO } from './types';
+import {
+  getHedgeFeeBreakdown,
+  getHedgeFeesWithOverrides,
+  calcNetSpreadPercent,
+  MIN_DRIFT_BUFFER_BPS,
+  MIN_PROFIT_USD,
+  MIN_EV_RATIO,
+} from './types';
 import { calcAnnualReturn, getMinutesToFunding } from './exchanges/utils';
 
 const FUNDING_ALIGNMENT_TOLERANCE_MS = 120_000;
@@ -298,6 +305,10 @@ export function findOpportunities(
 export interface ProfitEstimate {
   perFunding: number;
   netPerFunding: number;
+  rawTotalFees: number;
+  traderFeePayback: number;
+  referralFeePayback: number;
+  totalFeePayback: number;
   totalFees: number;
   totalCapital: number;
   actualPortfolio: number;
@@ -376,16 +387,24 @@ export function estimateProfit(
   const fundingsPerDay = 24 / intervalH;
 
   const grossPerFunding = notional * opportunity.spread;
-  const roundTripFeePct = skipFees
-    ? 0
-    : getHedgeFeesWithOverrides(
+  const hedgeFeeBreakdown = skipFees
+    ? null
+    : getHedgeFeeBreakdown(
       opportunity.shortExchange,
       opportunity.longExchange,
       'taker',
       feeOverrides,
       paybackOverrides,
-    ) * 100;
-  const feesPerCycle = notional * (roundTripFeePct / 100);
+    );
+  const rawRoundTripFeePct = (hedgeFeeBreakdown?.rawRoundTripRate ?? 0) * 100;
+  const traderPaybackPct = (hedgeFeeBreakdown?.traderPaybackRoundTripRate ?? 0) * 100;
+  const referralPaybackPct = (hedgeFeeBreakdown?.referralPaybackRoundTripRate ?? 0) * 100;
+  const roundTripFeePct = (hedgeFeeBreakdown?.effectiveRoundTripRate ?? 0) * 100;
+  const rawFeesPerCycle = notional * (rawRoundTripFeePct / 100);
+  const traderPaybackPerCycle = notional * (traderPaybackPct / 100);
+  const referralPaybackPerCycle = notional * (referralPaybackPct / 100);
+  const totalPaybackPerCycle = traderPaybackPerCycle + referralPaybackPerCycle;
+  const feesPerCycle = rawFeesPerCycle - totalPaybackPerCycle;
   const netPerFunding = skipFees
     ? grossPerFunding
     : notional * (calcNetSpreadPercent(opportunity.spreadPercent, 0, roundTripFeePct, 0) / 100);
@@ -440,6 +459,10 @@ export function estimateProfit(
   return {
     perFunding: grossPerFunding,
     netPerFunding,
+    rawTotalFees: rawFeesPerCycle,
+    traderFeePayback: traderPaybackPerCycle,
+    referralFeePayback: referralPaybackPerCycle,
+    totalFeePayback: totalPaybackPerCycle,
     totalFees: feesPerCycle,
     totalCapital,
     actualPortfolio: totalCapital,

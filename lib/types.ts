@@ -194,6 +194,24 @@ export interface ExchangePaybackRates {
 
 export type PaybackOverrides = Partial<Record<ExchangeId, ExchangePaybackRates>>;
 
+export interface ExchangeFeeBreakdown {
+  rawFeeRate: number;
+  traderPaybackRate: number;
+  referralPaybackRate: number;
+  totalPaybackRate: number;
+  effectiveFeeRate: number;
+}
+
+export interface HedgeFeeBreakdown {
+  short: ExchangeFeeBreakdown;
+  long: ExchangeFeeBreakdown;
+  rawRoundTripRate: number;
+  traderPaybackRoundTripRate: number;
+  referralPaybackRoundTripRate: number;
+  totalPaybackRoundTripRate: number;
+  effectiveRoundTripRate: number;
+}
+
 export interface TimingConfig {
   entryLeadMs: number;
   closeDelayMs: number;
@@ -397,6 +415,55 @@ export function getTotalPaybackRate(
   return clampTotalPaybackRate(rates.accountA + rates.accountB);
 }
 
+export function getExchangeFeeBreakdown(
+  exchange: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+  feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
+): ExchangeFeeBreakdown {
+  const rawFeeRate = getRawExchangeFee(exchange, orderType, feeOverrides);
+  const paybackRates = getEffectivePaybackRates(exchange, paybackOverrides);
+  const traderPaybackRate = rawFeeRate * paybackRates.accountA;
+  const referralPaybackRate = rawFeeRate * paybackRates.accountB;
+  const totalPaybackRate = traderPaybackRate + referralPaybackRate;
+  const effectiveFeeRate = Math.max(0, rawFeeRate - totalPaybackRate);
+
+  return {
+    rawFeeRate,
+    traderPaybackRate,
+    referralPaybackRate,
+    totalPaybackRate,
+    effectiveFeeRate,
+  };
+}
+
+export function getHedgeFeeBreakdown(
+  shortEx: ExchangeId,
+  longEx: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+  feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
+): HedgeFeeBreakdown {
+  const short = getExchangeFeeBreakdown(shortEx, orderType, feeOverrides, paybackOverrides);
+  const long = getExchangeFeeBreakdown(longEx, orderType, feeOverrides, paybackOverrides);
+
+  const rawRoundTripRate = (short.rawFeeRate + long.rawFeeRate) * 2;
+  const traderPaybackRoundTripRate = (short.traderPaybackRate + long.traderPaybackRate) * 2;
+  const referralPaybackRoundTripRate = (short.referralPaybackRate + long.referralPaybackRate) * 2;
+  const totalPaybackRoundTripRate = traderPaybackRoundTripRate + referralPaybackRoundTripRate;
+  const effectiveRoundTripRate = Math.max(0, rawRoundTripRate - totalPaybackRoundTripRate);
+
+  return {
+    short,
+    long,
+    rawRoundTripRate,
+    traderPaybackRoundTripRate,
+    referralPaybackRoundTripRate,
+    totalPaybackRoundTripRate,
+    effectiveRoundTripRate,
+  };
+}
+
 export function getRawExchangeFee(
   exchange: ExchangeId,
   orderType: 'taker' | 'maker' = 'taker',
@@ -431,9 +498,7 @@ export function getExchangeFee(
   feeOverrides?: FeeOverrides,
   paybackOverrides?: PaybackOverrides,
 ): number {
-  const rawFee = getRawExchangeFee(exchange, orderType, feeOverrides);
-  const paybackRate = getTotalPaybackRate(exchange, paybackOverrides);
-  return rawFee * (1 - paybackRate);
+  return getExchangeFeeBreakdown(exchange, orderType, feeOverrides, paybackOverrides).effectiveFeeRate;
 }
 
 /** Get effective fees considering user overrides */
@@ -456,9 +521,13 @@ export function getHedgeFeesWithOverrides(
   feeOverrides?: FeeOverrides,
   paybackOverrides?: PaybackOverrides,
 ): number {
-  const shortFee = getExchangeFee(shortEx, orderType, feeOverrides, paybackOverrides);
-  const longFee = getExchangeFee(longEx, orderType, feeOverrides, paybackOverrides);
-  return (shortFee + longFee) * 2;
+  return getHedgeFeeBreakdown(
+    shortEx,
+    longEx,
+    orderType,
+    feeOverrides,
+    paybackOverrides,
+  ).effectiveRoundTripRate;
 }
 
 /**
