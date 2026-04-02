@@ -130,9 +130,11 @@ export default function OpportunityCard() {
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' | 'error' } | null>(null);
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
   const [compoundMode, setCompoundMode] = useState(true);
+  const [manualActionKey, setManualActionKey] = useState<string | null>(null);
   const isProcessing = strategyRunning;
 
   const positions = useFundingStore(s => s.positions);
+  const executeStrategy = useFundingStore(s => s.executeStrategy);
   const isRunning = simulationMode ? simPositions.length > 0 : positions.length > 0;
 
   // Toast auto-dismiss
@@ -346,6 +348,25 @@ export default function OpportunityCard() {
 
   // ── Portfolio ──
 
+  const matchManagedPosition = useCallback(
+    (item: ManagedOpportunityItem, position: Position | SimPosition) => {
+      if (item.pairId && position.pairId) return item.pairId === position.pairId;
+      if (position.baseAsset !== item.asset) return false;
+      return position.exchange === item.opp.shortExchange || position.exchange === item.opp.longExchange;
+    },
+    [],
+  );
+
+  const getMatchedSimPositions = useCallback(
+    (item: ManagedOpportunityItem) => simPositions.filter((position) => matchManagedPosition(item, position)),
+    [matchManagedPosition, simPositions],
+  );
+
+  const getMatchedRealPositions = useCallback(
+    (item: ManagedOpportunityItem) => positions.filter((position) => matchManagedPosition(item, position)),
+    [matchManagedPosition, positions],
+  );
+
   const perExchangeInvestment = strategyConfig.investmentUSDT;
   const best = opportunities[0];
   const configuredRealExchangeCount = enabledExchanges.filter((exchange) => {
@@ -354,6 +375,86 @@ export default function OpportunityCard() {
   const canExecute = simulationMode
     ? true
     : configuredRealExchangeCount >= 2;
+
+  const handleManualEnter = useCallback(async (item: ManagedOpportunityItem) => {
+    if (isProcessing || manualActionKey) return;
+    if (!simulationMode && !canExecute) {
+      setToastMsg({ text: '[REAL] API 키가 설정된 거래소 2개 이상이 필요합니다.', type: 'error' });
+      return;
+    }
+
+    setManualActionKey(`enter:${item.id}`);
+    try {
+      const result = await executeStrategy(
+        item.opp,
+        simulationMode,
+        item.investmentUSDT ?? strategyConfig.investmentUSDT,
+      );
+      if (result?.success) {
+        setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} ${item.asset} 진입 성공`, type: 'success' });
+      } else {
+        const detail = result?.error || result?.reason || '사전 검증 실패';
+        setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} ${item.asset} 진입 실패: ${detail}`, type: 'error' });
+      }
+    } catch (error) {
+      setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} ${item.asset} 진입 오류: ${(error as Error).message}`, type: 'error' });
+    } finally {
+      setManualActionKey(null);
+    }
+  }, [
+    canExecute,
+    executeStrategy,
+    isProcessing,
+    manualActionKey,
+    simulationMode,
+    strategyConfig.investmentUSDT,
+  ]);
+
+  const handleManualExit = useCallback(async (item: ManagedOpportunityItem) => {
+    if (isProcessing || manualActionKey) return;
+
+    setManualActionKey(`exit:${item.id}`);
+    try {
+      if (simulationMode) {
+        const targets = getMatchedSimPositions(item);
+        if (targets.length === 0) {
+          setToastMsg({ text: `[SIM] ${item.asset} 청산 대상 포지션이 없습니다.`, type: 'error' });
+          return;
+        }
+        const results = await Promise.allSettled(targets.map((position) => closeSimPosition(position.simId)));
+        const failed = results.filter((result) => result.status === 'rejected').length;
+        if (failed > 0) {
+          setToastMsg({ text: `[SIM] ${item.asset} 청산 부분 실패 (${targets.length - failed}/${targets.length})`, type: 'error' });
+        } else {
+          setToastMsg({ text: `[SIM] ${item.asset} 청산 완료`, type: 'success' });
+        }
+        return;
+      }
+
+      const targets = getMatchedRealPositions(item);
+      if (targets.length === 0) {
+        setToastMsg({ text: `[REAL] ${item.asset} 청산 대상 포지션이 없습니다.`, type: 'error' });
+        return;
+      }
+      const results = await Promise.allSettled(targets.map((position) => closeRealPosition(position)));
+      const failed = results.filter((result) => result.status === 'rejected').length;
+      if (failed > 0) {
+        setToastMsg({ text: `[REAL] ${item.asset} 청산 부분 실패 (${targets.length - failed}/${targets.length})`, type: 'error' });
+      } else {
+        setToastMsg({ text: `[REAL] ${item.asset} 청산 완료`, type: 'success' });
+      }
+    } finally {
+      setManualActionKey(null);
+    }
+  }, [
+    closeRealPosition,
+    closeSimPosition,
+    getMatchedRealPositions,
+    getMatchedSimPositions,
+    isProcessing,
+    manualActionKey,
+    simulationMode,
+  ]);
 
   // ── Build scheduled list: snipe targets + active positions mapped to opportunities ──
   // ★ realSpreads 포함: 거래소 간 가격 괴리가 큰 항목은 memo 단계에서 즉시 제거
@@ -388,6 +489,7 @@ export default function OpportunityCard() {
       snipeAllocations,
       snipeTargets,
       strategyConfig.investmentUSDT,
+      strategyConfig.leverage,
       realSpreads,
     ],
   );
@@ -945,6 +1047,12 @@ export default function OpportunityCard() {
                       compoundMode={compoundMode}
                       setCompoundMode={setCompoundMode}
                       simPositions={simPositions}
+                      realPositions={positions}
+                      simulationMode={simulationMode}
+                      canExecute={canExecute}
+                      isActionRunning={manualActionKey === `enter:${item.id}` || manualActionKey === `exit:${item.id}` || isProcessing}
+                      onManualEnter={handleManualEnter}
+                      onManualExit={handleManualExit}
                       realSpread={realSpread}
                     />
                   )}
@@ -1221,12 +1329,18 @@ function StatPill({ label, value, color, active }: { label: string; value: strin
 }
 
 /* ─── Expanded Coin Detail ─── */
-function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions, realSpread }: {
+function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions, realPositions, simulationMode, canExecute, isActionRunning, onManualEnter, onManualExit, realSpread }: {
   item: ManagedOpportunityItem;
   profit: ReturnType<typeof estimateProfit>;
   compoundMode: boolean;
   setCompoundMode: (v: boolean) => void;
   simPositions?: SimPosition[];
+  realPositions?: Position[];
+  simulationMode: boolean;
+  canExecute: boolean;
+  isActionRunning: boolean;
+  onManualEnter: (item: ManagedOpportunityItem) => Promise<void>;
+  onManualExit: (item: ManagedOpportunityItem) => Promise<void>;
   realSpread?: { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number } | null;
 }) {
   const opp = item.opp;
@@ -1235,9 +1349,17 @@ function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions,
     return position.baseAsset === item.asset
       && (position.exchange === opp.shortExchange || position.exchange === opp.longExchange);
   }) ?? [];
+  const activeRealPos = realPositions?.filter((position) => {
+    if (item.pairId && position.pairId) return position.pairId === item.pairId;
+    return position.baseAsset === item.asset
+      && (position.exchange === opp.shortExchange || position.exchange === opp.longExchange);
+  }) ?? [];
+  const activePositions = simulationMode ? activeSimPos : activeRealPos;
   const simShort = activeSimPos.find(p => p.side === 'short');
   const simLong = activeSimPos.find(p => p.side === 'long');
   const entryGap = simShort?.entryGapPercent ?? simLong?.entryGapPercent;
+  const canManualEnter = item.status !== 'active' && profit.netPerFunding > 0 && (simulationMode || canExecute);
+  const canManualExit = item.status === 'active' && activePositions.length > 0;
 
   return (
     <div style={{
@@ -1349,6 +1471,46 @@ function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions,
             </div>
           );
         })}
+      </div>
+
+      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          className="btn btn-success"
+          style={{
+            padding: '6px 12px',
+            fontSize: 11,
+            borderRadius: 8,
+            opacity: canManualEnter && !isActionRunning ? 1 : 0.55,
+            cursor: canManualEnter && !isActionRunning ? 'pointer' : 'not-allowed',
+          }}
+          disabled={!canManualEnter || isActionRunning}
+          onClick={() => { void onManualEnter(item); }}
+        >
+          {isActionRunning && item.status !== 'active'
+            ? '진입 처리 중...'
+            : `${simulationMode ? '[SIM]' : '[REAL]'} 포지션 진입`}
+        </button>
+        <button
+          className="btn btn-danger"
+          style={{
+            padding: '6px 12px',
+            fontSize: 11,
+            borderRadius: 8,
+            opacity: canManualExit && !isActionRunning ? 1 : 0.55,
+            cursor: canManualExit && !isActionRunning ? 'pointer' : 'not-allowed',
+          }}
+          disabled={!canManualExit || isActionRunning}
+          onClick={() => { void onManualExit(item); }}
+        >
+          {isActionRunning && item.status === 'active'
+            ? '청산 처리 중...'
+            : `${simulationMode ? '[SIM]' : '[REAL]'} 포지션 종료`}
+        </button>
+        {!simulationMode && !canExecute && (
+          <span style={{ fontSize: 10, color: '#f59e0b', display: 'flex', alignItems: 'center' }}>
+            REAL 진입은 API 키가 설정된 거래소 2개 이상 필요
+          </span>
+        )}
       </div>
 
       {/* Fee info */}
