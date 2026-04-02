@@ -228,12 +228,18 @@ export async function fetchFundingRates(
   config?: ApiConfig,
   symbols?: string[],
 ): Promise<FundingRate[]> {
-  try {
-    const wsRates = await fetchFundingRatesViaWs(id, symbols);
-    if (wsRates.length > 0) return wsRates;
-  } catch (wsErr) {
-    // WS-first path: keep REST fallback for exchanges/channels that do not expose funding over WS.
-    warnWsFallback(`funding:${id}`, `[WS] ${id} funding fallback to REST: ${(wsErr as Error).message}`);
+  // Full-market scans (symbols undefined) should prefer REST bulk to avoid
+  // being constrained by WS tracked symbol subsets.
+  const hasExplicitSymbols = Array.isArray(symbols) && symbols.length > 0;
+
+  if (hasExplicitSymbols) {
+    try {
+      const wsRates = await fetchFundingRatesViaWs(id, symbols);
+      if (wsRates.length > 0) return wsRates;
+    } catch (wsErr) {
+      // Symbol-targeted mode: keep REST fallback when WS channel is unavailable.
+      warnWsFallback(`funding:${id}`, `[WS] ${id} funding fallback to REST: ${(wsErr as Error).message}`);
+    }
   }
 
   let ex = makeExchange(id, config);
@@ -301,6 +307,16 @@ export async function fetchFundingRates(
     }
 
     if (results.length === 0) {
+      // Last fallback for full-scan mode: allow WS tracked subset instead of empty response.
+      if (!hasExplicitSymbols) {
+        try {
+          const wsRates = await fetchFundingRatesViaWs(id, symbols);
+          if (wsRates.length > 0) return wsRates;
+        } catch (wsErr) {
+          warnWsFallback(`funding:${id}`, `[WS] ${id} final fallback failed: ${(wsErr as Error).message}`);
+        }
+      }
+
       evictExchangeCache(id, config);
       throw new Error(`[${id}] all fetch methods failed`);
     }
