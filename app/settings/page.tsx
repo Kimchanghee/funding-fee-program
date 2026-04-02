@@ -9,19 +9,23 @@ import {
   EXCHANGE_COLORS,
   SUPPORTED_EXCHANGES,
   EXCHANGE_FEES,
+  EXCHANGE_PAYBACKS,
   DEFAULT_TIMING_CONFIG,
   EXCHANGE_FEE_PRESET_LABEL,
   EXCHANGE_FEE_PRESET_NOTE,
+  EXCHANGE_PAYBACK_PRESET_LABEL,
+  EXCHANGE_PAYBACK_PRESET_NOTE,
 } from '@/lib/types';
 import StatusDot from '@/components/ui/StatusDot';
 import Header from '@/components/dashboard/Header';
 import ApiPanel from '@/components/dashboard/ApiPanel';
 
 /** 수수료 입력 — onBlur/Enter 시에만 커밋, 입력 중에는 로컬 state 사용 */
-function FeeInput({ label, defaultPct, currentPct, onCommit }: {
+function FeeInput({ label, defaultPct, currentPct, maxPct = 10, onCommit }: {
   label: string;
   defaultPct: number;
   currentPct: number | null; // null = 기본값 사용 중
+  maxPct?: number;
   onCommit: (pct: number | null) => void;
 }) {
   const [localVal, setLocalVal] = useState(currentPct !== null ? String(currentPct) : '');
@@ -41,13 +45,13 @@ function FeeInput({ label, defaultPct, currentPct, onCommit }: {
       return;
     }
     const num = parseFloat(trimmed);
-    if (!Number.isFinite(num) || num < 0 || num > 10) {
+    if (!Number.isFinite(num) || num < 0 || num > maxPct) {
       // 유효하지 않으면 원래 값으로 복원
       setLocalVal(currentPct !== null ? String(currentPct) : '');
       return;
     }
     onCommit(num);
-  }, [localVal, currentPct, onCommit]);
+  }, [localVal, currentPct, maxPct, onCommit]);
 
   return (
     <div>
@@ -409,6 +413,97 @@ export default function SettingsPage() {
                             currentOverrides[ex] = { ...cur, maker: pct / 100 };
                           }
                           setStrategyConfig({ feeOverrides: Object.keys(currentOverrides).length > 0 ? currentOverrides : undefined });
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Payback Overrides */}
+          <div className="glass-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              거래소별 2계정 페이백 설정
+              <span style={{ fontSize: 10, fontWeight: 800, color: '#22d3ee', border: '1px solid rgba(34,211,238,0.35)', background: 'rgba(34,211,238,0.12)', borderRadius: 999, padding: '2px 8px' }}>{EXCHANGE_PAYBACK_PRESET_LABEL}</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 16 }}>
+              {EXCHANGE_PAYBACK_PRESET_NOTE} Leave blank to use preset, or enter custom payback % for each account.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+              {SUPPORTED_EXCHANGES.map(ex => {
+                const defaults = EXCHANGE_PAYBACKS[ex];
+                const override = strategyConfig.paybackOverrides?.[ex];
+                const color = EXCHANGE_COLORS[ex];
+                const accountA = override?.accountA ?? defaults.accountA;
+                const accountB = override?.accountB ?? defaults.accountB;
+                const totalPct = (accountA + accountB) * 100;
+                return (
+                  <div key={`payback-${ex}`} style={{
+                    padding: '12px 14px',
+                    borderRadius: 8,
+                    background: override ? `${color}0a` : 'var(--bg-accent)',
+                    border: `1px solid ${override ? `${color}33` : 'var(--color-border)'}`,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color }}>
+                        {EXCHANGE_NAMES[ex]}
+                        {override && <span style={{ fontSize: 10, marginLeft: 6, color: '#22d3ee' }}>커스텀</span>}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#22d3ee', fontWeight: 700 }}>
+                        총 {totalPct.toFixed(1)}%
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <FeeInput
+                        label="계정A 페이백"
+                        defaultPct={defaults.accountA * 100}
+                        currentPct={override ? override.accountA * 100 : null}
+                        maxPct={95}
+                        onCommit={(pct) => {
+                          const currentOverrides = { ...(strategyConfig.paybackOverrides ?? {}) };
+                          if (pct === null) {
+                            const cur = currentOverrides[ex];
+                            if (cur) {
+                              currentOverrides[ex] = { ...cur, accountA: defaults.accountA };
+                              if (cur.accountB === defaults.accountB) delete currentOverrides[ex];
+                            }
+                          } else {
+                            const cur = currentOverrides[ex] ?? { ...defaults };
+                            const nextA = Math.min(pct / 100, Math.max(0, 0.95 - cur.accountB));
+                            currentOverrides[ex] = { ...cur, accountA: nextA };
+                          }
+                          setStrategyConfig({
+                            paybackOverrides: Object.keys(currentOverrides).length > 0
+                              ? currentOverrides
+                              : undefined,
+                          });
+                        }}
+                      />
+                      <FeeInput
+                        label="계정B 페이백"
+                        defaultPct={defaults.accountB * 100}
+                        currentPct={override ? override.accountB * 100 : null}
+                        maxPct={95}
+                        onCommit={(pct) => {
+                          const currentOverrides = { ...(strategyConfig.paybackOverrides ?? {}) };
+                          if (pct === null) {
+                            const cur = currentOverrides[ex];
+                            if (cur) {
+                              currentOverrides[ex] = { ...cur, accountB: defaults.accountB };
+                              if (cur.accountA === defaults.accountA) delete currentOverrides[ex];
+                            }
+                          } else {
+                            const cur = currentOverrides[ex] ?? { ...defaults };
+                            const nextB = Math.min(pct / 100, Math.max(0, 0.95 - cur.accountA));
+                            currentOverrides[ex] = { ...cur, accountB: nextB };
+                          }
+                          setStrategyConfig({
+                            paybackOverrides: Object.keys(currentOverrides).length > 0
+                              ? currentOverrides
+                              : undefined,
+                          });
                         }}
                       />
                     </div>

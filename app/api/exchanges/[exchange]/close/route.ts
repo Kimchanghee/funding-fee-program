@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { ExchangeId, FeeOverrides } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, sanitizeFeeOverrides } from '@/lib/types';
+import type { ExchangeId, FeeOverrides, PaybackOverrides } from '@/lib/types';
+import {
+  SUPPORTED_EXCHANGES,
+  hasValidFeeOverrides,
+  hasValidPaybackOverrides,
+  sanitizeFeeOverrides,
+  sanitizePaybackOverrides,
+} from '@/lib/types';
 import { closePosition } from '@/lib/exchanges';
 import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
 import { makeServerPositionKey, removeServerPositionMeta } from '@/lib/serverPositionMeta';
+import { hasRequiredApiCredentials } from '@/lib/apiCredentials';
 
 export async function POST(
   req: NextRequest,
@@ -17,7 +24,7 @@ export async function POST(
   const id = exchange as ExchangeId;
   const config = getApiConfigFromRequest(req, id);
 
-  if (!config.apiKey || !config.secret) {
+  if (!hasRequiredApiCredentials(id, config)) {
     return NextResponse.json({ success: false, error: 'API credentials required' }, { status: 401 });
   }
 
@@ -27,6 +34,7 @@ export async function POST(
       side: 'long' | 'short';
       amount: number;
       feeOverrides?: FeeOverrides;
+      paybackOverrides?: PaybackOverrides;
     };
 
     // Runtime validation
@@ -42,6 +50,9 @@ export async function POST(
     if (!hasValidFeeOverrides(body.feeOverrides)) {
       return NextResponse.json({ success: false, error: 'Invalid feeOverrides' }, { status: 400 });
     }
+    if (!hasValidPaybackOverrides(body.paybackOverrides)) {
+      return NextResponse.json({ success: false, error: 'Invalid paybackOverrides' }, { status: 400 });
+    }
 
     const result = await closePosition(
       id,
@@ -50,6 +61,7 @@ export async function POST(
       body.side,
       body.amount,
       sanitizeFeeOverrides(body.feeOverrides),
+      sanitizePaybackOverrides(body.paybackOverrides),
     );
     removeServerPositionMeta([makeServerPositionKey(id, body.symbol, body.side)]);
     return NextResponse.json({ success: true, data: result });

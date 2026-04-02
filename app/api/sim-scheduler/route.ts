@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSimScheduler, type ServerSimSchedulerConfig } from '@/lib/serverSimScheduler';
-import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, hasValidTimingConfig, type ExchangeId } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, hasValidPaybackOverrides, hasValidTimingConfig, type ExchangeId } from '@/lib/types';
 
 function validateConfig(config: ServerSimSchedulerConfig) {
   if (typeof config.investmentUSDT !== 'number' || config.investmentUSDT <= 0) {
@@ -25,6 +25,9 @@ function validateConfig(config: ServerSimSchedulerConfig) {
   }
   if (!hasValidFeeOverrides(config.feeOverrides)) {
     return 'Invalid feeOverrides';
+  }
+  if (!hasValidPaybackOverrides(config.paybackOverrides)) {
+    return 'Invalid paybackOverrides';
   }
   if (!hasValidTimingConfig(config.timingConfig)) {
     return 'Invalid timingConfig';

@@ -52,11 +52,12 @@ export default function ReturnProjectionPanel() {
         const profit = estimateProfit(effectiveOpp, investmentUSDT, strategyConfig.leverage, {
           skipFees: !!hasRS,
           feeOverrides: strategyConfig.feeOverrides,
+          paybackOverrides: strategyConfig.paybackOverrides,
         });
         return { ...item, investmentUSDT, intervalH, netPerFunding: profit.netPerFunding };
       })
       .filter((item) => item.netPerFunding > 0);
-  }, [opportunities, positions, realSpreads, simulationMode, simPositions, snipeAllocations, snipeTargets, strategyConfig.feeOverrides, strategyConfig.investmentUSDT, strategyConfig.leverage]);
+  }, [opportunities, positions, realSpreads, simulationMode, simPositions, snipeAllocations, snipeTargets, strategyConfig.feeOverrides, strategyConfig.paybackOverrides, strategyConfig.investmentUSDT, strategyConfig.leverage]);
   useMemo(() => {
     const modePrefix = simulationMode ? 'sim' : 'real';
     const activePositions = simulationMode ? simPositions : positions;
@@ -83,11 +84,12 @@ export default function ReturnProjectionPanel() {
       const profit = estimateProfit(effectiveOpp, strategyConfig.investmentUSDT, strategyConfig.leverage, {
         skipFees: !!hasRS,
         feeOverrides: strategyConfig.feeOverrides,
+        paybackOverrides: strategyConfig.paybackOverrides,
       });
       if (profit.netPerFunding > 0) result.push({ opp, intervalH, netPerFunding: profit.netPerFunding });
     }
     return result;
-  }, [opportunities, snipeTargets, simPositions, positions, simulationMode, realSpreads, strategyConfig.feeOverrides, strategyConfig.investmentUSDT, strategyConfig.leverage]);
+  }, [opportunities, snipeTargets, simPositions, positions, simulationMode, realSpreads, strategyConfig.feeOverrides, strategyConfig.paybackOverrides, strategyConfig.investmentUSDT, strategyConfig.leverage]);
 
   // 예약된 쌍이 있으면 합산 기준, 없으면 best 1개 기준
   const activePairs = scheduledOpps.length > 0 ? scheduledOpps : (() => {
@@ -103,6 +105,7 @@ export default function ReturnProjectionPanel() {
     const profit = estimateProfit(effectiveBest, investmentUSDT, strategyConfig.leverage, {
       skipFees: !!hasRS,
       feeOverrides: strategyConfig.feeOverrides,
+      paybackOverrides: strategyConfig.paybackOverrides,
     });
     return [{ id: best.id, asset: best.baseAsset, opp: best, intervalH, netPerFunding: profit.netPerFunding, investmentUSDT }];
   })();

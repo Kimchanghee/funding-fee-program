@@ -4,7 +4,15 @@
  *   runtimeFees → feeOverrides → EXCHANGE_FEES preset
  */
 import { fetchAccountFees } from './exchanges';
-import { getExchangeFee, type ApiConfig, type ExchangeId, type FeeOverrides } from './types';
+import {
+  getExchangeFee,
+  getRawExchangeFee,
+  getTotalPaybackRate,
+  type ApiConfig,
+  type ExchangeId,
+  type FeeOverrides,
+  type PaybackOverrides,
+} from './types';
 
 interface CachedFee {
   maker: number;
@@ -62,13 +70,15 @@ export async function refreshAllFeeCaches(
 export function resolveRuntimeFee(
   exchange: ExchangeId,
   orderType: 'maker' | 'taker',
-  overrides?: FeeOverrides,
+  feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
 ): number {
   const cached = runtimeFees.get(exchange);
   if (cached && Date.now() - cached.fetchedAt < FEE_CACHE_TTL_MS) {
-    return cached[orderType];
+    const paybackRate = getTotalPaybackRate(exchange, paybackOverrides);
+    return cached[orderType] * (1 - paybackRate);
   }
-  return getExchangeFee(exchange, orderType, overrides);
+  return getExchangeFee(exchange, orderType, feeOverrides, paybackOverrides);
 }
 
 export type FeeSource = 'runtime' | 'override' | 'preset';
@@ -79,17 +89,27 @@ export type FeeSource = 'runtime' | 'override' | 'preset';
 export function resolveRuntimeFeeDetailed(
   exchange: ExchangeId,
   orderType: 'maker' | 'taker',
-  overrides?: FeeOverrides,
+  feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
 ): { fee: number; source: FeeSource; fresh: boolean } {
   const cached = runtimeFees.get(exchange);
   if (cached && Date.now() - cached.fetchedAt < FEE_CACHE_TTL_MS) {
-    return { fee: cached[orderType], source: 'runtime', fresh: true };
+    const paybackRate = getTotalPaybackRate(exchange, paybackOverrides);
+    return { fee: cached[orderType] * (1 - paybackRate), source: 'runtime', fresh: true };
   }
-  const overrideFees = overrides?.[exchange];
+  const overrideFees = feeOverrides?.[exchange];
   if (overrideFees && typeof overrideFees[orderType] === 'number') {
-    return { fee: overrideFees[orderType], source: 'override', fresh: false };
+    return {
+      fee: getExchangeFee(exchange, orderType, feeOverrides, paybackOverrides),
+      source: 'override',
+      fresh: false,
+    };
   }
-  return { fee: getExchangeFee(exchange, orderType, overrides), source: 'preset', fresh: false };
+  return {
+    fee: getRawExchangeFee(exchange, orderType, feeOverrides) * (1 - getTotalPaybackRate(exchange, paybackOverrides)),
+    source: 'preset',
+    fresh: false,
+  };
 }
 
 /**

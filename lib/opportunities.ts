@@ -1,4 +1,4 @@
-import type { FundingRate, ArbitrageOpportunity, ExchangeId, FeeOverrides } from './types';
+import type { FundingRate, ArbitrageOpportunity, ExchangeId, FeeOverrides, PaybackOverrides } from './types';
 import { getHedgeFeesWithOverrides, calcNetSpreadPercent, MIN_DRIFT_BUFFER_BPS, MIN_PROFIT_USD, MIN_EV_RATIO } from './types';
 import { calcAnnualReturn, getMinutesToFunding } from './exchanges/utils';
 
@@ -190,6 +190,7 @@ export function findOpportunities(
   investmentUSDT = 1000,
   leverage = 5,
   feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
   minVolume24hUSD?: number,
 ): ArbitrageOpportunity[] {
   // 볼륨 필터는 비동기 fetchTickers 타이밍 이슈로 여기서 적용하지 않음
@@ -235,6 +236,7 @@ export function findOpportunities(
           longCandidate.exchange,
           'taker',
           feeOverrides,
+          paybackOverrides,
         ) * 100;
         // ★ 통합 계산식: 수수료 + 안전마진(1.5bps) 반영 (entryGap은 탐색 단계에서 0)
         const netSpreadPct = calcNetSpreadPercent(spread * 100, 0, roundTripFeePct);
@@ -349,6 +351,7 @@ export interface ProfitEstimate {
 export interface EstimateProfitOptions {
   skipFees?: boolean;
   feeOverrides?: FeeOverrides;
+  paybackOverrides?: PaybackOverrides;
 }
 
 /**
@@ -360,9 +363,13 @@ export function estimateProfit(
   leverage: number,
   options: boolean | EstimateProfitOptions = false,
 ): ProfitEstimate {
-  const { skipFees, feeOverrides } = typeof options === 'boolean'
-    ? { skipFees: options, feeOverrides: undefined }
-    : { skipFees: options.skipFees ?? false, feeOverrides: options.feeOverrides };
+  const { skipFees, feeOverrides, paybackOverrides } = typeof options === 'boolean'
+    ? { skipFees: options, feeOverrides: undefined, paybackOverrides: undefined }
+    : {
+      skipFees: options.skipFees ?? false,
+      feeOverrides: options.feeOverrides,
+      paybackOverrides: options.paybackOverrides,
+    };
   const totalCapital = investmentUSDT * 2;
   const notional = investmentUSDT * leverage;
   const intervalH = getOpportunityIntervalHours(opportunity);
@@ -376,6 +383,7 @@ export function estimateProfit(
       opportunity.longExchange,
       'taker',
       feeOverrides,
+      paybackOverrides,
     ) * 100;
   const feesPerCycle = notional * (roundTripFeePct / 100);
   const netPerFunding = skipFees

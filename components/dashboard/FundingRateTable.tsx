@@ -170,6 +170,7 @@ export default function FundingRateTable() {
               paged.map((opp, i) => {
                 const profit = estimateProfit(opp, strategyConfig.investmentUSDT, strategyConfig.leverage, {
                   feeOverrides: strategyConfig.feeOverrides,
+                  paybackOverrides: strategyConfig.paybackOverrides,
                 });
                 const rank = page * PAGE_SIZE + i + 1;
                 const isTop = rank <= 3;

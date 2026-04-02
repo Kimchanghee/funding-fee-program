@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Zap, Crosshair, Check, Clock, TrendingDown, TrendingUp, ChevronDown, ChevronUp, Settings } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportunity, type Position, type SimPosition, type FeeOverrides } from '@/lib/types';
+import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type ArbitrageOpportunity, type Position, type SimPosition, type FeeOverrides, type PaybackOverrides } from '@/lib/types';
 import { estimateProfit } from '@/lib/opportunities';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { buildManagedOpportunityItems, type ManagedOpportunityItem } from '@/lib/managedOpportunities';
@@ -260,6 +260,7 @@ export default function OpportunityCard() {
                 enabledExchanges: realEnabledExchanges,
                 maxConcurrentPairs: 5,
                 feeOverrides: state.strategyConfig.feeOverrides,
+                paybackOverrides: state.strategyConfig.paybackOverrides,
                 timingConfig: state.strategyConfig.timingConfig,
                 maxSlippagePercent: state.strategyConfig.maxSlippagePercent,
                 minVolume24hUSD: state.strategyConfig.minVolume24hUSD,
@@ -295,6 +296,7 @@ export default function OpportunityCard() {
                 compoundInvesting: state.strategyConfig.compoundInvesting,
                 enabledExchanges: state.enabledExchanges,
                 feeOverrides: state.strategyConfig.feeOverrides,
+                paybackOverrides: state.strategyConfig.paybackOverrides,
                 timingConfig: state.strategyConfig.timingConfig,
                 maxSlippagePercent: state.strategyConfig.maxSlippagePercent,
                 minVolume24hUSD: state.strategyConfig.minVolume24hUSD,
@@ -756,12 +758,14 @@ export default function OpportunityCard() {
               const profit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage, {
                 skipFees: hasRealSpread,
                 feeOverrides: strategyConfig.feeOverrides,
+                paybackOverrides: strategyConfig.paybackOverrides,
               });
               // 수수료 표시용: skipFees일 때도 실제 수수료 계산
               const displayFees = hasRealSpread
                 ? estimateProfit(item.opp, itemPerSide, strategyConfig.leverage, {
                     skipFees: false,
                     feeOverrides: strategyConfig.feeOverrides,
+                    paybackOverrides: strategyConfig.paybackOverrides,
                   }).totalFees
                 : profit.totalFees;
               // 마이너스 순수익: 활성 포지션만 항상 표시, 예약/후보는 숨김
@@ -987,6 +991,7 @@ export default function OpportunityCard() {
             investmentUSDT={perExchangeInvestment}
             leverage={strategyConfig.leverage}
             feeOverrides={strategyConfig.feeOverrides}
+            paybackOverrides={strategyConfig.paybackOverrides}
             compoundMode={compoundMode}
             setCompoundMode={setCompoundMode}
             realSpreads={realSpreads}
@@ -998,13 +1003,14 @@ export default function OpportunityCard() {
 }
 
 /* ─── Portfolio Profit Summary Row ─── */
-function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, feeOverrides, compoundMode, setCompoundMode, realSpreads }: {
+function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, feeOverrides, paybackOverrides, compoundMode, setCompoundMode, realSpreads }: {
   label: string;
   labelColor: string;
   coins: ManagedOpportunityItem[];
   investmentUSDT: number;
   leverage: number;
   feeOverrides?: FeeOverrides;
+  paybackOverrides?: PaybackOverrides;
   compoundMode: boolean;
   setCompoundMode: (v: boolean) => void;
   realSpreads?: Record<string, { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number }>;
@@ -1043,8 +1049,9 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
         ? estimateProfit({ ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }, perSideInvestment, leverage, {
           skipFees: true,
           feeOverrides,
+          paybackOverrides,
         })
-        : estimateProfit(opp, perSideInvestment, leverage, { feeOverrides });
+        : estimateProfit(opp, perSideInvestment, leverage, { feeOverrides, paybackOverrides });
       // 마이너스 수익 항목은 합산에서 제외
       if (profit.netPerFunding <= 0) continue;
       perDay += profit.perDay; per2Day += profit.per2Day; per3Day += profit.per3Day;
@@ -1058,7 +1065,7 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
     }
     return { perDay, per2Day, per3Day, per4Day, per5Day, per6Day, perWeek, per2Week, per3Week, perMonth, per3Month, per6Month,
              cDay, c2Day, c3Day, c4Day, c5Day, c6Day, cWeek, c2Week, c3Week, cMonth, c3Month, c6Month };
-  }, [activeCoins, feeOverrides, investmentUSDT, leverage, realSpreads]);
+  }, [activeCoins, feeOverrides, paybackOverrides, investmentUSDT, leverage, realSpreads]);
 
   if (activeCoins.length === 0) return null;
 

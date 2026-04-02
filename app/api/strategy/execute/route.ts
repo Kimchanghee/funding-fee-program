@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides, ConfirmedSnipeConfig } from '@/lib/types';
+import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides, PaybackOverrides, ConfirmedSnipeConfig } from '@/lib/types';
 import {
   SUPPORTED_EXCHANGES,
   hasValidFeeOverrides,
+  hasValidPaybackOverrides,
   sanitizeFeeOverrides,
+  sanitizePaybackOverrides,
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_ROUND_TRIP_IMPACT_BPS,
   MIN_FREE_MARGIN_PCT,
@@ -79,13 +81,15 @@ export async function POST(req: NextRequest) {
       apiConfigs?: Partial<Record<ExchangeId, ApiConfig>>;
       pairId?: string;
       feeOverrides?: FeeOverrides;
+      paybackOverrides?: PaybackOverrides;
       maxSlippagePercent?: number;
       confirmedSnipeConfig?: ConfirmedSnipeConfig;
     };
 
-    const { opportunity, investmentUSDT, leverage, apiConfigs, feeOverrides, maxSlippagePercent } = body;
+    const { opportunity, investmentUSDT, leverage, apiConfigs, feeOverrides, paybackOverrides, maxSlippagePercent } = body;
     const snipeConfig = body.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     const normalizedFeeOverrides = sanitizeFeeOverrides(feeOverrides);
+    const normalizedPaybackOverrides = sanitizePaybackOverrides(paybackOverrides);
     let shortRateForDecision = opportunity?.shortRate ?? 0;
     let longRateForDecision = opportunity?.longRate ?? 0;
     const pairId = typeof body.pairId === 'string' && body.pairId.trim()
@@ -107,6 +111,9 @@ export async function POST(req: NextRequest) {
     }
     if (!hasValidFeeOverrides(feeOverrides)) {
       return NextResponse.json({ success: false, error: 'Invalid feeOverrides' }, { status: 400 });
+    }
+    if (!hasValidPaybackOverrides(paybackOverrides)) {
+      return NextResponse.json({ success: false, error: 'Invalid paybackOverrides' }, { status: 400 });
     }
     if (
       maxSlippagePercent !== undefined
@@ -140,8 +147,18 @@ export async function POST(req: NextRequest) {
       refreshFeeCache(opportunity.shortExchange, shortConfig, opportunity.shortSymbol),
       refreshFeeCache(opportunity.longExchange, longConfig, opportunity.longSymbol),
     ]);
-    const shortFeeInfo = resolveRuntimeFeeDetailed(opportunity.shortExchange, 'taker', normalizedFeeOverrides);
-    const longFeeInfo = resolveRuntimeFeeDetailed(opportunity.longExchange, 'taker', normalizedFeeOverrides);
+    const shortFeeInfo = resolveRuntimeFeeDetailed(
+      opportunity.shortExchange,
+      'taker',
+      normalizedFeeOverrides,
+      normalizedPaybackOverrides,
+    );
+    const longFeeInfo = resolveRuntimeFeeDetailed(
+      opportunity.longExchange,
+      'taker',
+      normalizedFeeOverrides,
+      normalizedPaybackOverrides,
+    );
     if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
       console.log(
         `[EXECUTE] ${opportunity.baseAsset} BLOCKED — fee cache unavailable: ` +
@@ -160,11 +177,13 @@ export async function POST(req: NextRequest) {
       opportunity.shortExchange,
       'taker',
       normalizedFeeOverrides,
+      normalizedPaybackOverrides,
     );
     const longEntryFeeEstimate = targetNotional * resolveRuntimeFee(
       opportunity.longExchange,
       'taker',
       normalizedFeeOverrides,
+      normalizedPaybackOverrides,
     );
     const requiredShortBalance = investmentUSDT + shortEntryFeeEstimate;
     const requiredLongBalance = investmentUSDT + longEntryFeeEstimate;
@@ -334,8 +353,8 @@ export async function POST(req: NextRequest) {
 
     // 2c. Pre-execution profitability gate — conservative EV (always forced ON)
     const execHedgeFeePct = (
-      resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides)
-      + resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides)
+      resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides, normalizedPaybackOverrides)
+      + resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides, normalizedPaybackOverrides)
     ) * 2 * 100;
 
     {
@@ -421,6 +440,7 @@ export async function POST(req: NextRequest) {
         leverage,
         normalizedFeeOverrides,
         snipeConfig.useIocLimitOnly,
+        normalizedPaybackOverrides,
       ),
       openPositionExact(
         opportunity.longExchange,
@@ -432,6 +452,7 @@ export async function POST(req: NextRequest) {
         leverage,
         normalizedFeeOverrides,
         snipeConfig.useIocLimitOnly,
+        normalizedPaybackOverrides,
       ),
     ]);
 
@@ -505,6 +526,7 @@ export async function POST(req: NextRequest) {
           longEntry: longResult.value,
           useStrictHedge: snipeConfig.useStrictHedge,
           feeOverrides: normalizedFeeOverrides,
+          paybackOverrides: normalizedPaybackOverrides,
         });
         if (trimResult.trimmed) {
           hedgeTrimNote = trimResult.detail;
@@ -546,8 +568,8 @@ export async function POST(req: NextRequest) {
     const expectedTotalRoundTripFees = shortOk && longOk
       ? shortResult.value.estimatedFee
         + longResult.value.estimatedFee
-        + (shortResult.value.filledNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides))
-        + (longResult.value.filledNotional * resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides))
+        + (shortResult.value.filledNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides, normalizedPaybackOverrides))
+        + (longResult.value.filledNotional * resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides, normalizedPaybackOverrides))
       : undefined;
 
     return NextResponse.json({

@@ -23,6 +23,7 @@ export default function StrategyPanel() {
     ? estimateProfit(effectiveBest, strategyConfig.investmentUSDT, strategyConfig.leverage, {
       skipFees: hasRealSpread,
       feeOverrides: strategyConfig.feeOverrides,
+      paybackOverrides: strategyConfig.paybackOverrides,
     })
     : null;
 

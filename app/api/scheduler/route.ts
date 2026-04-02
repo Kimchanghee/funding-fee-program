@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerScheduler, type SchedulerConfig } from '@/lib/serverScheduler';
 import type { ExchangeId } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, hasValidTimingConfig } from '@/lib/types';
+import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, hasValidPaybackOverrides, hasValidTimingConfig } from '@/lib/types';
 
 export async function GET() {
   const scheduler = getServerScheduler();
@@ -30,6 +30,9 @@ export async function POST(req: NextRequest) {
       }
       if (!hasValidFeeOverrides(config.feeOverrides)) {
         return 'Invalid feeOverrides';
+      }
+      if (!hasValidPaybackOverrides(config.paybackOverrides)) {
+        return 'Invalid paybackOverrides';
       }
       if (!hasValidTimingConfig(config.timingConfig)) {
         return 'Invalid timingConfig';

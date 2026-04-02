@@ -1,5 +1,5 @@
 import type { ApiConfig, ExchangeId, StrategyConfig, LogEntry, FundingPayment, SimPosition } from './types';
-import { sanitizeFeeOverrides, getResolvedTimingConfig } from './types';
+import { sanitizeFeeOverrides, sanitizePaybackOverrides, getResolvedTimingConfig } from './types';
 
 const STORAGE_KEY = 'funding_fee_api_configs_v2';
 const LEGACY_STORAGE_KEY = 'funding_fee_api_configs';
@@ -110,6 +110,7 @@ export function saveStrategyConfig(config: StrategyConfig): void {
   const normalized: StrategyConfig = {
     ...config,
     feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
+    paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
     timingConfig: getResolvedTimingConfig(config.timingConfig),
   };
   localStorage.setItem(STRATEGY_CONFIG_KEY, JSON.stringify(normalized));
@@ -124,6 +125,7 @@ export function loadStrategyConfig(): StrategyConfig | null {
     return {
       ...parsed,
       feeOverrides: sanitizeFeeOverrides(parsed.feeOverrides),
+      paybackOverrides: sanitizePaybackOverrides(parsed.paybackOverrides),
       timingConfig: getResolvedTimingConfig(parsed.timingConfig),
     };
   } catch {

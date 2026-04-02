@@ -9,6 +9,8 @@ import {
   SUPPORTED_EXCHANGES,
   EXCHANGE_FEE_PRESET_LABEL,
   EXCHANGE_FEE_PRESET_NOTE,
+  EXCHANGE_PAYBACK_PRESET_LABEL,
+  EXCHANGE_PAYBACK_PRESET_NOTE,
 } from '@/lib/types';
 import Link from 'next/link';
 import { fmtNum } from '@/lib/format';
@@ -113,6 +115,26 @@ export default function Header() {
       >
         <span style={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>FEE</span>
         <span>{EXCHANGE_FEE_PRESET_LABEL}</span>
+      </div>
+
+      <div
+        title={EXCHANGE_PAYBACK_PRESET_NOTE}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 8px',
+          borderRadius: 999,
+          border: '1px solid rgba(34,211,238,0.35)',
+          background: 'rgba(34,211,238,0.12)',
+          color: '#22d3ee',
+          fontSize: 10,
+          fontWeight: 800,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <span style={{ color: 'rgba(255,255,255,0.75)', fontWeight: 700 }}>PAYBACK</span>
+        <span>{EXCHANGE_PAYBACK_PRESET_LABEL}</span>
       </div>
 
       {/* Spacer */}

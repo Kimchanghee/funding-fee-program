@@ -45,6 +45,7 @@ import {
   SAFETY_MARGIN_PCT,
   getResolvedTimingConfig,
   sanitizeFeeOverrides,
+  sanitizePaybackOverrides,
   sanitizeTimingConfig,
 } from '@/lib/types';
 
@@ -78,7 +79,7 @@ function getEffectiveMinSpread(config: { minSpreadPercent: number }): number {
 }
 
 function getConfiguredHedgeFees(
-  config: Pick<StrategyConfig, 'feeOverrides'>,
+  config: Pick<StrategyConfig, 'feeOverrides' | 'paybackOverrides'>,
   shortExchange: ExchangeId,
   longExchange: ExchangeId,
   orderType: 'taker' | 'maker' = 'taker',
@@ -88,21 +89,23 @@ function getConfiguredHedgeFees(
     longExchange,
     orderType,
     config.feeOverrides,
+    config.paybackOverrides,
   );
 }
 
 function getConfiguredExchangeFee(
-  config: Pick<StrategyConfig, 'feeOverrides'>,
+  config: Pick<StrategyConfig, 'feeOverrides' | 'paybackOverrides'>,
   exchange: ExchangeId,
   orderType: 'taker' | 'maker' = 'taker',
 ): number {
-  return getExchangeFee(exchange, orderType, config.feeOverrides);
+  return getExchangeFee(exchange, orderType, config.feeOverrides, config.paybackOverrides);
 }
 
 function getResolvedStrategyConfig(config: StrategyConfig): StrategyConfig {
   return {
     ...config,
     feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
+    paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
     timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
   };
 }
@@ -116,7 +119,7 @@ function getOpportunityResultLimit(activeModes: {
 
 function buildOpportunitiesFromRates(
   rates: FundingRate[],
-  config: Pick<StrategyConfig, 'investmentUSDT' | 'leverage' | 'feeOverrides' | 'minVolume24hUSD'>,
+  config: Pick<StrategyConfig, 'investmentUSDT' | 'leverage' | 'feeOverrides' | 'paybackOverrides' | 'minVolume24hUSD'>,
   activeModes: {
     simSnipeActive: boolean;
     realSnipeActive: boolean;
@@ -128,6 +131,7 @@ function buildOpportunitiesFromRates(
     config.investmentUSDT,
     config.leverage,
     config.feeOverrides,
+    config.paybackOverrides,
     config.minVolume24hUSD,
   );
 }
@@ -135,7 +139,7 @@ function buildOpportunitiesFromRates(
 function rebuildRealSpreadsForConfig(
   currentSpreads: Record<string, RealSpreadSnapshot>,
   opportunities: ArbitrageOpportunity[],
-  strategyConfig: Pick<StrategyConfig, 'feeOverrides'>,
+  strategyConfig: Pick<StrategyConfig, 'feeOverrides' | 'paybackOverrides'>,
 ): Record<string, RealSpreadSnapshot> {
   if (Object.keys(currentSpreads).length === 0) return currentSpreads;
 
@@ -183,6 +187,7 @@ function buildSchedulerConfig(
     enabledExchanges,
     maxConcurrentPairs: 5,
     feeOverrides: strategyConfig.feeOverrides,
+    paybackOverrides: strategyConfig.paybackOverrides,
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
     maxSlippagePercent: strategyConfig.maxSlippagePercent,
     minVolume24hUSD: strategyConfig.minVolume24hUSD,
@@ -230,6 +235,7 @@ function buildServerSimSchedulerConfig(
     compoundInvesting: strategyConfig.compoundInvesting,
     enabledExchanges,
     feeOverrides: strategyConfig.feeOverrides,
+    paybackOverrides: strategyConfig.paybackOverrides,
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
     maxSlippagePercent: strategyConfig.maxSlippagePercent,
     minVolume24hUSD: strategyConfig.minVolume24hUSD,
@@ -518,12 +524,14 @@ function getOpportunityYieldScore(
   opportunity: ArbitrageOpportunity,
   spread?: RealSpreadSnapshot,
   feeOverrides?: StrategyConfig['feeOverrides'],
+  paybackOverrides?: StrategyConfig['paybackOverrides'],
 ): number {
   const hedgeFeePct = getHedgeFeesWithOverrides(
     opportunity.shortExchange,
     opportunity.longExchange,
     'taker',
     feeOverrides,
+    paybackOverrides,
   ) * 100;
   const netSpreadPercent = spread?.effectiveSpread ?? calcNetSpreadPercent(opportunity.spreadPercent, 0, hedgeFeePct);
   return Math.max(0, netSpreadPercent / getOpportunityIntervalHours(opportunity));
@@ -554,6 +562,7 @@ function planWindowAllocations(
         opportunity,
         getRealSpreadForOpportunity(realSpreads, opportunity),
         strategyConfig.feeOverrides,
+        strategyConfig.paybackOverrides,
       ),
     }))
     .filter((candidate) => candidate.score > 0)
@@ -1395,6 +1404,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       feeOverrides: config.feeOverrides !== undefined
         ? sanitizeFeeOverrides(config.feeOverrides)
         : previousConfig.feeOverrides,
+      paybackOverrides: config.paybackOverrides !== undefined
+        ? sanitizePaybackOverrides(config.paybackOverrides)
+        : previousConfig.paybackOverrides,
       timingConfig: nextTiming,
     });
 
@@ -1402,6 +1414,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const leverageChanged = next.leverage !== previousConfig.leverage;
     const minSpreadChanged = next.minSpreadPercent !== previousConfig.minSpreadPercent;
     const feeChanged = JSON.stringify(next.feeOverrides ?? {}) !== JSON.stringify(previousConfig.feeOverrides ?? {});
+    const paybackChanged = JSON.stringify(next.paybackOverrides ?? {}) !== JSON.stringify(previousConfig.paybackOverrides ?? {});
     const maxSlippageChanged = next.maxSlippagePercent !== previousConfig.maxSlippagePercent;
     const minVolumeChanged = next.minVolume24hUSD !== previousConfig.minVolume24hUSD;
     const timingChanged = JSON.stringify(next.timingConfig ?? DEFAULT_TIMING_CONFIG) !== JSON.stringify(previousConfig.timingConfig ?? DEFAULT_TIMING_CONFIG);
@@ -1409,13 +1422,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       || leverageChanged
       || minSpreadChanged
       || feeChanged
+      || paybackChanged
       || maxSlippageChanged
       || minVolumeChanged
       || timingChanged;
 
     set((s) => {
       const opportunities = buildOpportunitiesFromRates(s.fundingRates, next, s);
-      const nextRealSpreads = feeChanged
+      const nextRealSpreads = (feeChanged || paybackChanged)
         ? rebuildRealSpreadsForConfig(s.realSpreads, opportunities, next)
         : s.realSpreads;
 
@@ -1447,7 +1461,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       get().revalidateScheduledSnipes();
     }
 
-    if (investmentChanged || leverageChanged || feeChanged) {
+    if (investmentChanged || leverageChanged || feeChanged || paybackChanged) {
       void get().refreshRealSpreads();
     }
 
@@ -1564,6 +1578,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                   investmentUSDT,
                   leverage,
                   s.strategyConfig.feeOverrides,
+                  s.strategyConfig.paybackOverrides,
                   s.strategyConfig.minVolume24hUSD,
                 );
 
@@ -1629,6 +1644,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                   investmentUSDT,
                   leverage,
                   s.strategyConfig.feeOverrides,
+                  s.strategyConfig.paybackOverrides,
                   s.strategyConfig.minVolume24hUSD,
                 );
                 return {
@@ -1670,6 +1686,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
                   investmentUSDT,
                   leverage,
                   s.strategyConfig.feeOverrides,
+                  s.strategyConfig.paybackOverrides,
                   s.strategyConfig.minVolume24hUSD,
                 );
                 return {
@@ -2469,6 +2486,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     const previewProfit = estimateProfit(opportunity, realInvestment, strategyConfig.leverage, {
       feeOverrides: strategyConfig.feeOverrides,
+      paybackOverrides: strategyConfig.paybackOverrides,
     });
     get().addLog('info',
       `전략 실행 시작: ${opportunity.baseAsset} | 숏:${opportunity.shortExchange.toUpperCase()} 롱:${opportunity.longExchange.toUpperCase()}`,
@@ -2490,6 +2508,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           leverage: strategyConfig.leverage,
           pairId,
           feeOverrides: strategyConfig.feeOverrides,
+          paybackOverrides: strategyConfig.paybackOverrides,
           maxSlippagePercent: strategyConfig.maxSlippagePercent,
           confirmedSnipeConfig: strategyConfig.confirmedSnipeConfig,
           // apiConfigs는 서버 측 암호화 저장소에서 로드 (클라이언트 전송 X)
@@ -2666,6 +2685,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           side: position.side,
           amount: position.size,
           feeOverrides: get().strategyConfig.feeOverrides,
+          paybackOverrides: get().strategyConfig.paybackOverrides,
         }),
       });
       const json = await res.json() as { success: boolean; data?: StrategyOrderExecution; error?: string };
@@ -3652,10 +3672,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             b,
             getRealSpreadForOpportunity(currentRealSpreads, b),
             strategyConfig.feeOverrides,
+            strategyConfig.paybackOverrides,
           ) - getOpportunityYieldScore(
             a,
             getRealSpreadForOpportunity(currentRealSpreads, a),
             strategyConfig.feeOverrides,
+            strategyConfig.paybackOverrides,
           );
           if (scoreDiff !== 0) return scoreDiff;
           return getLiveNetProfit(b) - getLiveNetProfit(a);

@@ -47,6 +47,7 @@ import { sendTelegramMessage } from './telegram';
 import {
   getResolvedTimingConfig,
   sanitizeFeeOverrides,
+  sanitizePaybackOverrides,
   sanitizeTimingConfig,
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_FUNDING_TIMESTAMP_DIFF_MS,
@@ -60,6 +61,7 @@ import {
   type ConfirmedSnipeConfig,
   type ExchangeId,
   type FeeOverrides,
+  type PaybackOverrides,
   type FundingPayment,
   type FundingRate,
   type TimingConfig,
@@ -91,6 +93,7 @@ export interface SchedulerConfig {
   enabledExchanges: ExchangeId[];
   maxConcurrentPairs: number;
   feeOverrides?: FeeOverrides;
+  paybackOverrides?: PaybackOverrides;
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%)
   minVolume24hUSD?: number; // 최소 24시간 거래량 (USD)
@@ -196,6 +199,7 @@ class ServerScheduler {
     return {
       ...config,
       feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
+      paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
       timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
     };
   }
@@ -448,6 +452,7 @@ class ServerScheduler {
         this.config.investmentUSDT,
         this.config.leverage,
         this.config.feeOverrides,
+        this.config.paybackOverrides,
         this.config.minVolume24hUSD,
       );
       const minVolume24hUSD = this.config.minVolume24hUSD ?? 0;
@@ -827,9 +832,19 @@ class ServerScheduler {
       }
 
       const requiredShortBalance = (targetNotional / this.config.leverage)
-        + (targetNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides));
+        + (targetNotional * resolveRuntimeFee(
+          opportunity.shortExchange,
+          'taker',
+          this.config.feeOverrides,
+          this.config.paybackOverrides,
+        ));
       const requiredLongBalance = (targetNotional / this.config.leverage)
-        + (targetNotional * resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
+        + (targetNotional * resolveRuntimeFee(
+          opportunity.longExchange,
+          'taker',
+          this.config.feeOverrides,
+          this.config.paybackOverrides,
+        ));
       const [shortBalance, longBalance] = await Promise.all([
         fetchBalance(opportunity.shortExchange, shortConfig),
         fetchBalance(opportunity.longExchange, longConfig),
@@ -1006,8 +1021,18 @@ class ServerScheduler {
         return;
       }
       // v2: use runtime fee cache for profitability gate — warn if falling back to preset
-      const shortFeeInfo = resolveRuntimeFeeDetailed(opportunity.shortExchange, 'taker', this.config.feeOverrides);
-      const longFeeInfo = resolveRuntimeFeeDetailed(opportunity.longExchange, 'taker', this.config.feeOverrides);
+      const shortFeeInfo = resolveRuntimeFeeDetailed(
+        opportunity.shortExchange,
+        'taker',
+        this.config.feeOverrides,
+        this.config.paybackOverrides,
+      );
+      const longFeeInfo = resolveRuntimeFeeDetailed(
+        opportunity.longExchange,
+        'taker',
+        this.config.feeOverrides,
+        this.config.paybackOverrides,
+      );
       if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
         this.log(
           'warning',
@@ -1141,6 +1166,7 @@ class ServerScheduler {
           this.config.leverage,
           this.config.feeOverrides,
           snipeConfig.useIocLimitOnly,
+          this.config.paybackOverrides,
         ).finally(() => { shortDoneAt = Date.now(); }),
         openPositionExact(
           opportunity.longExchange,
@@ -1152,6 +1178,7 @@ class ServerScheduler {
           this.config.leverage,
           this.config.feeOverrides,
           snipeConfig.useIocLimitOnly,
+          this.config.paybackOverrides,
         ).finally(() => { longDoneAt = Date.now(); }),
       ]);
 
@@ -1295,6 +1322,7 @@ class ServerScheduler {
           longEntry: longResult.value,
           useStrictHedge: snipeConfig.useStrictHedge,
           feeOverrides: this.config.feeOverrides,
+          paybackOverrides: this.config.paybackOverrides,
         });
         if (trimResult.trimmed) {
           if (trimResult.shortAmount !== undefined) shortResult.value.amount = trimResult.shortAmount;
@@ -1341,8 +1369,18 @@ class ServerScheduler {
         - (longResult.value.filledNotional * longRateForDecision);
       const expectedTotalRoundTripFees = shortResult.value.estimatedFee
         + longResult.value.estimatedFee
-        + (shortResult.value.filledNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides))
-        + (longResult.value.filledNotional * resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides));
+        + (shortResult.value.filledNotional * resolveRuntimeFee(
+          opportunity.shortExchange,
+          'taker',
+          this.config.feeOverrides,
+          this.config.paybackOverrides,
+        ))
+        + (longResult.value.filledNotional * resolveRuntimeFee(
+          opportunity.longExchange,
+          'taker',
+          this.config.feeOverrides,
+          this.config.paybackOverrides,
+        ));
 
       this.recordTrades([{
         timestamp: entryTime,
@@ -1535,6 +1573,7 @@ class ServerScheduler {
             'short',
             position.shortAmount,
             this.config.feeOverrides,
+            this.config.paybackOverrides,
           ),
         existingLongLeg
           ? Promise.resolve(existingLongLeg.exit)
@@ -1545,6 +1584,7 @@ class ServerScheduler {
             'long',
             position.longAmount,
             this.config.feeOverrides,
+            this.config.paybackOverrides,
           ),
       ]);
 
@@ -1584,6 +1624,7 @@ class ServerScheduler {
               'short',
               position.shortAmount,
               this.config.feeOverrides,
+              this.config.paybackOverrides,
             );
             if (!existingShortLeg) {
               removeServerPositionMeta([makeServerPositionKey(
@@ -1606,6 +1647,7 @@ class ServerScheduler {
               'long',
               position.longAmount,
               this.config.feeOverrides,
+              this.config.paybackOverrides,
             );
             if (!existingLongLeg) {
               removeServerPositionMeta([makeServerPositionKey(
@@ -1935,7 +1977,15 @@ class ServerScheduler {
     reason: string,
   ) {
     try {
-      await closePosition(exchange, config, symbol, side, amount, this.config.feeOverrides);
+      await closePosition(
+        exchange,
+        config,
+        symbol,
+        side,
+        amount,
+        this.config.feeOverrides,
+        this.config.paybackOverrides,
+      );
       this.log('warning', `entry rollback complete | asset=${asset} exchange=${exchange} reason=${reason}`);
     } catch (rollbackErr) {
       this.log(

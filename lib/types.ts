@@ -115,6 +115,7 @@ export interface StrategyConfig {
   autoExecute: boolean;     // auto enter at funding time
   compoundInvesting: boolean; // true = reinvest profits (복리), false = fixed amount (?�리)
   feeOverrides?: FeeOverrides; // ?�용???�수�?override
+  paybackOverrides?: PaybackOverrides; // dual-account referral payback overrides
   timingConfig?: TimingConfig; // ?�나?�프/?�??검�??�?�밍 ?�정
   maxSlippagePercent?: number; // 최�? ?�리?��? % (기본 1.5%) ?????�상?�면 ?�동??부족으�??�터�?
   minVolume24hUSD?: number; // 최소 24?�간 거래??(USD) ??기본 $7,500,000 (??00?�원)
@@ -186,6 +187,13 @@ export interface ExchangeFees {
 
 export type FeeOverrides = Partial<Record<ExchangeId, ExchangeFees>>;
 
+export interface ExchangePaybackRates {
+  accountA: number; // trader account rebate ratio of fee (0.2 = 20%)
+  accountB: number; // second account rebate ratio of fee
+}
+
+export type PaybackOverrides = Partial<Record<ExchangeId, ExchangePaybackRates>>;
+
 export interface TimingConfig {
   entryLeadMs: number;
   closeDelayMs: number;
@@ -201,12 +209,21 @@ export const DEFAULT_TIMING_CONFIG: TimingConfig = {
 };
 
 const MAX_REASONABLE_FEE_RATE = 0.1;
+const MAX_REASONABLE_PAYBACK_RATE = 0.95;
+const MAX_TOTAL_PAYBACK_RATE = 0.95;
 
 function isValidFeeRate(value: unknown): value is number {
   return typeof value === 'number'
     && Number.isFinite(value)
     && value >= 0
     && value <= MAX_REASONABLE_FEE_RATE;
+}
+
+function isValidPaybackRate(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= MAX_REASONABLE_PAYBACK_RATE;
 }
 
 function isValidTimingMs(value: unknown, min: number, max: number): value is number {
@@ -258,6 +275,42 @@ export function sanitizeFeeOverrides(overrides: unknown): FeeOverrides | undefin
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 
+export function hasValidPaybackOverrides(overrides: unknown): overrides is PaybackOverrides {
+  if (overrides == null) return true;
+  if (typeof overrides !== 'object') return false;
+
+  for (const [exchange, value] of Object.entries(overrides as Record<string, unknown>)) {
+    if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) return false;
+    if (!value || typeof value !== 'object') return false;
+
+    const rates = value as Record<string, unknown>;
+    if (!isValidPaybackRate(rates.accountA) || !isValidPaybackRate(rates.accountB)) return false;
+    if ((rates.accountA as number) + (rates.accountB as number) > MAX_TOTAL_PAYBACK_RATE) return false;
+  }
+
+  return true;
+}
+
+export function sanitizePaybackOverrides(overrides: unknown): PaybackOverrides | undefined {
+  if (overrides == null || typeof overrides !== 'object') return undefined;
+
+  const sanitized: PaybackOverrides = {};
+  for (const exchange of SUPPORTED_EXCHANGES) {
+    const rawValue = (overrides as Record<string, unknown>)[exchange];
+    if (!rawValue || typeof rawValue !== 'object') continue;
+
+    const rates = rawValue as Record<string, unknown>;
+    if (!isValidPaybackRate(rates.accountA) || !isValidPaybackRate(rates.accountB)) continue;
+    const accountA = rates.accountA as number;
+    const accountB = rates.accountB as number;
+    if (accountA + accountB > MAX_TOTAL_PAYBACK_RATE) continue;
+
+    sanitized[exchange] = { accountA, accountB };
+  }
+
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
 export function hasValidTimingConfig(config: unknown): config is TimingConfig {
   if (config == null) return true;
   if (!config || typeof config !== 'object') return false;
@@ -290,6 +343,9 @@ export function getResolvedTimingConfig(config?: Partial<TimingConfig> | null): 
 export const EXCHANGE_FEE_PRESET_ID = 'referral_max';
 export const EXCHANGE_FEE_PRESET_LABEL = 'REFERRAL MAX';
 export const EXCHANGE_FEE_PRESET_NOTE = 'Referral max-discount fee table is applied by default.';
+export const EXCHANGE_PAYBACK_PRESET_ID = 'dual_account_realistic';
+export const EXCHANGE_PAYBACK_PRESET_LABEL = 'PAYBACK 2-ACCOUNT';
+export const EXCHANGE_PAYBACK_PRESET_NOTE = 'Conservative dual-account payback preset (exchange rules vary by account tier/region).';
 
 // Referral max-discount default table (USDT-M futures).
 // User feeOverrides still take precedence when provided.
@@ -302,20 +358,46 @@ export const EXCHANGE_FEES: Record<ExchangeId, ExchangeFees> = {
   bingx:   { taker: 0.00040, maker: 0.00016 },  // 0.040% / 0.016%
 };
 
-/** Get round-trip fee for a hedge pair (entry + exit on both sides) */
-export function getHedgeFees(
-  shortEx: ExchangeId,
-  longEx: ExchangeId,
-  orderType: 'taker' | 'maker' = 'taker',
-): number {
-  const shortFee = EXCHANGE_FEES[shortEx][orderType];
-  const longFee = EXCHANGE_FEES[longEx][orderType];
-  // Round trip = 4 trades: open short + open long + close short + close long
-  return (shortFee + longFee) * 2;
+// Conservative defaults intended for practical two-account setups.
+export const EXCHANGE_PAYBACKS: Record<ExchangeId, ExchangePaybackRates> = {
+  binance: { accountA: 0.20, accountB: 0.10 }, // total 30%
+  bybit:   { accountA: 0.20, accountB: 0.10 }, // total 30%
+  okx:     { accountA: 0.20, accountB: 0.10 }, // total 30%
+  bitget:  { accountA: 0.20, accountB: 0.15 }, // total 35%
+  gate:    { accountA: 0.20, accountB: 0.10 }, // total 30%
+  bingx:   { accountA: 0.20, accountB: 0.15 }, // total 35%
+};
+
+function clampTotalPaybackRate(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(MAX_TOTAL_PAYBACK_RATE, value);
 }
 
-/** Get single-side fee */
-export function getExchangeFee(
+export function getEffectivePaybackRates(
+  exchange: ExchangeId,
+  overrides?: PaybackOverrides,
+): ExchangePaybackRates {
+  const overrideRates = overrides?.[exchange];
+  if (
+    overrideRates
+    && isValidPaybackRate(overrideRates.accountA)
+    && isValidPaybackRate(overrideRates.accountB)
+    && overrideRates.accountA + overrideRates.accountB <= MAX_TOTAL_PAYBACK_RATE
+  ) {
+    return overrideRates;
+  }
+  return EXCHANGE_PAYBACKS[exchange];
+}
+
+export function getTotalPaybackRate(
+  exchange: ExchangeId,
+  overrides?: PaybackOverrides,
+): number {
+  const rates = getEffectivePaybackRates(exchange, overrides);
+  return clampTotalPaybackRate(rates.accountA + rates.accountB);
+}
+
+export function getRawExchangeFee(
   exchange: ExchangeId,
   orderType: 'taker' | 'maker' = 'taker',
   overrides?: FeeOverrides,
@@ -329,17 +411,41 @@ export function getExchangeFee(
   return fees[orderType];
 }
 
+/** Get round-trip fee for a hedge pair (entry + exit on both sides) */
+export function getHedgeFees(
+  shortEx: ExchangeId,
+  longEx: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+  paybackOverrides?: PaybackOverrides,
+): number {
+  const shortFee = getExchangeFee(shortEx, orderType, undefined, paybackOverrides);
+  const longFee = getExchangeFee(longEx, orderType, undefined, paybackOverrides);
+  // Round trip = 4 trades: open short + open long + close short + close long
+  return (shortFee + longFee) * 2;
+}
+
+/** Get single-side fee */
+export function getExchangeFee(
+  exchange: ExchangeId,
+  orderType: 'taker' | 'maker' = 'taker',
+  feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
+): number {
+  const rawFee = getRawExchangeFee(exchange, orderType, feeOverrides);
+  const paybackRate = getTotalPaybackRate(exchange, paybackOverrides);
+  return rawFee * (1 - paybackRate);
+}
+
 /** Get effective fees considering user overrides */
 export function getEffectiveExchangeFees(
   exchange: ExchangeId,
-  overrides?: FeeOverrides,
+  feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
 ): ExchangeFees {
-  const overrideFees = overrides?.[exchange];
-  return overrideFees
-    && isValidFeeRate(overrideFees.maker)
-    && isValidFeeRate(overrideFees.taker)
-    ? overrideFees
-    : EXCHANGE_FEES[exchange];
+  return {
+    taker: getExchangeFee(exchange, 'taker', feeOverrides, paybackOverrides),
+    maker: getExchangeFee(exchange, 'maker', feeOverrides, paybackOverrides),
+  };
 }
 
 /** Get round-trip hedge fees with optional overrides */
@@ -347,10 +453,11 @@ export function getHedgeFeesWithOverrides(
   shortEx: ExchangeId,
   longEx: ExchangeId,
   orderType: 'taker' | 'maker' = 'taker',
-  overrides?: FeeOverrides,
+  feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
 ): number {
-  const shortFee = getExchangeFee(shortEx, orderType, overrides);
-  const longFee = getExchangeFee(longEx, orderType, overrides);
+  const shortFee = getExchangeFee(shortEx, orderType, feeOverrides, paybackOverrides);
+  const longFee = getExchangeFee(longEx, orderType, feeOverrides, paybackOverrides);
   return (shortFee + longFee) * 2;
 }
 

@@ -9,6 +9,7 @@ import {
   type ApiConfig,
   type ExchangeId,
   type FeeOverrides,
+  type PaybackOverrides,
 } from './types';
 
 export interface HedgeTrimParams {
@@ -22,6 +23,7 @@ export interface HedgeTrimParams {
   longEntry: ExecutedOrderSummary;
   useStrictHedge: boolean;
   feeOverrides?: FeeOverrides;
+  paybackOverrides?: PaybackOverrides;
 }
 
 export interface HedgeTrimResult {
@@ -63,7 +65,7 @@ export async function rebalanceExecutedHedge(
     const excessQty = (shortNotional - minNotional) / shortEntry.price;
     await closePosition(
       params.shortExchange, params.shortConfig,
-      params.shortSymbol, 'short', excessQty, params.feeOverrides,
+      params.shortSymbol, 'short', excessQty, params.feeOverrides, params.paybackOverrides,
     );
     return {
       trimmed: true,
@@ -77,7 +79,7 @@ export async function rebalanceExecutedHedge(
     const excessQty = (longNotional - minNotional) / longEntry.price;
     await closePosition(
       params.longExchange, params.longConfig,
-      params.longSymbol, 'long', excessQty, params.feeOverrides,
+      params.longSymbol, 'long', excessQty, params.feeOverrides, params.paybackOverrides,
     );
     return {
       trimmed: true,
