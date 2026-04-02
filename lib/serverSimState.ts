@@ -7,8 +7,9 @@ import {
   type SimPosition,
   type SimStateSnapshot,
 } from './types';
+import { getDataDir } from './dataDir';
 
-const DATA_DIR = join(process.cwd(), 'data');
+const DATA_DIR = getDataDir();
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
 const SIM_STATE_BACKUP = join(DATA_DIR, 'sim-state.backup.json');
 const SIM_STATE_TMP = join(DATA_DIR, 'sim-state.tmp.json');
@@ -163,6 +164,21 @@ function hasRealData(state: SimStateSnapshot): boolean {
     || state.simTotalClosedPnl !== 0;
 }
 
+function shouldReinitializeBalances(
+  state: SimStateSnapshot,
+  enabledExchanges: ExchangeId[],
+  investmentUSDT: number,
+): boolean {
+  if (enabledExchanges.length === 0 || investmentUSDT <= 0) return false;
+  if (hasRealData(state)) return false;
+
+  // Recover only pristine-but-empty state. Do not overwrite live/historical sessions.
+  return enabledExchanges.every((exchange) => (
+    (state.simBalances[exchange] ?? 0) <= 0
+    && (state.simInitialBalances[exchange] ?? 0) <= 0
+  ));
+}
+
 /** 파일 하나를 안전하게 파싱 시도 */
 function tryLoadFile(filePath: string): SimStateSnapshot | null {
   try {
@@ -250,7 +266,12 @@ export function getOrCreateServerSimState(
   investmentUSDT: number,
 ): SimStateSnapshot {
   const existing = loadServerSimState();
-  if (existing) return existing;
+  if (existing) {
+    if (shouldReinitializeBalances(existing, enabledExchanges, investmentUSDT)) {
+      return saveServerSimState(createDefaultSimState(enabledExchanges, investmentUSDT));
+    }
+    return existing;
+  }
   // ★ 기본값은 메모리에만 반환 — 빈 상태가 디스크의 기존 데이터를 덮어쓰는 것을 방지
   return createDefaultSimState(enabledExchanges, investmentUSDT);
 }

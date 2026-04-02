@@ -11,6 +11,15 @@ export function getDataDir(): string {
   if (configured) {
     return path.resolve(configured);
   }
-  return path.join(process.cwd(), 'data');
-}
 
+  const cwd = process.cwd();
+  const normalized = cwd.replace(/\\/g, '/');
+
+  // Next.js standalone server sets cwd to ".next/standalone".
+  // Persist data outside build output so redeploy/build does not wipe runtime state.
+  if (normalized.endsWith('/.next/standalone')) {
+    return path.resolve(cwd, '..', '..', 'data');
+  }
+
+  return path.join(cwd, 'data');
+}
