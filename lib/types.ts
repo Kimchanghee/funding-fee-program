@@ -564,7 +564,7 @@ export const MAX_ORPHAN_LEG_MS = 300;
 export const MIN_PROFIT_USD = 1.25;
 
 /** Minimum EV ratio: expectedNetUSD / worstCaseExitUSD */
-export const MIN_EV_RATIO = 1.8;
+export const MIN_EV_RATIO = 0.6;
 
 /** Maximum funding timestamp difference between two legs in ms */
 export const MAX_FUNDING_TIMESTAMP_DIFF_MS = 3_000;
