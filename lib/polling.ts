@@ -1,4 +1,4 @@
-export const RATES_POLL_INTERVAL_MS = 3_000;
+export const RATES_POLL_INTERVAL_MS = 5_000;
 export const SNIPE_CHECK_INTERVAL_MS = 1_000;
 export const SIM_SYNC_INTERVAL_MS = 3_000;
 export const POSITIONS_POLL_INTERVAL_MS = 10_000;

@@ -52,7 +52,7 @@ import { getDataDir } from './dataDir';
 const DATA_DIR = getDataDir();
 const STATE_FILE = join(DATA_DIR, 'sim-scheduler-state.json');
 const LOOP_INTERVAL_MS = 1_000;
-const RATES_REFRESH_INTERVAL_MS = 1_000;
+const RATES_REFRESH_INTERVAL_MS = 3_000;
 const MAX_FUNDING_HISTORY = 500;
 const BASE_REVALIDATE_BATCH_SIZE = 3;
 const URGENT_REVALIDATE_BATCH_SIZE = 12;

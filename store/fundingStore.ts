@@ -399,13 +399,21 @@ function getEffectiveNotional(
 function applySharedSnipeStateSnapshot(
   setState: (partial: Partial<FundingState>) => void,
   snapshot?: SnipeStateSnapshot | null,
+  options?: { includeActives?: boolean },
 ) {
   if (!snapshot) return;
-  setState({
-    simulationMode: snapshot.simulationMode,
-    simSnipeActive: snapshot.simSnipeActive,
-    realSnipeActive: snapshot.realSnipeActive,
-  });
+  const includeActives = options?.includeActives ?? true;
+  setState(
+    includeActives
+      ? {
+        simulationMode: snapshot.simulationMode,
+        simSnipeActive: snapshot.simSnipeActive,
+        realSnipeActive: snapshot.realSnipeActive,
+      }
+      : {
+        simulationMode: snapshot.simulationMode,
+      },
+  );
 }
 
 async function fetchSharedSnipeStateSnapshot() {
@@ -1209,13 +1217,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       // 서버에 저장된 자동투자 상태 복원 (PC↔모바일 동기화)
       fetchSharedSnipeStateSnapshot().then(async (sharedState) => {
-        applySharedSnipeStateSnapshot(set, sharedState);
+        applySharedSnipeStateSnapshot(set, sharedState, { includeActives: false });
         saveSimMode(sharedState.simulationMode);
-        const { realSnipeActive: savedReal } = sharedState;
 
         // REAL: 서버 스케줄러가 실제로 돌고 있는지 확인 후에만 UI 상태를 ON으로
         let realConfirmed = false;
-        if (savedReal) {
+        {
           try {
             const schedulerRes = await fetch('/api/scheduler');
             if (schedulerRes.ok) {
@@ -1223,15 +1230,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               realConfirmed = !!schedulerData.active;
             }
           } catch { /* 확인 불가 → OFF 유지 */ }
-          if (!realConfirmed) {
+          if (!realConfirmed && sharedState.realSnipeActive) {
             // 서버 스케줄러가 안 돌고 있으면 snipe-state도 정정
             void updateSharedSnipeStateSnapshot({ realSnipeActive: false }).catch(() => {});
             get().addLog('warning', '[복원] REAL 자동투자 상태 OFF — 서버 스케줄러 미실행');
           }
         }
 
+        set({ realSnipeActive: realConfirmed });
         if (realConfirmed) {
-          set({ realSnipeActive: true });
           void syncServerSchedulerConfig(
             getResolvedStrategyConfig(get().strategyConfig),
             get().enabledExchanges,
@@ -2035,7 +2042,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
       void fetchSharedSnipeStateSnapshot()
         .then((snapshot) => {
-          applySharedSnipeStateSnapshot(set, snapshot);
+          applySharedSnipeStateSnapshot(set, snapshot, { includeActives: false });
           saveSimMode(snapshot.simulationMode);
         })
         .catch(() => {});
@@ -2824,7 +2831,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
     try {
       const sharedState = await updateSharedSnipeStateSnapshot({ simulationMode: next });
-      applySharedSnipeStateSnapshot(set, sharedState);
+      applySharedSnipeStateSnapshot(set, sharedState, { includeActives: false });
       saveSimMode(sharedState.simulationMode);
       get().addLog(
         'info',
