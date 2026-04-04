@@ -1721,11 +1721,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         get().addLog('warning', msg);
         sendTelegramMessage(msg).catch(() => {});
       }
-      // 30회 연속 (~4분) → 스나이프 자동 중단
+      // 30회 연속 (~4분) → 경고만 발생 (서버 자동투자는 강제 중단하지 않음)
       if (failCount === 30 && (get().simSnipeActive || get().realSnipeActive)) {
-        get().addLog('warning', `🛑 API 장애 지속 (${failCount}회 연속 실패) — 스나이프 자동 중단`);
-        get().cancelSnipe('all');
-        sendTelegramMessage(`🛑 API 전체 장애 ${failCount}회 연속 → 자동 투자 긴급 중단. 서버 재시작 필요.`).catch(() => {});
+        get().addLog('warning', `⚠️ API 장애 지속 (${failCount}회 연속 실패) — 자동 중단은 하지 않고 감시 유지`);
+        sendTelegramMessage(`⚠️ API 전체 장애 ${failCount}회 연속 감지. 자동 투자는 유지하며 상태 점검 필요.`).catch(() => {});
       }
 
       if (!get().lastRatesUpdate) {
