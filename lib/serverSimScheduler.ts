@@ -616,6 +616,7 @@ class ServerSimScheduler {
     const now = Date.now();
     const toRemove: string[] = [];
     const toReplace = new Map<string, ScheduledSimEntry>();
+    const revalidationBlocks: Array<Parameters<typeof appendTrades>[0][number]> = [];
 
     // ???60珥??댁긽 ?⑥? ?덉빟留??ш?利?(吏곸쟾? executeDueEntries?먯꽌 泥섎━)
     const candidates = Array.from(this.scheduledEntries.entries())
@@ -677,6 +678,8 @@ class ServerSimScheduler {
         if (realNetSpread <= 0) {
           // 湲곗〈 ?덉빟???뚯닔硫?諛섎? 諛⑺뼢??利됱떆 ?ш?利앺븳??
           const flipped = flipOpportunityDirection(entry.opportunity);
+          let flippedNetSpread: number | null = null;
+          let flippedError: string | null = null;
           try {
             const [flipShortFill, flipLongFill] = await Promise.all([
               fetchMarketFillPrice(flipped.shortExchange, flipped.shortSymbol, 'sell', notional),
@@ -686,7 +689,7 @@ class ServerSimScheduler {
               resolveRuntimeFee(flipped.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
               + resolveRuntimeFee(flipped.longExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
             ) * 2 * 100;
-            const flippedNetSpread = calcHedgedNetSpreadPercent(
+            flippedNetSpread = calcHedgedNetSpreadPercent(
               flipped.spreadPercent,
               flipShortFill.slippagePercent,
               flipLongFill.slippagePercent,
@@ -699,10 +702,30 @@ class ServerSimScheduler {
               });
               return;
             }
-          } catch {
+          } catch (error) {
+            flippedError = (error as Error).message ?? 'unknown';
             // 諛섎? 諛⑺뼢 ?ш?利??ㅽ뙣 ?쒖뿉??湲곗〈 ?뺤콉?濡??쒓굅
           }
           toRemove.push(opportunityId);
+          revalidationBlocks.push({
+            timestamp: Date.now(),
+            type: 'guard_block',
+            simulation: true,
+            baseAsset: entry.opportunity.baseAsset,
+            shortExchange: entry.opportunity.shortExchange,
+            longExchange: entry.opportunity.longExchange,
+            spread: entry.opportunity.spread,
+            spreadPercent: entry.opportunity.spreadPercent,
+            reason: 'revalidate_spread_reverted',
+            detail: [
+              `netSpread=${realNetSpread.toFixed(4)}%`,
+              `slippageShort=${shortFill.slippagePercent.toFixed(4)}%`,
+              `slippageLong=${longFill.slippagePercent.toFixed(4)}%`,
+              flippedNetSpread !== null
+                ? `flippedNetSpread=${flippedNetSpread.toFixed(4)}%`
+                : `flippedError=${flippedError ?? 'none'}`,
+            ].join(' '),
+          });
         }
       } catch {
         // ?ㅻ뜑遺?議고쉶 ?ㅽ뙣 ???좎? (?ㅽ뻾 ?쒖젏?먯꽌 ?ㅼ떆 寃利?
@@ -715,6 +738,9 @@ class ServerSimScheduler {
     }
     for (const id of toRemove) {
       this.scheduledEntries.delete(id);
+    }
+    if (revalidationBlocks.length > 0) {
+      appendTrades(revalidationBlocks);
     }
   }
 
@@ -1220,28 +1246,54 @@ class ServerSimScheduler {
     let longFillPrice = opportunity.longMarkPrice;
     let shortSlippagePercent = 0;
     let longSlippagePercent = 0;
-    try {
-      const [shortFill, longFill] = await Promise.all([
-        fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
-        fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
-      ]);
-      // v2: dual-mode guard — impact-based or legacy slippage
+    const maxSlippagePct = this.config.maxSlippagePercent ?? 1.5;
+    const impactCapBps = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
+    const minAdaptiveNotional = 100;
+    const maxAdaptiveAttempts = 4;
+    let fillsValidated = false;
+    for (let attempt = 0; attempt < maxAdaptiveAttempts; attempt += 1) {
+      let shortFill: Awaited<ReturnType<typeof fetchMarketFillPrice>>;
+      let longFill: Awaited<ReturnType<typeof fetchMarketFillPrice>>;
+      try {
+        [shortFill, longFill] = await Promise.all([
+          fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
+          fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
+        ]);
+      } catch (err) {
+        return { success: false, error: `orderbook fetch failed ??cannot validate slippage: ${(err as Error).message ?? err}` };
+      }
+
       if (snipeConfig.useImpactGuards) {
         const roundTripImpactBps = (shortFill.slippagePercent + longFill.slippagePercent) * 2 * 100;
-        const cap = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
-        if (roundTripImpactBps > cap) {
-          return { success: false, error: `impact exceeded: ${roundTripImpactBps.toFixed(1)}bps > ${cap}bps` };
+        if (roundTripImpactBps > impactCapBps) {
+          const scale = Math.max(0.2, Math.min(0.98, (impactCapBps / Math.max(roundTripImpactBps, 0.0001)) * 0.97));
+          const nextNotional = Math.floor(notional * scale * 100) / 100;
+          if (attempt < maxAdaptiveAttempts - 1 && nextNotional >= minAdaptiveNotional && nextNotional < notional - 1) {
+            notional = nextNotional;
+            continue;
+          }
+          return { success: false, error: `impact exceeded: ${roundTripImpactBps.toFixed(1)}bps > ${impactCapBps}bps (notional=$${notional.toFixed(2)})` };
         }
       } else {
-        const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
-        if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
-          return { success: false, error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${MAX_SLIPPAGE_PCT}%` };
+        const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
+        if (worstSlippage > maxSlippagePct) {
+          const scale = Math.max(0.2, Math.min(0.98, (maxSlippagePct / Math.max(worstSlippage, 0.0001)) * 0.97));
+          const nextNotional = Math.floor(notional * scale * 100) / 100;
+          if (attempt < maxAdaptiveAttempts - 1 && nextNotional >= minAdaptiveNotional && nextNotional < notional - 1) {
+            notional = nextNotional;
+            continue;
+          }
+          return {
+            success: false,
+            error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${maxSlippagePct}% (notional=$${notional.toFixed(2)})`,
+          };
         }
       }
+
       // Entry-gap drift guard: allow stable basis, block sudden divergence.
       const gapThreshold = snipeConfig.useImpactGuards
-        ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 100
-        : (this.config.maxSlippagePercent ?? 1.5);
+        ? impactCapBps / 100
+        : maxSlippagePct;
       const entryGap = getEntryGapMetrics({
         shortPrice: shortFill.fillPrice,
         longPrice: longFill.fillPrice,
@@ -1268,8 +1320,11 @@ class ServerSimScheduler {
       longFillPrice = longFill.fillPrice;
       shortSlippagePercent = shortFill.slippagePercent;
       longSlippagePercent = longFill.slippagePercent;
-    } catch (err) {
-      return { success: false, error: `orderbook fetch failed — cannot validate slippage: ${(err as Error).message ?? err}` };
+      fillsValidated = true;
+      break;
+    }
+    if (!fillsValidated) {
+      return { success: false, error: 'unable to validate entry slippage' };
     }
     // Sign convention: (longFill - shortFill) / shortFill. Positive means worse entry.
     const entryGap = getEntryGapMetrics({
