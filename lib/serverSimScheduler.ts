@@ -4,7 +4,8 @@ import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookI
 import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs, getPairMaxSettlementWaitMs } from './exchangeProfiles';
 import { getEntryGapMetrics } from './entryGapGuard';
 import { resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
-import { appendTrades } from './fileLogger';
+import { appendTrades, readTrades, type TradeEvent } from './fileLogger';
+import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import {
   findOpportunities,
   getOpportunityHourlyNetProfit,
@@ -341,6 +342,7 @@ class ServerSimScheduler {
   private ticking = false;
   private revalidateCursor = 0;
   private mutationQueue: Promise<void> = Promise.resolve();
+  private routeFailureMemory = new RouteFailureMemory();
 
   static getInstance() {
     if (!ServerSimScheduler.instance) {
@@ -351,9 +353,14 @@ class ServerSimScheduler {
 
   private constructor() {
     this.loadState();
+    this.bootstrapRouteFailureMemory();
     if (this.active) {
       this.startLoop();
     }
+  }
+
+  private bootstrapRouteFailureMemory() {
+    this.routeFailureMemory.ingestEvents(readTrades(), { simulation: true });
   }
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -574,6 +581,12 @@ class ServerSimScheduler {
         state: this.getState(),
       };
     });
+  }
+
+  private recordTrades(events: TradeEvent[]) {
+    if (events.length === 0) return;
+    appendTrades(events);
+    this.routeFailureMemory.ingestEvents(events, { simulation: true });
   }
 
   private startLoop() {
@@ -818,6 +831,14 @@ class ServerSimScheduler {
       if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
         return false;
       }
+      const routeFailureKey = makeRouteFailureKey(
+        opportunity.baseAsset,
+        opportunity.shortExchange,
+        opportunity.longExchange,
+      );
+      if (this.routeFailureMemory.isBlocked(routeFailureKey, now)) {
+        return false;
+      }
       if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
         return false;
       }
@@ -892,7 +913,7 @@ class ServerSimScheduler {
       const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true);
       if (flippedResult.success) continue;
 
-      appendTrades([{
+      this.recordTrades([{
         timestamp: Date.now(),
         type: 'guard_block',
         simulation: true,
@@ -1012,7 +1033,7 @@ class ServerSimScheduler {
       .slice(0, MAX_FUNDING_HISTORY);
     this.setState(state);
     if (tradeEvents.length > 0) {
-      appendTrades(tradeEvents);
+      this.recordTrades(tradeEvents);
     }
   }
 
@@ -1107,7 +1128,7 @@ class ServerSimScheduler {
       }
     }
 
-    appendTrades([
+    this.recordTrades([
       ...(position.isSnipe && !fundingAlreadyRecorded && actualFunding !== 0
         ? [{
           timestamp: Date.now(),
@@ -1454,7 +1475,7 @@ class ServerSimScheduler {
     };
 
     const savedState = this.setState(nextState);
-    appendTrades([
+    this.recordTrades([
       {
         timestamp,
         type: isSnipe ? 'snipe_entry' : 'entry',

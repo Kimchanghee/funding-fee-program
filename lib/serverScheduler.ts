@@ -21,7 +21,7 @@ import {
   pairSupportsConfirmedClose,
   pairUsesInstantaneousRate,
 } from './exchangeProfiles';
-import { appendTrades, type TradeEvent } from './fileLogger';
+import { appendTrades, readTrades, type TradeEvent } from './fileLogger';
 import { getEntryGapMetrics } from './entryGapGuard';
 import { rebalanceExecutedHedge } from './hedgeRebalance';
 import { refreshAllFeeCaches, resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
@@ -38,6 +38,7 @@ import {
   transitionPhase,
   completeExecution,
 } from './executionState';
+import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import { loadAllServerApiConfigs } from './serverKeyStore';
 import {
   makeServerPositionKey,
@@ -184,6 +185,7 @@ class ServerScheduler {
   private activePositions = new Map<string, ActivePosition>();
   private lastPollTime = 0;
   private loadedPersistedState = false;
+  private routeFailureMemory = new RouteFailureMemory();
 
   static getInstance(): ServerScheduler {
     if (!ServerScheduler.instance) {
@@ -194,6 +196,15 @@ class ServerScheduler {
 
   private constructor() {
     this.loadPersistedState();
+    this.bootstrapRouteFailureMemory();
+  }
+
+  private bootstrapRouteFailureMemory() {
+    try {
+      this.routeFailureMemory.ingestEvents(readTrades(), { simulation: false });
+    } catch (error) {
+      this.log('warning', `route failure memory bootstrap failed: ${getErrorMessage(error)}`);
+    }
   }
 
   private normalizeConfig(config: SchedulerConfig): SchedulerConfig {
@@ -469,6 +480,12 @@ class ServerScheduler {
       const filtered = opportunities.filter((opportunity) => {
         const opportunityId = getOpportunityId(opportunity);
         if (this.scheduledEntries.has(opportunityId) || this.activePositions.has(opportunityId)) return false;
+        const routeFailureKey = makeRouteFailureKey(
+          opportunity.baseAsset,
+          opportunity.shortExchange,
+          opportunity.longExchange,
+        );
+        if (this.routeFailureMemory.isBlocked(routeFailureKey, this.lastPollTime)) return false;
         if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) return false;
         if (!this.config.enabledExchanges.includes(opportunity.shortExchange)) return false;
         if (!this.config.enabledExchanges.includes(opportunity.longExchange)) return false;
@@ -1971,6 +1988,7 @@ class ServerScheduler {
 
   private recordTrades(events: TradeEvent[]) {
     appendTrades(events);
+    this.routeFailureMemory.ingestEvents(events, { simulation: false });
   }
 
   private async rollbackSingleEntry(
