@@ -592,6 +592,8 @@ class ServerSimScheduler {
     try {
       await this.enqueue(async () => {
         if (!this.active) return;
+        // Execute due entries first so refresh/rebuild cannot drop matured schedules.
+        await this.executeDueEntries();
         if (this.lastRatesUpdate === 0 || Date.now() - this.lastRatesUpdate >= RATES_REFRESH_INTERVAL_MS) {
           await this.refreshRatesAndPlans();
         } else {
@@ -609,14 +611,12 @@ class ServerSimScheduler {
     }
   }
 
-  /** Orderbook-based schedule revalidation. Removes routes that are no longer profitable. */
+  /** Orderbook-based schedule revalidation. Only replaces route when flipped direction is better. */
   private async revalidateScheduledByOrderbook() {
     if (this.scheduledEntries.size === 0) return;
 
     const now = Date.now();
-    const toRemove: string[] = [];
     const toReplace = new Map<string, ScheduledSimEntry>();
-    const revalidationBlocks: Array<Parameters<typeof appendTrades>[0][number]> = [];
 
     // ???60珥??댁긽 ?⑥? ?덉빟留??ш?利?(吏곸쟾? executeDueEntries?먯꽌 泥섎━)
     const candidates = Array.from(this.scheduledEntries.entries())
@@ -676,10 +676,9 @@ class ServerSimScheduler {
         );
 
         if (realNetSpread <= 0) {
-          // 湲곗〈 ?덉빟???뚯닔硫?諛섎? 諛⑺뼢??利됱떆 ?ш?利앺븳??
+          // Keep schedule for due-time adaptive notional retry.
+          // Only flip route when reverse direction is already net-positive.
           const flipped = flipOpportunityDirection(entry.opportunity);
-          let flippedNetSpread: number | null = null;
-          let flippedError: string | null = null;
           try {
             const [flipShortFill, flipLongFill] = await Promise.all([
               fetchMarketFillPrice(flipped.shortExchange, flipped.shortSymbol, 'sell', notional),
@@ -689,7 +688,7 @@ class ServerSimScheduler {
               resolveRuntimeFee(flipped.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
               + resolveRuntimeFee(flipped.longExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
             ) * 2 * 100;
-            flippedNetSpread = calcHedgedNetSpreadPercent(
+            const flippedNetSpread = calcHedgedNetSpreadPercent(
               flipped.spreadPercent,
               flipShortFill.slippagePercent,
               flipLongFill.slippagePercent,
@@ -700,32 +699,10 @@ class ServerSimScheduler {
                 ...entry,
                 opportunity: flipped,
               });
-              return;
             }
-          } catch (error) {
-            flippedError = (error as Error).message ?? 'unknown';
-            // 諛섎? 諛⑺뼢 ?ш?利??ㅽ뙣 ?쒖뿉??湲곗〈 ?뺤콉?濡??쒓굅
+          } catch {
+            // Keep original schedule when flip check fails.
           }
-          toRemove.push(opportunityId);
-          revalidationBlocks.push({
-            timestamp: Date.now(),
-            type: 'guard_block',
-            simulation: true,
-            baseAsset: entry.opportunity.baseAsset,
-            shortExchange: entry.opportunity.shortExchange,
-            longExchange: entry.opportunity.longExchange,
-            spread: entry.opportunity.spread,
-            spreadPercent: entry.opportunity.spreadPercent,
-            reason: 'revalidate_spread_reverted',
-            detail: [
-              `netSpread=${realNetSpread.toFixed(4)}%`,
-              `slippageShort=${shortFill.slippagePercent.toFixed(4)}%`,
-              `slippageLong=${longFill.slippagePercent.toFixed(4)}%`,
-              flippedNetSpread !== null
-                ? `flippedNetSpread=${flippedNetSpread.toFixed(4)}%`
-                : `flippedError=${flippedError ?? 'none'}`,
-            ].join(' '),
-          });
         }
       } catch {
         // ?ㅻ뜑遺?議고쉶 ?ㅽ뙣 ???좎? (?ㅽ뻾 ?쒖젏?먯꽌 ?ㅼ떆 寃利?
@@ -735,12 +712,6 @@ class ServerSimScheduler {
     for (const [opportunityId, nextEntry] of toReplace.entries()) {
       if (!this.scheduledEntries.has(opportunityId)) continue;
       this.scheduledEntries.set(opportunityId, nextEntry);
-    }
-    for (const id of toRemove) {
-      this.scheduledEntries.delete(id);
-    }
-    if (revalidationBlocks.length > 0) {
-      appendTrades(revalidationBlocks);
     }
   }
 
