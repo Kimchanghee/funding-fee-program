@@ -60,6 +60,23 @@ const URGENT_REVALIDATE_BATCH_SIZE = 12;
 const URGENT_REVALIDATE_WINDOW_MS = 15_000;
 const FINAL_REVALIDATE_GUARD_MS = 1_000;
 const FULL_REVALIDATE_CAP = 20;
+const PROBE_STATE_RETENTION_MS = 2 * 60 * 60 * 1000;
+
+const PRE_EXECUTION_PROBE_POINTS = [
+  { key: 'pre_30m', thresholdMs: 30 * 60 * 1000 },
+  { key: 'pre_10m', thresholdMs: 10 * 60 * 1000 },
+  { key: 'pre_5m', thresholdMs: 5 * 60 * 1000 },
+  { key: 'pre_3m', thresholdMs: 3 * 60 * 1000 },
+  { key: 'pre_1m', thresholdMs: 1 * 60 * 1000 },
+] as const;
+
+const POST_EXECUTION_PROBE_POINTS = [
+  { key: 'post_1m', thresholdMs: 1 * 60 * 1000 },
+  { key: 'post_3m', thresholdMs: 3 * 60 * 1000 },
+  { key: 'post_5m', thresholdMs: 5 * 60 * 1000 },
+  { key: 'post_10m', thresholdMs: 10 * 60 * 1000 },
+  { key: 'post_30m', thresholdMs: 30 * 60 * 1000 },
+] as const;
 
 function ensureDataDir() {
   if (!existsSync(DATA_DIR)) {
@@ -75,6 +92,10 @@ function getScheduleAheadWindowMs(opportunity: Pick<ArbitrageOpportunity, 'fundi
 
 function makePositionLegKey(exchange: ExchangeId, symbol: string): string {
   return `${exchange}:${symbol}`;
+}
+
+function makeScheduleProbeId(opportunityId: string, targetTime: number): string {
+  return `${opportunityId}@${targetTime}`;
 }
 
 function getPositionOpportunityKey(
@@ -299,10 +320,34 @@ export interface ServerSimSchedulerConfig {
 
 interface ScheduledSimEntry {
   opportunityId: string;
+  probeId: string;
   asset: string;
   opportunity: ArbitrageOpportunity;
   targetTime: number;
   investmentUSDT: number;
+}
+
+interface ScheduleProbeState {
+  probeId: string;
+  opportunityId: string;
+  asset: string;
+  shortExchange: ExchangeId;
+  longExchange: ExchangeId;
+  shortSymbol: string;
+  longSymbol: string;
+  targetTime: number;
+  investmentUSDT: number;
+  createdAt: number;
+  preMilestones: string[];
+  postMilestones: string[];
+  executeCaptured: boolean;
+  executeResultCaptured: boolean;
+  status: 'scheduled' | 'executed' | 'failed' | 'canceled';
+  executedAt?: number;
+  finalizedAt?: number;
+  pairId?: string;
+  executedNotional?: number;
+  lastReason?: string;
 }
 
 interface PersistedSimSchedulerState {
@@ -310,6 +355,7 @@ interface PersistedSimSchedulerState {
   config: ServerSimSchedulerConfig;
   startedAt: number | null;
   scheduledEntries: ScheduledSimEntry[];
+  scheduleProbeStates?: ScheduleProbeState[];
   pendingAutoCloses: Record<string, number>;
   lastRatesUpdate: number;
 }
@@ -318,7 +364,22 @@ type SimTradeResult = {
   success: boolean;
   error?: string;
   state?: SimStateSnapshot;
+  pairId?: string;
+  executedNotional?: number;
 };
+
+type ProbeRoute = Pick<
+  ArbitrageOpportunity,
+  | 'baseAsset'
+  | 'shortExchange'
+  | 'longExchange'
+  | 'shortSymbol'
+  | 'longSymbol'
+  | 'shortRate'
+  | 'longRate'
+  | 'fundingIntervalMs'
+  | 'nextFundingTime'
+>;
 
 class ServerSimScheduler {
   private static instance: ServerSimScheduler | null = null;
@@ -343,6 +404,7 @@ class ServerSimScheduler {
   private revalidateCursor = 0;
   private mutationQueue: Promise<void> = Promise.resolve();
   private routeFailureMemory = new RouteFailureMemory();
+  private scheduleProbeStates = new Map<string, ScheduleProbeState>();
 
   static getInstance() {
     if (!ServerSimScheduler.instance) {
@@ -385,6 +447,7 @@ class ServerSimScheduler {
       config: this.config,
       startedAt: this.startedAt,
       scheduledEntries: Array.from(this.scheduledEntries.values()),
+      scheduleProbeStates: Array.from(this.scheduleProbeStates.values()),
       pendingAutoCloses: Object.fromEntries(this.pendingAutoCloses.entries()),
       lastRatesUpdate: this.lastRatesUpdate,
     };
@@ -402,7 +465,32 @@ class ServerSimScheduler {
       this.startedAt = typeof parsed.startedAt === 'number' ? parsed.startedAt : null;
       this.scheduledEntries = new Map(
         Array.isArray(parsed.scheduledEntries)
-          ? parsed.scheduledEntries.map((entry) => [entry.opportunityId, entry])
+          ? parsed.scheduledEntries.map((entry) => {
+            const normalizedEntry: ScheduledSimEntry = {
+              ...entry,
+              probeId: entry.probeId || makeScheduleProbeId(entry.opportunityId, entry.targetTime),
+            };
+            return [entry.opportunityId, normalizedEntry] as const;
+          })
+          : [],
+      );
+      this.scheduleProbeStates = new Map(
+        Array.isArray(parsed.scheduleProbeStates)
+          ? parsed.scheduleProbeStates.map((state) => {
+            const probeId = state.probeId || makeScheduleProbeId(state.opportunityId, state.targetTime);
+            return [
+              probeId,
+              {
+                ...state,
+                probeId,
+                preMilestones: Array.isArray(state.preMilestones) ? state.preMilestones : [],
+                postMilestones: Array.isArray(state.postMilestones) ? state.postMilestones : [],
+                executeCaptured: !!state.executeCaptured,
+                executeResultCaptured: !!state.executeResultCaptured,
+                status: state.status ?? 'scheduled',
+              },
+            ] as const;
+          })
           : [],
       );
       this.pendingAutoCloses = new Map(
@@ -416,6 +504,7 @@ class ServerSimScheduler {
     } catch {
       this.active = false;
       this.scheduledEntries.clear();
+      this.scheduleProbeStates.clear();
       this.pendingAutoCloses.clear();
     }
   }
@@ -504,6 +593,7 @@ class ServerSimScheduler {
     return this.enqueue(async () => {
       this.active = false;
       this.scheduledEntries.clear();
+      this.scheduleProbeStates.clear();
       this.pendingAutoCloses.clear();
       if (this.loopInterval) {
         clearInterval(this.loopInterval);
@@ -517,6 +607,7 @@ class ServerSimScheduler {
   resetState(enabledExchanges: ExchangeId[], investmentUSDT: number) {
     return this.enqueue(async () => {
       const nextState = resetServerSimState(enabledExchanges, investmentUSDT);
+      this.scheduleProbeStates.clear();
       this.pendingAutoCloses.clear();
       if (this.active) {
         await this.refreshRatesAndPlans();
@@ -589,6 +680,266 @@ class ServerSimScheduler {
     this.routeFailureMemory.ingestEvents(events, { simulation: true });
   }
 
+  private createProbeStateFromEntry(entry: ScheduledSimEntry, now: number): ScheduleProbeState {
+    return {
+      probeId: entry.probeId,
+      opportunityId: entry.opportunityId,
+      asset: entry.asset,
+      shortExchange: entry.opportunity.shortExchange,
+      longExchange: entry.opportunity.longExchange,
+      shortSymbol: entry.opportunity.shortSymbol,
+      longSymbol: entry.opportunity.longSymbol,
+      targetTime: entry.targetTime,
+      investmentUSDT: entry.investmentUSDT,
+      createdAt: now,
+      preMilestones: [],
+      postMilestones: [],
+      executeCaptured: false,
+      executeResultCaptured: false,
+      status: 'scheduled',
+    };
+  }
+
+  private ensureProbeState(entry: ScheduledSimEntry, now: number): ScheduleProbeState {
+    const existing = this.scheduleProbeStates.get(entry.probeId);
+    if (!existing) {
+      const created = this.createProbeStateFromEntry(entry, now);
+      this.scheduleProbeStates.set(entry.probeId, created);
+      return created;
+    }
+
+    if (existing.status === 'canceled' && now < entry.targetTime) {
+      existing.status = 'scheduled';
+      existing.finalizedAt = undefined;
+      existing.lastReason = undefined;
+    }
+
+    if (existing.status === 'scheduled') {
+      existing.targetTime = entry.targetTime;
+      existing.investmentUSDT = entry.investmentUSDT;
+      existing.asset = entry.asset;
+      existing.shortExchange = entry.opportunity.shortExchange;
+      existing.longExchange = entry.opportunity.longExchange;
+      existing.shortSymbol = entry.opportunity.shortSymbol;
+      existing.longSymbol = entry.opportunity.longSymbol;
+      existing.opportunityId = entry.opportunityId;
+    }
+
+    this.scheduleProbeStates.set(entry.probeId, existing);
+    return existing;
+  }
+
+  private resolveProbeRoute(state: ScheduleProbeState): ProbeRoute {
+    const live = this.scheduledEntries.get(state.opportunityId)?.opportunity
+      ?? this.opportunities.find((candidate) => getOpportunityId(candidate) === state.opportunityId);
+    if (live) {
+      return {
+        baseAsset: live.baseAsset,
+        shortExchange: live.shortExchange,
+        longExchange: live.longExchange,
+        shortSymbol: live.shortSymbol,
+        longSymbol: live.longSymbol,
+        shortRate: live.shortRate,
+        longRate: live.longRate,
+        fundingIntervalMs: live.fundingIntervalMs,
+        nextFundingTime: live.nextFundingTime,
+      };
+    }
+
+    return {
+      baseAsset: state.asset,
+      shortExchange: state.shortExchange,
+      longExchange: state.longExchange,
+      shortSymbol: state.shortSymbol,
+      longSymbol: state.longSymbol,
+      shortRate: 0,
+      longRate: 0,
+      fundingIntervalMs: 8 * 3600000,
+      nextFundingTime: state.targetTime,
+    };
+  }
+
+  private buildScheduleProbeEvent(
+    milestone: string,
+    route: ProbeRoute,
+    investmentUSDT: number,
+    now: number,
+    options?: {
+      pairId?: string;
+      status?: ScheduleProbeState['status'];
+      timeToExecutionMs?: number;
+      reason?: string;
+      executedNotional?: number;
+    },
+  ): TradeEvent {
+    const shortLive = this.latestRates.find((rate) => (
+      rate.exchange === route.shortExchange && rate.symbol === route.shortSymbol
+    ));
+    const longLive = this.latestRates.find((rate) => (
+      rate.exchange === route.longExchange && rate.symbol === route.longSymbol
+    ));
+    const shortRate = shortLive?.rate ?? route.shortRate ?? 0;
+    const longRate = longLive?.rate ?? route.longRate ?? 0;
+    const spread = shortRate - longRate;
+    const spreadPercent = spread * 100;
+
+    const notional = Math.max(0, options?.executedNotional ?? investmentUSDT * this.config.leverage);
+    const shortFeeRate = resolveRuntimeFee(
+      route.shortExchange,
+      'taker',
+      this.config.feeOverrides,
+      this.config.paybackOverrides,
+    );
+    const longFeeRate = resolveRuntimeFee(
+      route.longExchange,
+      'taker',
+      this.config.feeOverrides,
+      this.config.paybackOverrides,
+    );
+    const totalRoundTripFees = notional * shortFeeRate * 2 + notional * longFeeRate * 2;
+    const perFunding = notional * spread;
+    const expectedNetProfit = perFunding - totalRoundTripFees;
+    const hedgedNetSpreadPercent = calcNetSpreadPercent(
+      spreadPercent,
+      0,
+      (shortFeeRate + longFeeRate) * 2 * 100,
+    );
+    const expectedRoiPercent = investmentUSDT > 0
+      ? (expectedNetProfit / Math.max(1, investmentUSDT * 2)) * 100
+      : 0;
+    const timeToExecutionMs = options?.timeToExecutionMs;
+
+    return {
+      timestamp: now,
+      type: 'schedule_probe',
+      simulation: true,
+      baseAsset: route.baseAsset,
+      shortExchange: route.shortExchange,
+      longExchange: route.longExchange,
+      spread,
+      spreadPercent,
+      margin: investmentUSDT,
+      leverage: this.config.leverage,
+      notional,
+      perFunding,
+      totalRoundTripFees,
+      netProfit: expectedNetProfit,
+      pairId: options?.pairId,
+      reason: options?.reason ?? milestone,
+      milestone,
+      timeToExecutionMs,
+      shortRate,
+      longRate,
+      hedgedNetSpreadPercent,
+      expectedNetProfit,
+      expectedRoiPercent,
+      detail: [
+        `status=${options?.status ?? 'scheduled'}`,
+        timeToExecutionMs == null ? null : `tteMs=${Math.round(timeToExecutionMs)}`,
+        `shortRate=${shortRate.toFixed(8)}`,
+        `longRate=${longRate.toFixed(8)}`,
+        `netSpread=${hedgedNetSpreadPercent.toFixed(4)}%`,
+        `expNet=${expectedNetProfit.toFixed(6)}`,
+        `expRoi=${expectedRoiPercent.toFixed(4)}%`,
+      ].filter(Boolean).join(' '),
+    };
+  }
+
+  private captureScheduledProbeMilestones(now: number) {
+    if (this.scheduledEntries.size === 0) return;
+    const events: TradeEvent[] = [];
+
+    for (const entry of this.scheduledEntries.values()) {
+      const state = this.ensureProbeState(entry, now);
+      if (state.status !== 'scheduled') continue;
+      const timeToExecutionMs = entry.targetTime - now;
+      if (timeToExecutionMs <= 0) continue;
+
+      const uncaptured = PRE_EXECUTION_PROBE_POINTS.filter((point) => (
+        !state.preMilestones.includes(point.key) && timeToExecutionMs <= point.thresholdMs
+      ));
+      if (uncaptured.length === 0) {
+        this.scheduleProbeStates.set(state.probeId, state);
+        continue;
+      }
+
+      const pointsToCapture = state.preMilestones.length === 0
+        ? [uncaptured[uncaptured.length - 1]]
+        : uncaptured;
+      for (const point of pointsToCapture) {
+        events.push(this.buildScheduleProbeEvent(
+          point.key,
+          entry.opportunity,
+          entry.investmentUSDT,
+          now,
+          {
+            status: 'scheduled',
+            timeToExecutionMs,
+          },
+        ));
+        state.preMilestones.push(point.key);
+      }
+
+      this.scheduleProbeStates.set(state.probeId, state);
+    }
+
+    if (events.length > 0) {
+      this.recordTrades(events);
+    }
+  }
+
+  private capturePostExecutionProbeMilestones(now: number) {
+    if (this.scheduleProbeStates.size === 0) return;
+    const events: TradeEvent[] = [];
+
+    for (const state of this.scheduleProbeStates.values()) {
+      if (state.status !== 'executed' || !state.executedAt) continue;
+      const elapsedMs = now - state.executedAt;
+      if (elapsedMs < 0) continue;
+      const route = this.resolveProbeRoute(state);
+
+      for (const point of POST_EXECUTION_PROBE_POINTS) {
+        if (state.postMilestones.includes(point.key)) continue;
+        if (elapsedMs >= point.thresholdMs) {
+          events.push(this.buildScheduleProbeEvent(
+            point.key,
+            route,
+            state.investmentUSDT,
+            now,
+            {
+              pairId: state.pairId,
+              status: 'executed',
+              timeToExecutionMs: state.targetTime - now,
+              executedNotional: state.executedNotional,
+            },
+          ));
+          state.postMilestones.push(point.key);
+        }
+      }
+
+      if (state.postMilestones.length === POST_EXECUTION_PROBE_POINTS.length) {
+        state.finalizedAt = state.finalizedAt ?? now;
+      }
+
+      this.scheduleProbeStates.set(state.probeId, state);
+    }
+
+    if (events.length > 0) {
+      this.recordTrades(events);
+    }
+  }
+
+  private pruneProbeStates(now: number) {
+    for (const [probeId, state] of this.scheduleProbeStates.entries()) {
+      const finalizedAt = state.finalizedAt
+        ?? state.executedAt
+        ?? state.targetTime;
+      if (now - finalizedAt > PROBE_STATE_RETENTION_MS) {
+        this.scheduleProbeStates.delete(probeId);
+      }
+    }
+  }
+
   private startLoop() {
     if (this.loopInterval) {
       clearInterval(this.loopInterval);
@@ -614,9 +965,12 @@ class ServerSimScheduler {
           this.setState(markedState);
         }
         await this.revalidateScheduledByOrderbook();
+        this.captureScheduledProbeMilestones(Date.now());
         await this.executeDueEntries();
+        this.capturePostExecutionProbeMilestones(Date.now());
         await this.processFunding();
         await this.processPendingAutoCloses();
+        this.pruneProbeStates(Date.now());
         this.saveState();
       });
     } finally {
@@ -810,6 +1164,7 @@ class ServerSimScheduler {
     }
 
     const now = Date.now();
+    const previousEntries = this.scheduledEntries;
     const timing = this.getTimingConfig();
     const availableBalance = { ...state.simBalances } as Record<string, number>;
     const occupiedLegs = new Set<string>();
@@ -867,20 +1222,63 @@ class ServerSimScheduler {
     );
 
     const nextEntries = new Map<string, ScheduledSimEntry>();
+    const canceledProbeEvents: TradeEvent[] = [];
     for (const plan of plans) {
       const opportunityId = getOpportunityId(plan.opportunity);
+      const previousEntry = previousEntries.get(opportunityId);
       const profileLead = getPairEntryLeadMs(plan.opportunity.shortExchange, plan.opportunity.longExchange);
       const entryLead = Math.max(profileLead, timing.entryLeadMs);
+      const targetTime = plan.opportunity.nextFundingTime - entryLead;
+      const probeId = previousEntry && Math.abs(previousEntry.targetTime - targetTime) <= 60_000
+        ? previousEntry.probeId
+        : makeScheduleProbeId(opportunityId, targetTime);
       nextEntries.set(opportunityId, {
         opportunityId,
+        probeId,
         asset: plan.opportunity.baseAsset,
         opportunity: plan.opportunity,
-        targetTime: plan.opportunity.nextFundingTime - entryLead,
+        targetTime,
         investmentUSDT: plan.investmentUSDT,
       });
     }
 
+    for (const entry of nextEntries.values()) {
+      this.ensureProbeState(entry, now);
+    }
+
+    for (const [opportunityId, previousEntry] of previousEntries.entries()) {
+      if (nextEntries.has(opportunityId)) continue;
+      const probeState = this.scheduleProbeStates.get(previousEntry.probeId);
+      if (!probeState || probeState.status !== 'scheduled') continue;
+
+      probeState.status = 'canceled';
+      probeState.finalizedAt = now;
+      probeState.lastReason = 'schedule_replanned';
+      this.scheduleProbeStates.set(probeState.probeId, probeState);
+
+      const timeToExecutionMs = previousEntry.targetTime - now;
+      if (
+        probeState.preMilestones.length > 0
+        || timeToExecutionMs <= PRE_EXECUTION_PROBE_POINTS[0].thresholdMs
+      ) {
+        canceledProbeEvents.push(this.buildScheduleProbeEvent(
+          'canceled_before_execute',
+          previousEntry.opportunity,
+          previousEntry.investmentUSDT,
+          now,
+          {
+            status: 'canceled',
+            reason: 'schedule_replanned',
+            timeToExecutionMs,
+          },
+        ));
+      }
+    }
+
     this.scheduledEntries = nextEntries;
+    if (canceledProbeEvents.length > 0) {
+      this.recordTrades(canceledProbeEvents);
+    }
   }
 
   private async executeDueEntries() {
@@ -891,6 +1289,21 @@ class ServerSimScheduler {
 
     for (const entry of dueEntries) {
       this.scheduledEntries.delete(entry.opportunityId);
+      const probeState = this.ensureProbeState(entry, now);
+      if (!probeState.executeCaptured) {
+        this.recordTrades([this.buildScheduleProbeEvent(
+          'execute',
+          entry.opportunity,
+          entry.investmentUSDT,
+          now,
+          {
+            status: probeState.status,
+            timeToExecutionMs: entry.targetTime - now,
+          },
+        )]);
+        probeState.executeCaptured = true;
+        this.scheduleProbeStates.set(probeState.probeId, probeState);
+      }
       const latestById = this.opportunities.find(
         (candidate) => getOpportunityId(candidate) === entry.opportunityId,
       );
@@ -906,25 +1319,92 @@ class ServerSimScheduler {
         : (latestById ?? entry.opportunity);
 
       const primaryResult = await this.executeOpportunity(primaryOpportunity, entry.investmentUSDT, true);
-      if (primaryResult.success) continue;
+      if (primaryResult.success) {
+        const executedAt = Date.now();
+        probeState.executeResultCaptured = true;
+        probeState.status = 'executed';
+        probeState.executedAt = executedAt;
+        probeState.pairId = primaryResult.pairId;
+        probeState.executedNotional = primaryResult.executedNotional;
+        probeState.lastReason = 'primary_success';
+        this.scheduleProbeStates.set(probeState.probeId, probeState);
+        this.recordTrades([this.buildScheduleProbeEvent(
+          'execute_success',
+          primaryOpportunity,
+          entry.investmentUSDT,
+          executedAt,
+          {
+            pairId: probeState.pairId,
+            status: 'executed',
+            reason: 'primary_success',
+            timeToExecutionMs: entry.targetTime - executedAt,
+            executedNotional: probeState.executedNotional,
+          },
+        )]);
+        continue;
+      }
 
       // 留덉?留?吏꾩엯 吏곸쟾???쒖꽭媛 ?ㅼ쭛?덈뒗 寃쎌슦瑜??鍮꾪빐 諛섎? 諛⑺뼢????踰????쒕룄?쒕떎.
       const flipped = flipOpportunityDirection(primaryOpportunity);
       const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true);
-      if (flippedResult.success) continue;
+      if (flippedResult.success) {
+        const executedAt = Date.now();
+        probeState.executeResultCaptured = true;
+        probeState.status = 'executed';
+        probeState.executedAt = executedAt;
+        probeState.pairId = flippedResult.pairId;
+        probeState.executedNotional = flippedResult.executedNotional;
+        probeState.lastReason = 'flipped_success';
+        this.scheduleProbeStates.set(probeState.probeId, probeState);
+        this.recordTrades([this.buildScheduleProbeEvent(
+          'execute_success',
+          flipped,
+          entry.investmentUSDT,
+          executedAt,
+          {
+            pairId: probeState.pairId,
+            status: 'executed',
+            reason: 'flipped_success',
+            timeToExecutionMs: entry.targetTime - executedAt,
+            executedNotional: probeState.executedNotional,
+          },
+        )]);
+        continue;
+      }
 
-      this.recordTrades([{
-        timestamp: Date.now(),
-        type: 'guard_block',
-        simulation: true,
-        baseAsset: primaryOpportunity.baseAsset,
-        shortExchange: primaryOpportunity.shortExchange,
-        longExchange: primaryOpportunity.longExchange,
-        spread: primaryOpportunity.spread,
-        spreadPercent: primaryOpportunity.spreadPercent,
-        reason: mapSimEntryErrorToGuardReason(primaryResult.error),
-        detail: `primary:${primaryResult.error ?? 'unknown'} | flipped:${flippedResult.error ?? 'unknown'}`,
-      }]);
+      const failedAt = Date.now();
+      const failureReason = mapSimEntryErrorToGuardReason(primaryResult.error);
+      probeState.executeResultCaptured = true;
+      probeState.status = 'failed';
+      probeState.finalizedAt = failedAt;
+      probeState.lastReason = failureReason;
+      this.scheduleProbeStates.set(probeState.probeId, probeState);
+
+      this.recordTrades([
+        this.buildScheduleProbeEvent(
+          'execute_failed',
+          primaryOpportunity,
+          entry.investmentUSDT,
+          failedAt,
+          {
+            status: 'failed',
+            reason: failureReason,
+            timeToExecutionMs: entry.targetTime - failedAt,
+          },
+        ),
+        {
+          timestamp: failedAt,
+          type: 'guard_block',
+          simulation: true,
+          baseAsset: primaryOpportunity.baseAsset,
+          shortExchange: primaryOpportunity.shortExchange,
+          longExchange: primaryOpportunity.longExchange,
+          spread: primaryOpportunity.spread,
+          spreadPercent: primaryOpportunity.spreadPercent,
+          reason: failureReason,
+          detail: `primary:${primaryResult.error ?? 'unknown'} | flipped:${flippedResult.error ?? 'unknown'}`,
+        },
+      ]);
     }
   }
 
@@ -1496,7 +1976,12 @@ class ServerSimScheduler {
       },
     ]);
 
-    return { success: true, state: savedState };
+    return {
+      success: true,
+      state: savedState,
+      pairId,
+      executedNotional: notional,
+    };
   }
 }
 

@@ -1,25 +1,43 @@
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
+import { getDataDir } from './dataDir';
 
-function getDataDir(): string {
-  const configured = process.env.FUNDING_FEE_DATA_DIR?.trim();
-  if (configured) {
-    return path.resolve(configured);
-  }
-
-  if (process.platform === 'win32') {
-    const base = process.env.LOCALAPPDATA || process.env.APPDATA || os.homedir();
-    return path.join(base, 'funding-fee-program', 'data');
-  }
-
-  const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+function getLegacyDataDir(): string | null {
+  const base = process.env.LOCALAPPDATA || process.env.APPDATA;
+  if (!base) return null;
   return path.join(base, 'funding-fee-program', 'data');
 }
 
-const DATA_DIR = getDataDir();
-const LOGS_DIR = path.join(DATA_DIR, 'logs');
-const TRADES_DIR = path.join(DATA_DIR, 'trades');
+function resolveLoggerDataDir(): string {
+  const primary = getDataDir();
+  if (process.env.FUNDING_FEE_DATA_DIR?.trim()) {
+    return primary;
+  }
+  const hasPrimaryLogs = fs.existsSync(path.join(primary, 'logs')) || fs.existsSync(path.join(primary, 'trades'));
+  if (hasPrimaryLogs) return primary;
+
+  const legacy = getLegacyDataDir();
+  if (!legacy) return primary;
+  const hasLegacyLogs = fs.existsSync(path.join(legacy, 'logs')) || fs.existsSync(path.join(legacy, 'trades'));
+  return hasLegacyLogs ? legacy : primary;
+}
+
+let cachedDataDir: string | null = null;
+
+function getLoggerDataDir(): string {
+  if (!cachedDataDir) {
+    cachedDataDir = resolveLoggerDataDir();
+  }
+  return cachedDataDir;
+}
+
+function getLogsDir(): string {
+  return path.join(getLoggerDataDir(), 'logs');
+}
+
+function getTradesDir(): string {
+  return path.join(getLoggerDataDir(), 'trades');
+}
 
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) {
@@ -29,15 +47,11 @@ function ensureDir(dir: string) {
 
 function getDateStr(ts?: number): string {
   const d = ts ? new Date(ts) : new Date();
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  return d.toISOString().slice(0, 10);
 }
 
 const LOG_RETENTION_DAYS = 7;
 
-/**
- * 7일 이상 된 로그/거래 파일 삭제.
- * 매일 append 시 자동 호출.
- */
 function pruneOldFiles(dir: string): void {
   try {
     ensureDir(dir);
@@ -45,7 +59,7 @@ function pruneOldFiles(dir: string): void {
     cutoffDate.setDate(cutoffDate.getDate() - LOG_RETENTION_DAYS);
     const cutoffStr = cutoffDate.toISOString().slice(0, 10);
 
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
     for (const f of files) {
       const dateStr = f.replace('.jsonl', '');
       if (dateStr < cutoffStr) {
@@ -58,7 +72,6 @@ function pruneOldFiles(dir: string): void {
   }
 }
 
-// ── Log entry (general application logs) ──
 export interface FileLogEntry {
   timestamp: number;
   level: 'info' | 'success' | 'warning' | 'error';
@@ -67,10 +80,20 @@ export interface FileLogEntry {
   detail?: string;
 }
 
-// ── Trade event (entry, exit, funding, error) ──
 export interface TradeEvent {
   timestamp: number;
-  type: 'entry' | 'exit' | 'funding' | 'snipe_entry' | 'snipe_exit' | 'snipe_complete' | 'auto_exit' | 'error' | 'guard_block' | 'exit_failed';
+  type:
+    | 'entry'
+    | 'exit'
+    | 'funding'
+    | 'snipe_entry'
+    | 'snipe_exit'
+    | 'snipe_complete'
+    | 'auto_exit'
+    | 'error'
+    | 'guard_block'
+    | 'exit_failed'
+    | 'schedule_probe';
   simulation: boolean;
   baseAsset?: string;
   shortExchange?: string;
@@ -102,106 +125,99 @@ export interface TradeEvent {
   liquidity?: string;
   success?: boolean;
   reason?: string;
+  milestone?: string;
+  timeToExecutionMs?: number;
+  shortRate?: number;
+  longRate?: number;
+  hedgedNetSpreadPercent?: number;
+  expectedNetProfit?: number;
+  expectedRoiPercent?: number;
   detail?: string;
 }
 
-/**
- * Append log entries to daily JSONL file.
- * File: data/logs/YYYY-MM-DD.jsonl
- */
 let lastPruneDate = '';
 
 export function appendLogs(entries: FileLogEntry[]): void {
   if (entries.length === 0) return;
   try {
-    ensureDir(LOGS_DIR);
+    const logsDir = getLogsDir();
+    const tradesDir = getTradesDir();
+    ensureDir(logsDir);
     const dateStr = getDateStr();
-    const filePath = path.join(LOGS_DIR, `${dateStr}.jsonl`);
-    const lines = entries.map(e => JSON.stringify(e)).join('\n') + '\n';
+    const filePath = path.join(logsDir, `${dateStr}.jsonl`);
+    const lines = entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
     fs.appendFileSync(filePath, lines, 'utf-8');
-    // 하루 1회 오래된 파일 정리
     if (dateStr !== lastPruneDate) {
       lastPruneDate = dateStr;
-      pruneOldFiles(LOGS_DIR);
-      pruneOldFiles(TRADES_DIR);
+      pruneOldFiles(logsDir);
+      pruneOldFiles(tradesDir);
     }
   } catch (err) {
     console.error('[fileLogger] appendLogs failed:', err);
   }
 }
 
-/**
- * Append trade events to daily JSONL file.
- * File: data/trades/YYYY-MM-DD.jsonl
- */
 export function appendTrades(events: TradeEvent[]): void {
   if (events.length === 0) return;
   try {
-    ensureDir(TRADES_DIR);
+    const logsDir = getLogsDir();
+    const tradesDir = getTradesDir();
+    ensureDir(tradesDir);
     const dateStr = getDateStr();
-    const filePath = path.join(TRADES_DIR, `${dateStr}.jsonl`);
-    const lines = events.map(e => JSON.stringify(e)).join('\n') + '\n';
+    const filePath = path.join(tradesDir, `${dateStr}.jsonl`);
+    const lines = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
     fs.appendFileSync(filePath, lines, 'utf-8');
-    // 로그 없이 거래만 기록되는 날에도 정리 실행
     if (dateStr !== lastPruneDate) {
       lastPruneDate = dateStr;
-      pruneOldFiles(LOGS_DIR);
-      pruneOldFiles(TRADES_DIR);
+      pruneOldFiles(logsDir);
+      pruneOldFiles(tradesDir);
     }
   } catch (err) {
     console.error('[fileLogger] appendTrades failed:', err);
   }
 }
 
-/**
- * Read logs for a specific date range.
- * Returns parsed entries sorted by timestamp desc.
- */
 export function readLogs(dateStr?: string): FileLogEntry[] {
   try {
-    ensureDir(LOGS_DIR);
+    const logsDir = getLogsDir();
+    ensureDir(logsDir);
     const target = dateStr || getDateStr();
-    const filePath = path.join(LOGS_DIR, `${target}.jsonl`);
+    const filePath = path.join(logsDir, `${target}.jsonl`);
     if (!fs.existsSync(filePath)) return [];
     const content = fs.readFileSync(filePath, 'utf-8');
     return content
       .split('\n')
-      .filter(line => line.trim())
-      .map(line => JSON.parse(line) as FileLogEntry)
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as FileLogEntry)
       .sort((a, b) => b.timestamp - a.timestamp);
   } catch {
     return [];
   }
 }
 
-/**
- * Read trade events for a specific date.
- */
 export function readTrades(dateStr?: string): TradeEvent[] {
   try {
-    ensureDir(TRADES_DIR);
+    const tradesDir = getTradesDir();
+    ensureDir(tradesDir);
     const target = dateStr || getDateStr();
-    const filePath = path.join(TRADES_DIR, `${target}.jsonl`);
+    const filePath = path.join(tradesDir, `${target}.jsonl`);
     if (!fs.existsSync(filePath)) return [];
     const content = fs.readFileSync(filePath, 'utf-8');
     return content
       .split('\n')
-      .filter(line => line.trim())
-      .map(line => JSON.parse(line) as TradeEvent)
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as TradeEvent)
       .sort((a, b) => b.timestamp - a.timestamp);
   } catch {
     return [];
   }
 }
 
-/**
- * Clear all files in a directory (logs or trades).
- */
 export function clearData(type: 'logs' | 'trades'): number {
   try {
-    const dir = type === 'logs' ? LOGS_DIR : TRADES_DIR;
+    const dir = type === 'logs' ? getLogsDir() : getTradesDir();
     ensureDir(dir);
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
     for (const f of files) {
       fs.unlinkSync(path.join(dir, f));
     }
@@ -212,16 +228,13 @@ export function clearData(type: 'logs' | 'trades'): number {
   }
 }
 
-/**
- * List available log/trade dates.
- */
 export function listDates(type: 'logs' | 'trades'): string[] {
   try {
-    const dir = type === 'logs' ? LOGS_DIR : TRADES_DIR;
+    const dir = type === 'logs' ? getLogsDir() : getTradesDir();
     ensureDir(dir);
     return fs.readdirSync(dir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => f.replace('.jsonl', ''))
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => f.replace('.jsonl', ''))
       .sort()
       .reverse();
   } catch {
