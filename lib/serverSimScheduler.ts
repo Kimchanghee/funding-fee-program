@@ -60,6 +60,10 @@ const URGENT_REVALIDATE_WINDOW_MS = 15_000;
 const FINAL_REVALIDATE_GUARD_MS = 1_000;
 /** Grace window to protect near-due entries from being dropped by rebuildSchedules */
 const NEAR_DUE_GRACE_MS = 5_000;
+/** Freeze near-due schedules to prevent profitable entries from being churn-canceled by frequent replans. */
+const SCHEDULE_REPLAN_FREEZE_MS = 10 * 60 * 1000;
+/** Tiny tolerance for boundary noise on entry-gap drift checks. */
+const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FULL_REVALIDATE_CAP = 20;
 const PROBE_STATE_RETENTION_MS = 2 * 60 * 60 * 1000;
 const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -1464,10 +1468,14 @@ class ServerSimScheduler {
       const profileLeadMs = getPairEntryLeadMs(opportunity.shortExchange, opportunity.longExchange);
       const entryLeadMs = Math.max(profileLeadMs, timing.entryLeadMs);
       const targetTime = opportunity.nextFundingTime - entryLeadMs;
-      if (targetTime <= now + NEAR_DUE_GRACE_MS) {
-        // Preserve already-scheduled entries that are due or near-due — executeDueEntries handles them.
+      if (targetTime <= now + SCHEDULE_REPLAN_FREEZE_MS) {
+        // Keep near-due schedules stable to avoid cancel/replan churn right before funding.
         const oppId = getOpportunityId(opportunity);
-        return previousEntries.has(oppId);
+        if (previousEntries.has(oppId)) {
+          return true;
+        }
+        // Still allow newly discovered entries as long as they are not already due this tick.
+        return targetTime > now + NEAR_DUE_GRACE_MS;
       }
       return targetTime <= now + getScheduleAheadWindowMs(opportunity);
     });
@@ -1502,7 +1510,7 @@ class ServerSimScheduler {
     // Preserve due/near-due entries that disappeared from opportunities — executeDueEntries must handle them
     for (const [opportunityId, previousEntry] of previousEntries.entries()) {
       if (nextEntries.has(opportunityId)) continue;
-      if (previousEntry.targetTime <= now + NEAR_DUE_GRACE_MS) {
+      if (previousEntry.targetTime <= now + SCHEDULE_REPLAN_FREEZE_MS) {
         nextEntries.set(opportunityId, previousEntry);
       }
     }
@@ -2041,16 +2049,17 @@ class ServerSimScheduler {
       const gapThreshold = snipeConfig.useImpactGuards
         ? impactCapBps / 100
         : maxSlippagePct;
+      const effectiveGapThreshold = gapThreshold + ENTRY_GAP_TOLERANCE_PCT;
       const entryGap = getEntryGapMetrics({
         shortPrice: shortFill.fillPrice,
         longPrice: longFill.fillPrice,
         baselineShortPrice: opportunity.shortMarkPrice,
         baselineLongPrice: opportunity.longMarkPrice,
       });
-      if (entryGap.driftPercent > gapThreshold) {
+      if (entryGap.driftPercent > effectiveGapThreshold) {
         return {
           success: false,
-          error: `entry gap drift exceeded: ${entryGap.driftPercent.toFixed(4)}% > ${gapThreshold.toFixed(4)}% (live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%)`,
+          error: `entry gap drift exceeded: ${entryGap.driftPercent.toFixed(4)}% > ${effectiveGapThreshold.toFixed(4)}% (baseThreshold=${gapThreshold.toFixed(4)}% tol=${ENTRY_GAP_TOLERANCE_PCT.toFixed(4)}% live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%)`,
         };
       }
       // v2: hedge ratio pre-check
