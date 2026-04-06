@@ -194,7 +194,9 @@ function getFallbackImpactPercent(config: Pick<StrategyConfig, 'maxSlippagePerce
     // round-trip bps -> per-event (entry/exit) percent
     return maxRoundTripImpactBps / 200;
   }
-  return config.maxSlippagePercent ?? 1.5;
+  // When impact guards are off, use target impact (expected), not max slippage cap.
+  // bps -> percent (4bps = 0.04%)
+  return (snipeConfig.targetImpactBps ?? 4) / 100;
 }
 
 function getOpportunityYieldScore(
@@ -979,7 +981,7 @@ class ServerSimScheduler {
     // Prefer measured slippage when available; otherwise fall back to configured cap.
     const impactCapDec = snipeConfig.useImpactGuards
       ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 10000 / 2
-      : (this.config.maxSlippagePercent ?? 1.5) / 100;
+      : (snipeConfig.targetImpactBps ?? 4) / 10000;
     const hasMeasuredImpact = Number.isFinite(options?.shortSlippagePercent)
       && Number.isFinite(options?.longSlippagePercent);
     const measuredImpactDec = hasMeasuredImpact

@@ -99,7 +99,8 @@ function getFallbackImpactPercent(config: Pick<SchedulerConfig, 'maxSlippagePerc
     // round-trip bps -> per-event (entry/exit) percent
     return maxRoundTripImpactBps / 200;
   }
-  return config.maxSlippagePercent ?? 1.5;
+  // bps -> percent (4bps = 0.04%)
+  return (snipeConfig.targetImpactBps ?? 4) / 100;
 }
 
 function estimatePreEntryConservativeEV(
