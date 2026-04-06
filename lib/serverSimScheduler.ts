@@ -357,6 +357,8 @@ interface ScheduleProbeState {
   lastReason?: string;
   lastShortRate?: number;
   lastLongRate?: number;
+  lastShortSlippagePercent?: number;
+  lastLongSlippagePercent?: number;
 }
 
 interface PersistedSimSchedulerState {
@@ -892,6 +894,8 @@ class ServerSimScheduler {
       timeToExecutionMs?: number;
       reason?: string;
       executedNotional?: number;
+      shortSlippagePercent?: number;
+      longSlippagePercent?: number;
     },
   ): TradeEvent {
     const shortLive = this.latestRates.find((rate) => (
@@ -933,13 +937,19 @@ class ServerSimScheduler {
     const longDrift = snipeConfig.useDriftBuffer
       ? calcDriftBuffer(longRate, undefined, usesInstantRate)
       : 0;
-    // Estimate impact from slippage threshold (no orderbook at probe time)
+    // Prefer measured slippage when available; otherwise fall back to configured cap.
     const impactCapDec = snipeConfig.useImpactGuards
       ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 10000 / 2
       : (this.config.maxSlippagePercent ?? 1.5) / 100;
+    const hasMeasuredImpact = Number.isFinite(options?.shortSlippagePercent)
+      && Number.isFinite(options?.longSlippagePercent);
+    const measuredImpactDec = hasMeasuredImpact
+      ? (((options?.shortSlippagePercent ?? 0) + (options?.longSlippagePercent ?? 0)) / 100)
+      : null;
+    const entryImpactDec = measuredImpactDec ?? impactCapDec;
     const ev = calcConservativeEV(
       notional, shortRate, longRate,
-      shortDrift, longDrift, roundTripFeePct, impactCapDec, impactCapDec,
+      shortDrift, longDrift, roundTripFeePct, entryImpactDec, entryImpactDec,
     );
     const expectedNetProfit = ev.expectedNetUSD;
     const hedgedNetSpreadPercent = calcNetSpreadPercent(
@@ -986,6 +996,8 @@ class ServerSimScheduler {
         `expRoi=${expectedRoiPercent.toFixed(4)}%`,
         `evRatio=${ev.evRatio.toFixed(3)}`,
         `passEV=${ev.passesMinProfit && ev.passesEVRatio}`,
+        `impactSrc=${hasMeasuredImpact ? 'measured' : 'cap'}`,
+        `impactUsed=${(entryImpactDec * 100).toFixed(4)}%`,
       ].filter(Boolean).join(' '),
     };
   }
@@ -1020,6 +1032,8 @@ class ServerSimScheduler {
           {
             status: 'scheduled',
             timeToExecutionMs,
+            shortSlippagePercent: state.lastShortSlippagePercent,
+            longSlippagePercent: state.lastLongSlippagePercent,
           },
         ));
         state.preMilestones.push(point.key);
@@ -1056,6 +1070,8 @@ class ServerSimScheduler {
               status: 'executed',
               timeToExecutionMs: state.targetTime - now,
               executedNotional: state.executedNotional,
+              shortSlippagePercent: state.lastShortSlippagePercent,
+              longSlippagePercent: state.lastLongSlippagePercent,
             },
           ));
           state.postMilestones.push(point.key);
@@ -1175,6 +1191,12 @@ class ServerSimScheduler {
           fetchMarketFillPrice(entry.opportunity.shortExchange, entry.opportunity.shortSymbol, 'sell', notional),
           fetchMarketFillPrice(entry.opportunity.longExchange, entry.opportunity.longSymbol, 'buy', notional),
         ]);
+        const probeState = this.ensureProbeState(entry, now);
+        if (probeState.status === 'scheduled') {
+          probeState.lastShortSlippagePercent = shortFill.slippagePercent;
+          probeState.lastLongSlippagePercent = longFill.slippagePercent;
+          this.scheduleProbeStates.set(probeState.probeId, probeState);
+        }
 
         const revalHedgeFeePct = (
           resolveRuntimeFee(entry.opportunity.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
@@ -1455,6 +1477,8 @@ class ServerSimScheduler {
             status: 'canceled',
             reason: 'schedule_replanned',
             timeToExecutionMs,
+            shortSlippagePercent: probeState.lastShortSlippagePercent,
+            longSlippagePercent: probeState.lastLongSlippagePercent,
           },
         ));
       }
@@ -1484,6 +1508,8 @@ class ServerSimScheduler {
           {
             status: probeState.status,
             timeToExecutionMs: entry.targetTime - now,
+            shortSlippagePercent: probeState.lastShortSlippagePercent,
+            longSlippagePercent: probeState.lastLongSlippagePercent,
           },
         )]);
         probeState.executeCaptured = true;
@@ -1524,6 +1550,8 @@ class ServerSimScheduler {
             reason: 'primary_success',
             timeToExecutionMs: entry.targetTime - executedAt,
             executedNotional: probeState.executedNotional,
+            shortSlippagePercent: probeState.lastShortSlippagePercent,
+            longSlippagePercent: probeState.lastLongSlippagePercent,
           },
         )]);
         continue;
@@ -1552,6 +1580,8 @@ class ServerSimScheduler {
             reason: 'flipped_success',
             timeToExecutionMs: entry.targetTime - executedAt,
             executedNotional: probeState.executedNotional,
+            shortSlippagePercent: probeState.lastShortSlippagePercent,
+            longSlippagePercent: probeState.lastLongSlippagePercent,
           },
         )]);
         continue;
@@ -1575,6 +1605,8 @@ class ServerSimScheduler {
             status: 'failed',
             reason: failureReason,
             timeToExecutionMs: entry.targetTime - failedAt,
+            shortSlippagePercent: probeState.lastShortSlippagePercent,
+            longSlippagePercent: probeState.lastLongSlippagePercent,
           },
         ),
         {
