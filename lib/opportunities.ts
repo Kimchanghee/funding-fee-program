@@ -405,7 +405,6 @@ export function estimateProfit(
   const rawRoundTripFeePct = (hedgeFeeBreakdown?.rawRoundTripRate ?? 0) * 100;
   const traderPaybackPct = (hedgeFeeBreakdown?.traderPaybackRoundTripRate ?? 0) * 100;
   const referralPaybackPct = (hedgeFeeBreakdown?.referralPaybackRoundTripRate ?? 0) * 100;
-  const roundTripFeePct = (hedgeFeeBreakdown?.effectiveRoundTripRate ?? 0) * 100;
   const rawFeesPerCycle = notional * (rawRoundTripFeePct / 100);
   const traderPaybackPerCycle = notional * (traderPaybackPct / 100);
   const referralPaybackPerCycle = notional * (referralPaybackPct / 100);
