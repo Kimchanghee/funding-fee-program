@@ -1002,7 +1002,7 @@ class ServerSimScheduler {
     };
   }
 
-  private captureScheduledProbeMilestones(now: number) {
+  private async captureScheduledProbeMilestones(now: number) {
     if (this.scheduledEntries.size === 0) return;
     const events: TradeEvent[] = [];
 
@@ -1018,6 +1018,23 @@ class ServerSimScheduler {
       if (uncaptured.length === 0) {
         this.scheduleProbeStates.set(state.probeId, state);
         continue;
+      }
+
+      // Fetch real orderbook slippage if not yet measured
+      if (state.lastShortSlippagePercent == null || state.lastLongSlippagePercent == null) {
+        try {
+          const notional = entry.investmentUSDT * this.config.leverage;
+          if (notional > 0) {
+            const [shortFill, longFill] = await Promise.all([
+              fetchMarketFillPrice(entry.opportunity.shortExchange, entry.opportunity.shortSymbol, 'sell', notional),
+              fetchMarketFillPrice(entry.opportunity.longExchange, entry.opportunity.longSymbol, 'buy', notional),
+            ]);
+            state.lastShortSlippagePercent = shortFill.slippagePercent;
+            state.lastLongSlippagePercent = longFill.slippagePercent;
+          }
+        } catch {
+          // Leave as undefined — buildScheduleProbeEvent will fall back to cap
+        }
       }
 
       const pointsToCapture = state.preMilestones.length === 0
@@ -1126,7 +1143,7 @@ class ServerSimScheduler {
           this.setState(markedState);
         }
         await this.revalidateScheduledByOrderbook();
-        this.captureScheduledProbeMilestones(Date.now());
+        await this.captureScheduledProbeMilestones(Date.now());
         await this.executeDueEntries();
         this.capturePostExecutionProbeMilestones(Date.now());
         await this.processFunding();
