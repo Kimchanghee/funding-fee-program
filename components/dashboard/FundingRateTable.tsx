@@ -171,6 +171,7 @@ export default function FundingRateTable() {
                 const profit = estimateProfit(opp, strategyConfig.investmentUSDT, strategyConfig.leverage, {
                   feeOverrides: strategyConfig.feeOverrides,
                   paybackOverrides: strategyConfig.paybackOverrides,
+                  useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
                 });
                 const rank = page * PAGE_SIZE + i + 1;
                 const isTop = rank <= 3;

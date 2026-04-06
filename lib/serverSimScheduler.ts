@@ -59,6 +59,8 @@ const BASE_REVALIDATE_BATCH_SIZE = 3;
 const URGENT_REVALIDATE_BATCH_SIZE = 12;
 const URGENT_REVALIDATE_WINDOW_MS = 15_000;
 const FINAL_REVALIDATE_GUARD_MS = 1_000;
+/** Grace window to protect near-due entries from being dropped by rebuildSchedules */
+const NEAR_DUE_GRACE_MS = 5_000;
 const FULL_REVALIDATE_CAP = 20;
 const PROBE_STATE_RETENTION_MS = 2 * 60 * 60 * 1000;
 const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -353,6 +355,8 @@ interface ScheduleProbeState {
   pairId?: string;
   executedNotional?: number;
   lastReason?: string;
+  lastShortRate?: number;
+  lastLongRate?: number;
 }
 
 interface PersistedSimSchedulerState {
@@ -847,6 +851,9 @@ class ServerSimScheduler {
     const live = this.scheduledEntries.get(state.opportunityId)?.opportunity
       ?? this.opportunities.find((candidate) => getOpportunityId(candidate) === state.opportunityId);
     if (live) {
+      // Cache rates so post-execution probes don't fall back to zero
+      state.lastShortRate = live.shortRate;
+      state.lastLongRate = live.longRate;
       return {
         baseAsset: live.baseAsset,
         shortExchange: live.shortExchange,
@@ -860,14 +867,15 @@ class ServerSimScheduler {
       };
     }
 
+    // Fallback: use last known rates from probe state instead of zeroes
     return {
       baseAsset: state.asset,
       shortExchange: state.shortExchange,
       longExchange: state.longExchange,
       shortSymbol: state.shortSymbol,
       longSymbol: state.longSymbol,
-      shortRate: 0,
-      longRate: 0,
+      shortRate: state.lastShortRate ?? 0,
+      longRate: state.lastLongRate ?? 0,
       fundingIntervalMs: 8 * 3600000,
       nextFundingTime: state.targetTime,
     };
@@ -910,13 +918,34 @@ class ServerSimScheduler {
       this.config.feeOverrides,
       this.config.paybackOverrides,
     );
-    const totalRoundTripFees = notional * shortFeeRate * 2 + notional * longFeeRate * 2;
+    const roundTripFeePct = (shortFeeRate + longFeeRate) * 2;
+    const totalRoundTripFees = notional * roundTripFeePct;
     const perFunding = notional * spread;
-    const expectedNetProfit = perFunding - totalRoundTripFees;
+
+    // Conservative EV — same formula used by actual execution guard
+    const usesInstantRate = pairUsesInstantaneousRate(
+      route.shortExchange, route.longExchange,
+    );
+    const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+    const shortDrift = snipeConfig.useDriftBuffer
+      ? calcDriftBuffer(shortRate, undefined, usesInstantRate)
+      : 0;
+    const longDrift = snipeConfig.useDriftBuffer
+      ? calcDriftBuffer(longRate, undefined, usesInstantRate)
+      : 0;
+    // Estimate impact from slippage threshold (no orderbook at probe time)
+    const impactCapDec = snipeConfig.useImpactGuards
+      ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 10000 / 2
+      : (this.config.maxSlippagePercent ?? 1.5) / 100;
+    const ev = calcConservativeEV(
+      notional, shortRate, longRate,
+      shortDrift, longDrift, roundTripFeePct, impactCapDec, impactCapDec,
+    );
+    const expectedNetProfit = ev.expectedNetUSD;
     const hedgedNetSpreadPercent = calcNetSpreadPercent(
       spreadPercent,
       0,
-      (shortFeeRate + longFeeRate) * 2 * 100,
+      roundTripFeePct * 100,
     );
     const expectedRoiPercent = investmentUSDT > 0
       ? (expectedNetProfit / Math.max(1, investmentUSDT * 2)) * 100
@@ -955,6 +984,8 @@ class ServerSimScheduler {
         `netSpread=${hedgedNetSpreadPercent.toFixed(4)}%`,
         `expNet=${expectedNetProfit.toFixed(6)}`,
         `expRoi=${expectedRoiPercent.toFixed(4)}%`,
+        `evRatio=${ev.evRatio.toFixed(3)}`,
+        `passEV=${ev.passesMinProfit && ev.passesEVRatio}`,
       ].filter(Boolean).join(' '),
     };
   }
@@ -1353,8 +1384,10 @@ class ServerSimScheduler {
       const profileLeadMs = getPairEntryLeadMs(opportunity.shortExchange, opportunity.longExchange);
       const entryLeadMs = Math.max(profileLeadMs, timing.entryLeadMs);
       const targetTime = opportunity.nextFundingTime - entryLeadMs;
-      if (targetTime <= now) {
-        return false;
+      if (targetTime <= now + NEAR_DUE_GRACE_MS) {
+        // Preserve already-scheduled entries that are due or near-due — executeDueEntries handles them.
+        const oppId = getOpportunityId(opportunity);
+        return previousEntries.has(oppId);
       }
       return targetTime <= now + getScheduleAheadWindowMs(opportunity);
     });
@@ -1384,6 +1417,14 @@ class ServerSimScheduler {
         targetTime,
         investmentUSDT: plan.investmentUSDT,
       });
+    }
+
+    // Preserve due/near-due entries that disappeared from opportunities — executeDueEntries must handle them
+    for (const [opportunityId, previousEntry] of previousEntries.entries()) {
+      if (nextEntries.has(opportunityId)) continue;
+      if (previousEntry.targetTime <= now + NEAR_DUE_GRACE_MS) {
+        nextEntries.set(opportunityId, previousEntry);
+      }
     }
 
     for (const entry of nextEntries.values()) {

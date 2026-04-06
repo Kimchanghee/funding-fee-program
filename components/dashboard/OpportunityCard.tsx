@@ -872,11 +872,13 @@ export default function OpportunityCard() {
                 skipFees: hasRealSpread,
                 feeOverrides: strategyConfig.feeOverrides,
                 paybackOverrides: strategyConfig.paybackOverrides,
+                useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
               });
               const displayFeeProfit = estimateProfit(item.opp, itemPerSide, strategyConfig.leverage, {
                 skipFees: false,
                 feeOverrides: strategyConfig.feeOverrides,
                 paybackOverrides: strategyConfig.paybackOverrides,
+                useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
               });
               const displayRawFees = displayFeeProfit.rawTotalFees;
               const displayTraderPayback = displayFeeProfit.traderFeePayback;
@@ -1124,6 +1126,7 @@ export default function OpportunityCard() {
             leverage={strategyConfig.leverage}
             feeOverrides={strategyConfig.feeOverrides}
             paybackOverrides={strategyConfig.paybackOverrides}
+            useDriftBuffer={strategyConfig.confirmedSnipeConfig?.useDriftBuffer}
             compoundMode={compoundMode}
             setCompoundMode={setCompoundMode}
             realSpreads={realSpreads}
@@ -1135,7 +1138,7 @@ export default function OpportunityCard() {
 }
 
 /* ─── Portfolio Profit Summary Row ─── */
-function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, feeOverrides, paybackOverrides, compoundMode, setCompoundMode, realSpreads }: {
+function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, feeOverrides, paybackOverrides, useDriftBuffer, compoundMode, setCompoundMode, realSpreads }: {
   label: string;
   labelColor: string;
   coins: ManagedOpportunityItem[];
@@ -1143,6 +1146,7 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
   leverage: number;
   feeOverrides?: FeeOverrides;
   paybackOverrides?: PaybackOverrides;
+  useDriftBuffer?: boolean;
   compoundMode: boolean;
   setCompoundMode: (v: boolean) => void;
   realSpreads?: Record<string, { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number }>;
@@ -1182,8 +1186,9 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
           skipFees: true,
           feeOverrides,
           paybackOverrides,
+          useDriftBuffer,
         })
-        : estimateProfit(opp, perSideInvestment, leverage, { feeOverrides, paybackOverrides });
+        : estimateProfit(opp, perSideInvestment, leverage, { feeOverrides, paybackOverrides, useDriftBuffer });
       // 마이너스 수익 항목은 합산에서 제외
       if (profit.netPerFunding <= 0) continue;
       perDay += profit.perDay; per2Day += profit.per2Day; per3Day += profit.per3Day;
@@ -1197,7 +1202,7 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
     }
     return { perDay, per2Day, per3Day, per4Day, per5Day, per6Day, perWeek, per2Week, per3Week, perMonth, per3Month, per6Month,
              cDay, c2Day, c3Day, c4Day, c5Day, c6Day, cWeek, c2Week, c3Week, cMonth, c3Month, c6Month };
-  }, [activeCoins, feeOverrides, paybackOverrides, investmentUSDT, leverage, realSpreads]);
+  }, [activeCoins, feeOverrides, paybackOverrides, useDriftBuffer, investmentUSDT, leverage, realSpreads]);
 
   if (activeCoins.length === 0) return null;
 

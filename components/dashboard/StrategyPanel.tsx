@@ -24,6 +24,7 @@ export default function StrategyPanel() {
       skipFees: hasRealSpread,
       feeOverrides: strategyConfig.feeOverrides,
       paybackOverrides: strategyConfig.paybackOverrides,
+      useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
     })
     : null;
 

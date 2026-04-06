@@ -8,6 +8,7 @@ import {
   MIN_EV_RATIO,
 } from './types';
 import { calcAnnualReturn, getMinutesToFunding } from './exchanges/utils';
+import { pairUsesInstantaneousRate } from './exchangeProfiles';
 
 const FUNDING_ALIGNMENT_TOLERANCE_MS = 120_000;
 
@@ -357,12 +358,16 @@ export interface ProfitEstimate {
     roiPerMonth: number;
     roiPerYear: number;
   };
+  /** Conservative EV matching actual execution guard formula */
+  conservativeEV: ConservativeEVResult;
 }
 
 export interface EstimateProfitOptions {
   skipFees?: boolean;
   feeOverrides?: FeeOverrides;
   paybackOverrides?: PaybackOverrides;
+  /** When true, apply funding drift buffer in conservative EV (matches execution guard useDriftBuffer) */
+  useDriftBuffer?: boolean;
 }
 
 /**
@@ -374,12 +379,13 @@ export function estimateProfit(
   leverage: number,
   options: boolean | EstimateProfitOptions = false,
 ): ProfitEstimate {
-  const { skipFees, feeOverrides, paybackOverrides } = typeof options === 'boolean'
-    ? { skipFees: options, feeOverrides: undefined, paybackOverrides: undefined }
+  const { skipFees, feeOverrides, paybackOverrides, useDriftBuffer } = typeof options === 'boolean'
+    ? { skipFees: options, feeOverrides: undefined, paybackOverrides: undefined, useDriftBuffer: false }
     : {
       skipFees: options.skipFees ?? false,
       feeOverrides: options.feeOverrides,
       paybackOverrides: options.paybackOverrides,
+      useDriftBuffer: options.useDriftBuffer ?? false,
     };
   const totalCapital = investmentUSDT * 2;
   const notional = investmentUSDT * leverage;
@@ -456,6 +462,22 @@ export function estimateProfit(
   const compound6Month = safeCompound(fundingsPerDay * 180);
   const compoundYear = safeCompound(fundingsPerDay * 365);
 
+  // Conservative EV — same formula used by actual execution guard
+  const usesInstantRate = pairUsesInstantaneousRate(
+    opportunity.shortExchange, opportunity.longExchange,
+  );
+  const shortDrift = useDriftBuffer
+    ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
+    : 0;
+  const longDrift = useDriftBuffer
+    ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
+    : 0;
+  const roundTripFeeDec = hedgeFeeBreakdown?.effectiveRoundTripRate ?? 0;
+  const conservativeEV = calcConservativeEV(
+    notional, opportunity.shortRate, opportunity.longRate,
+    shortDrift, longDrift, roundTripFeeDec, 0, 0,
+  );
+
   return {
     perFunding: grossPerFunding,
     netPerFunding,
@@ -511,5 +533,6 @@ export function estimateProfit(
       roiPerMonth: (compoundMonth / totalCapital) * 100,
       roiPerYear: (compoundYear / totalCapital) * 100,
     },
+    conservativeEV,
   };
 }

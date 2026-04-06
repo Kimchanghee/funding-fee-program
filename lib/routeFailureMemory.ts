@@ -18,7 +18,7 @@ function normalizeReason(reason?: string): string {
 function getReasonPolicy(reasonRaw?: string): { cooldownMs: number; weight: number } {
   const reason = normalizeReason(reasonRaw);
   if (reason.includes('revalidate_spread_reverted')) return { cooldownMs: 6 * 60 * 1000, weight: 1.5 };
-  if (reason.includes('profitability')) return { cooldownMs: 8 * 60 * 1000, weight: 1.3 };
+  if (reason.includes('profitability')) return { cooldownMs: 2 * 60 * 1000, weight: 0.7 };
   if (reason.includes('depth')) return { cooldownMs: 12 * 60 * 1000, weight: 1.8 };
   if (reason.includes('slippage') || reason.includes('impact') || reason.includes('entry_gap')) {
     return { cooldownMs: 10 * 60 * 1000, weight: 1.7 };

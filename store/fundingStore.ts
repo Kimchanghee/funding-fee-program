@@ -2493,6 +2493,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const previewProfit = estimateProfit(opportunity, realInvestment, strategyConfig.leverage, {
       feeOverrides: strategyConfig.feeOverrides,
       paybackOverrides: strategyConfig.paybackOverrides,
+      useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
     });
     get().addLog('info',
       `전략 실행 시작: ${opportunity.baseAsset} | 숏:${opportunity.shortExchange.toUpperCase()} 롱:${opportunity.longExchange.toUpperCase()}`,
