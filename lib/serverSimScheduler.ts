@@ -8,7 +8,6 @@ import { appendTrades, readTrades, type TradeEvent } from './fileLogger';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import {
   findOpportunities,
-  getOpportunityHourlyNetProfit,
   getOpportunityId,
   getOpportunityIntervalHours,
   getOpportunityLegKeys,
@@ -168,6 +167,8 @@ function buildStrategyLikeConfig(config: ServerSimSchedulerConfig): StrategyConf
     feeOverrides: config.feeOverrides,
     paybackOverrides: config.paybackOverrides,
     timingConfig: config.timingConfig,
+    maxSlippagePercent: config.maxSlippagePercent,
+    minVolume24hUSD: config.minVolume24hUSD,
     confirmedSnipeConfig: config.confirmedSnipeConfig,
   };
 }
@@ -186,17 +187,59 @@ function mapSimEntryErrorToGuardReason(error?: string): string {
   return 'entry_failed';
 }
 
+function getFallbackImpactPercent(config: Pick<StrategyConfig, 'maxSlippagePercent' | 'confirmedSnipeConfig'>): number {
+  const snipeConfig = config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+  if (snipeConfig.useImpactGuards) {
+    const maxRoundTripImpactBps = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
+    // round-trip bps -> per-event (entry/exit) percent
+    return maxRoundTripImpactBps / 200;
+  }
+  return config.maxSlippagePercent ?? 1.5;
+}
+
 function getOpportunityYieldScore(
   opportunity: ArbitrageOpportunity,
-  feeOverrides?: FeeOverrides,
-  paybackOverrides?: PaybackOverrides,
+  strategyConfig: StrategyConfig,
 ): number {
-  const hedgeFeePct = (
-    resolveRuntimeFee(opportunity.shortExchange, 'taker', feeOverrides, paybackOverrides)
-    + resolveRuntimeFee(opportunity.longExchange, 'taker', feeOverrides, paybackOverrides)
-  ) * 2 * 100;
-  const netSpreadPercent = Math.max(0, calcNetSpreadPercent(opportunity.spreadPercent, 0, hedgeFeePct));
-  return Math.max(0, netSpreadPercent / getOpportunityIntervalHours(opportunity));
+  const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+  if (!Number.isFinite(notional) || notional <= 0) return 0;
+
+  const shortFeeRate = resolveRuntimeFee(
+    opportunity.shortExchange,
+    'taker',
+    strategyConfig.feeOverrides,
+    strategyConfig.paybackOverrides,
+  );
+  const longFeeRate = resolveRuntimeFee(
+    opportunity.longExchange,
+    'taker',
+    strategyConfig.feeOverrides,
+    strategyConfig.paybackOverrides,
+  );
+  const roundTripFeeDec = (shortFeeRate + longFeeRate) * 2;
+
+  const snipeConfig = strategyConfig.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+  const usesInstantRate = pairUsesInstantaneousRate(opportunity.shortExchange, opportunity.longExchange);
+  const shortDrift = snipeConfig.useDriftBuffer
+    ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
+    : 0;
+  const longDrift = snipeConfig.useDriftBuffer
+    ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
+    : 0;
+  const impactDec = getFallbackImpactPercent(strategyConfig) / 100;
+
+  const ev = calcConservativeEV(
+    notional,
+    opportunity.shortRate,
+    opportunity.longRate,
+    shortDrift,
+    longDrift,
+    roundTripFeeDec,
+    impactDec,
+    impactDec,
+  );
+  if (!ev.passesMinProfit || !ev.passesEVRatio) return 0;
+  return Math.max(0, ev.expectedNetUSD / getOpportunityIntervalHours(opportunity));
 }
 
 function planWindowAllocations(
@@ -207,16 +250,12 @@ function planWindowAllocations(
   const candidates = opportunities
     .map((opportunity) => ({
       opportunity,
-      score: getOpportunityYieldScore(
-        opportunity,
-        strategyConfig.feeOverrides,
-        strategyConfig.paybackOverrides,
-      ),
+      score: getOpportunityYieldScore(opportunity, strategyConfig),
     }))
     .filter((candidate) => candidate.score > 0)
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
-      return getOpportunityHourlyNetProfit(b.opportunity) - getOpportunityHourlyNetProfit(a.opportunity);
+      return a.opportunity.nextFundingTime - b.opportunity.nextFundingTime;
     });
 
   const occupiedLegs = new Set<string>();

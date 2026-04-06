@@ -92,6 +92,59 @@ function getSnipeConfig(config?: ConfirmedSnipeConfig): ConfirmedSnipeConfig {
   return config ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
 }
 
+function getFallbackImpactPercent(config: Pick<SchedulerConfig, 'maxSlippagePercent' | 'confirmedSnipeConfig'>): number {
+  const snipeConfig = getSnipeConfig(config.confirmedSnipeConfig);
+  if (snipeConfig.useImpactGuards) {
+    const maxRoundTripImpactBps = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
+    // round-trip bps -> per-event (entry/exit) percent
+    return maxRoundTripImpactBps / 200;
+  }
+  return config.maxSlippagePercent ?? 1.5;
+}
+
+function estimatePreEntryConservativeEV(
+  opportunity: ArbitrageOpportunity,
+  config: SchedulerConfig,
+) {
+  const notional = config.investmentUSDT * config.leverage;
+  if (!Number.isFinite(notional) || notional <= 0) return null;
+
+  const shortFeeRate = resolveRuntimeFee(
+    opportunity.shortExchange,
+    'taker',
+    config.feeOverrides,
+    config.paybackOverrides,
+  );
+  const longFeeRate = resolveRuntimeFee(
+    opportunity.longExchange,
+    'taker',
+    config.feeOverrides,
+    config.paybackOverrides,
+  );
+  const roundTripFeeDec = (shortFeeRate + longFeeRate) * 2;
+
+  const snipeConfig = getSnipeConfig(config.confirmedSnipeConfig);
+  const usesInstantRate = pairUsesInstantaneousRate(opportunity.shortExchange, opportunity.longExchange);
+  const shortDrift = snipeConfig.useDriftBuffer
+    ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
+    : 0;
+  const longDrift = snipeConfig.useDriftBuffer
+    ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
+    : 0;
+  const impactDec = getFallbackImpactPercent(config) / 100;
+
+  return calcConservativeEV(
+    notional,
+    opportunity.shortRate,
+    opportunity.longRate,
+    shortDrift,
+    longDrift,
+    roundTripFeeDec,
+    impactDec,
+    impactDec,
+  );
+}
+
 export interface SchedulerConfig {
   investmentUSDT: number;
   leverage: number;
@@ -629,7 +682,8 @@ class ServerScheduler {
         if (opportunity.nextFundingTime - this.lastPollTime > aheadWindowMs) return false;
         if (opportunity.nextFundingTime < this.lastPollTime) return false;
         if (opportunity.spreadPercent < this.config.minSpreadPercent) return false;
-        if (opportunity.netProfit <= 0) return false;
+        const preEntryEv = estimatePreEntryConservativeEV(opportunity, this.config);
+        if (!preEntryEv || !preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) return false;
         if (minVolume24hUSD > 0) {
           const shortVol = volumeByExchangeAsset.get(`${opportunity.shortExchange}:${opportunity.baseAsset}`);
           const longVol = volumeByExchangeAsset.get(`${opportunity.longExchange}:${opportunity.baseAsset}`);

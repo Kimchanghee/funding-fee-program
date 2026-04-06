@@ -36,6 +36,10 @@ export default function ReturnProjectionPanel() {
       activePositions: simulationMode ? simPositions : positions,
       simulationMode,
       defaultInvestmentUSDT: strategyConfig.investmentUSDT,
+      leverage: strategyConfig.leverage,
+      feeOverrides: strategyConfig.feeOverrides,
+      paybackOverrides: strategyConfig.paybackOverrides,
+      useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
       limit: 200,
     });
 

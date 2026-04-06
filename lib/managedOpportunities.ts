@@ -1,6 +1,11 @@
-import type { ArbitrageOpportunity, Position } from './types';
+import type {
+  ArbitrageOpportunity,
+  FeeOverrides,
+  PaybackOverrides,
+  Position,
+} from './types';
 import {
-  getOpportunityHourlyNetProfit,
+  estimateProfit,
   getOpportunityId,
   makeOpportunityId,
 } from './opportunities';
@@ -113,6 +118,10 @@ export function buildManagedOpportunityItems(params: {
   activePositions: ManagedPositionLike[];
   simulationMode: boolean;
   defaultInvestmentUSDT: number;
+  leverage: number;
+  feeOverrides?: FeeOverrides;
+  paybackOverrides?: PaybackOverrides;
+  useDriftBuffer?: boolean;
   limit?: number;
 }) {
   const {
@@ -122,6 +131,10 @@ export function buildManagedOpportunityItems(params: {
     activePositions,
     simulationMode,
     defaultInvestmentUSDT,
+    leverage,
+    feeOverrides,
+    paybackOverrides,
+    useDriftBuffer = false,
     limit = 15,
   } = params;
 
@@ -174,8 +187,27 @@ export function buildManagedOpportunityItems(params: {
     });
   }
 
+  const estimatedNetPerFundingCache = new Map<string, number>();
+  const getEstimatedNetPerFunding = (item: ManagedOpportunityItem) => {
+    const cacheKey = `${item.id}:${item.investmentUSDT ?? defaultInvestmentUSDT}`;
+    const cached = estimatedNetPerFundingCache.get(cacheKey);
+    if (cached != null) return cached;
+    const investment = item.investmentUSDT ?? defaultInvestmentUSDT;
+    const profit = estimateProfit(item.opp, investment, leverage, {
+      feeOverrides,
+      paybackOverrides,
+      useDriftBuffer,
+    });
+    estimatedNetPerFundingCache.set(cacheKey, profit.netPerFunding);
+    return profit.netPerFunding;
+  };
+  const getEstimatedHourlyNet = (item: ManagedOpportunityItem) => {
+    const intervalHours = Math.max(1 / 60, (item.opp.fundingIntervalMs ?? 8 * 3600000) / 3600000);
+    return getEstimatedNetPerFunding(item) / intervalHours;
+  };
+
   return Array.from(items.values())
-    .filter((item) => item.status === 'active' || item.opp.netProfit > 0)
+    .filter((item) => item.status === 'active' || getEstimatedNetPerFunding(item) > 0)
     .sort((a, b) => {
       const priority = { active: 0, scheduled: 1, opportunity: 2 };
       if (priority[a.status] !== priority[b.status]) {
@@ -184,6 +216,6 @@ export function buildManagedOpportunityItems(params: {
 
       const timeDiff = a.fundingTime - b.fundingTime;
       if (Math.abs(timeDiff) > 120_000) return timeDiff;
-      return getOpportunityHourlyNetProfit(b.opp) - getOpportunityHourlyNetProfit(a.opp);
+      return getEstimatedHourlyNet(b) - getEstimatedHourlyNet(a);
     });
 }

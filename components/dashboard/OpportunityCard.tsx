@@ -476,18 +476,27 @@ export default function OpportunityCard() {
         activePositions: (simulationMode ? simPositions : positions) as Array<Position | SimPosition>,
         simulationMode,
         defaultInvestmentUSDT: strategyConfig.investmentUSDT,
+        leverage: strategyConfig.leverage,
+        feeOverrides: strategyConfig.feeOverrides,
+        paybackOverrides: strategyConfig.paybackOverrides,
+        useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
         limit: 15,
       });
       // realSpread 기반 필터: 실질 수익이 마이너스면 예약/후보 숨김
       return items.filter(item => {
         if (item.status === 'active') return true;
         const rs = realSpreads[item.id] ?? realSpreads[item.asset];
-        if (!rs) return true; // realSpread 없으면 명목 스프레드 기준 (이미 netProfit>0 통과)
+        if (!rs) return true; // realSpread 없으면 estimateProfit 기반 필터 결과를 그대로 사용
         // effectiveSpread로 실질 수익 직접 계산
         const perSide = item.investmentUSDT ?? strategyConfig.investmentUSDT;
-        const notional = perSide * strategyConfig.leverage;
-        const netPerFunding = notional * (rs.effectiveSpread / 100);
-        return netPerFunding > 0;
+        const effectiveOpp = { ...item.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread };
+        const profit = estimateProfit(effectiveOpp, perSide, strategyConfig.leverage, {
+          skipFees: true,
+          feeOverrides: strategyConfig.feeOverrides,
+          paybackOverrides: strategyConfig.paybackOverrides,
+          useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+        });
+        return profit.netPerFunding > 0;
       });
     },
     [
@@ -497,8 +506,11 @@ export default function OpportunityCard() {
       simPositions,
       snipeAllocations,
       snipeTargets,
+      strategyConfig.feeOverrides,
+      strategyConfig.paybackOverrides,
       strategyConfig.investmentUSDT,
       strategyConfig.leverage,
+      strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
       realSpreads,
     ],
   );

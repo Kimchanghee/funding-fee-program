@@ -368,6 +368,10 @@ export interface EstimateProfitOptions {
   paybackOverrides?: PaybackOverrides;
   /** When true, apply funding drift buffer in conservative EV (matches execution guard useDriftBuffer) */
   useDriftBuffer?: boolean;
+  /** Entry impact percent (e.g. 0.12 for 0.12%) applied to conservative EV */
+  entryImpactPercent?: number;
+  /** Exit impact percent (defaults to entryImpactPercent when omitted) */
+  exitImpactPercent?: number;
 }
 
 /**
@@ -379,13 +383,29 @@ export function estimateProfit(
   leverage: number,
   options: boolean | EstimateProfitOptions = false,
 ): ProfitEstimate {
-  const { skipFees, feeOverrides, paybackOverrides, useDriftBuffer } = typeof options === 'boolean'
-    ? { skipFees: options, feeOverrides: undefined, paybackOverrides: undefined, useDriftBuffer: false }
+  const {
+    skipFees,
+    feeOverrides,
+    paybackOverrides,
+    useDriftBuffer,
+    entryImpactPercent,
+    exitImpactPercent,
+  } = typeof options === 'boolean'
+    ? {
+      skipFees: options,
+      feeOverrides: undefined,
+      paybackOverrides: undefined,
+      useDriftBuffer: false,
+      entryImpactPercent: 0,
+      exitImpactPercent: 0,
+    }
     : {
       skipFees: options.skipFees ?? false,
       feeOverrides: options.feeOverrides,
       paybackOverrides: options.paybackOverrides,
       useDriftBuffer: options.useDriftBuffer ?? false,
+      entryImpactPercent: Math.max(0, options.entryImpactPercent ?? 0),
+      exitImpactPercent: Math.max(0, options.exitImpactPercent ?? options.entryImpactPercent ?? 0),
     };
   const totalCapital = investmentUSDT * 2;
   const notional = investmentUSDT * leverage;
@@ -422,9 +442,11 @@ export function estimateProfit(
     ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
     : 0;
   const roundTripFeeDec = hedgeFeeBreakdown?.effectiveRoundTripRate ?? 0;
+  const entryImpactDec = entryImpactPercent / 100;
+  const exitImpactDec = exitImpactPercent / 100;
   const conservativeEV = calcConservativeEV(
     notional, opportunity.shortRate, opportunity.longRate,
-    shortDrift, longDrift, roundTripFeeDec, 0, 0,
+    shortDrift, longDrift, roundTripFeeDec, entryImpactDec, exitImpactDec,
   );
 
   // Use conservative EV as the base for all profit projections

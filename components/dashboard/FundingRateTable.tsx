@@ -62,21 +62,30 @@ export default function FundingRateTable() {
   };
 
   const filtered = useMemo(() => {
-    let list = opportunities.filter(o => o.netProfit > 0);
+    let list = opportunities
+      .map((opp) => ({
+        opp,
+        profit: estimateProfit(opp, strategyConfig.investmentUSDT, strategyConfig.leverage, {
+          feeOverrides: strategyConfig.feeOverrides,
+          paybackOverrides: strategyConfig.paybackOverrides,
+          useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+        }),
+      }))
+      .filter((item) => item.profit.netPerFunding > 0);
     if (search) {
-      list = list.filter(o => o.baseAsset.toLowerCase().includes(search.toLowerCase()));
+      list = list.filter((item) => item.opp.baseAsset.toLowerCase().includes(search.toLowerCase()));
     }
     list.sort((a, b) => {
       const mul = sortDir === 'asc' ? 1 : -1;
-      if (sortField === 'netProfit') return (a.netProfit - b.netProfit) * mul;
-      if (sortField === 'spread') return (a.spread - b.spread) * mul;
-      if (sortField === 'annualReturn') return (a.annualReturnPercent - b.annualReturnPercent) * mul;
-      if (sortField === 'baseAsset') return a.baseAsset.localeCompare(b.baseAsset) * mul;
-      if (sortField === 'minutesToFunding') return (a.minutesToFunding - b.minutesToFunding) * mul;
+      if (sortField === 'netProfit') return (a.profit.netPerFunding - b.profit.netPerFunding) * mul;
+      if (sortField === 'spread') return (a.opp.spread - b.opp.spread) * mul;
+      if (sortField === 'annualReturn') return (a.opp.annualReturnPercent - b.opp.annualReturnPercent) * mul;
+      if (sortField === 'baseAsset') return a.opp.baseAsset.localeCompare(b.opp.baseAsset) * mul;
+      if (sortField === 'minutesToFunding') return (a.opp.minutesToFunding - b.opp.minutesToFunding) * mul;
       return 0;
     });
     return list;
-  }, [opportunities, search, sortField, sortDir]);
+  }, [opportunities, search, sortField, sortDir, strategyConfig.investmentUSDT, strategyConfig.leverage, strategyConfig.feeOverrides, strategyConfig.paybackOverrides, strategyConfig.confirmedSnipeConfig?.useDriftBuffer]);
 
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
@@ -167,12 +176,8 @@ export default function FundingRateTable() {
                 </td>
               </tr>
             ) : (
-              paged.map((opp, i) => {
-                const profit = estimateProfit(opp, strategyConfig.investmentUSDT, strategyConfig.leverage, {
-                  feeOverrides: strategyConfig.feeOverrides,
-                  paybackOverrides: strategyConfig.paybackOverrides,
-                  useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
-                });
+              paged.map((item, i) => {
+                const { opp, profit } = item;
                 const rank = page * PAGE_SIZE + i + 1;
                 const isTop = rank <= 3;
                 return (

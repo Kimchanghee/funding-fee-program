@@ -22,7 +22,6 @@ import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchan
 import {
   estimateProfit,
   findOpportunities,
-  getOpportunityHourlyNetProfit,
   getOpportunityId,
   getOpportunityIntervalHours,
   getOpportunityLegKeys,
@@ -531,18 +530,25 @@ function getSimPositionOpportunityKey(
 function getOpportunityYieldScore(
   opportunity: ArbitrageOpportunity,
   spread?: RealSpreadSnapshot,
-  feeOverrides?: StrategyConfig['feeOverrides'],
-  paybackOverrides?: StrategyConfig['paybackOverrides'],
+  strategyConfig?: StrategyConfig,
 ): number {
-  const hedgeFeePct = getHedgeFeesWithOverrides(
-    opportunity.shortExchange,
-    opportunity.longExchange,
-    'taker',
-    feeOverrides,
-    paybackOverrides,
-  ) * 100;
-  const netSpreadPercent = spread?.effectiveSpread ?? calcNetSpreadPercent(opportunity.spreadPercent, 0, hedgeFeePct);
-  return Math.max(0, netSpreadPercent / getOpportunityIntervalHours(opportunity));
+  const cfg = strategyConfig;
+  if (!cfg) return 0;
+  const hasRealSpread = !!spread;
+  const effectiveOpp = hasRealSpread
+    ? { ...opportunity, spread: spread.effectiveSpread / 100, spreadPercent: spread.effectiveSpread }
+    : opportunity;
+  const profit = estimateProfit(effectiveOpp, cfg.investmentUSDT, cfg.leverage, {
+    skipFees: hasRealSpread,
+    feeOverrides: cfg.feeOverrides,
+    paybackOverrides: cfg.paybackOverrides,
+    useDriftBuffer: cfg.confirmedSnipeConfig?.useDriftBuffer,
+  });
+  if (profit.netPerFunding <= 0) return 0;
+  if (!hasRealSpread && (!profit.conservativeEV.passesMinProfit || !profit.conservativeEV.passesEVRatio)) {
+    return 0;
+  }
+  return Math.max(0, profit.netPerFunding / getOpportunityIntervalHours(opportunity));
 }
 
 function opportunityConflictsWithLegs(
@@ -565,18 +571,17 @@ function planWindowAllocations(
 ): PlannedSnipeAllocation[] {
   const candidates = opportunities
     .map((opportunity) => ({
-      opportunity,
-      score: getOpportunityYieldScore(
         opportunity,
-        getRealSpreadForOpportunity(realSpreads, opportunity),
-        strategyConfig.feeOverrides,
-        strategyConfig.paybackOverrides,
-      ),
-    }))
+        score: getOpportunityYieldScore(
+          opportunity,
+          getRealSpreadForOpportunity(realSpreads, opportunity),
+          strategyConfig,
+        ),
+      }))
     .filter((candidate) => candidate.score > 0)
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
-      return getOpportunityHourlyNetProfit(b.opportunity) - getOpportunityHourlyNetProfit(a.opportunity);
+      return a.opportunity.nextFundingTime - b.opportunity.nextFundingTime;
     });
 
   const occupiedLegs = new Set<string>();
@@ -3559,7 +3564,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }
       }
       if (!hasRS && o.spreadPercent < effectiveMinPercent) { filterReasons.lowSpread++; return false; }
-      if (o.netProfit <= 0) { filterReasons.noProfit++; return false; }
+      if (!hasRS) {
+        const evProfit = estimateProfit(o, strategyConfig.investmentUSDT, strategyConfig.leverage, {
+          feeOverrides: strategyConfig.feeOverrides,
+          paybackOverrides: strategyConfig.paybackOverrides,
+          useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+        });
+        if (evProfit.netPerFunding <= 0 || !evProfit.conservativeEV.passesMinProfit || !evProfit.conservativeEV.passesEVRatio) {
+          filterReasons.noProfit++; return false;
+        }
+      }
       return true;
     });
 
@@ -3678,13 +3692,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           const scoreDiff = getOpportunityYieldScore(
             b,
             getRealSpreadForOpportunity(currentRealSpreads, b),
-            strategyConfig.feeOverrides,
-            strategyConfig.paybackOverrides,
+            strategyConfig,
           ) - getOpportunityYieldScore(
             a,
             getRealSpreadForOpportunity(currentRealSpreads, a),
-            strategyConfig.feeOverrides,
-            strategyConfig.paybackOverrides,
+            strategyConfig,
           );
           if (scoreDiff !== 0) return scoreDiff;
           return getLiveNetProfit(b) - getLiveNetProfit(a);
