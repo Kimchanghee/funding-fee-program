@@ -411,9 +411,27 @@ export function estimateProfit(
   const referralPaybackPerCycle = notional * (referralPaybackPct / 100);
   const totalPaybackPerCycle = traderPaybackPerCycle + referralPaybackPerCycle;
   const feesPerCycle = rawFeesPerCycle - totalPaybackPerCycle;
+
+  // Conservative EV — same formula used by actual execution guard
+  const usesInstantRate = pairUsesInstantaneousRate(
+    opportunity.shortExchange, opportunity.longExchange,
+  );
+  const shortDrift = useDriftBuffer
+    ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
+    : 0;
+  const longDrift = useDriftBuffer
+    ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
+    : 0;
+  const roundTripFeeDec = hedgeFeeBreakdown?.effectiveRoundTripRate ?? 0;
+  const conservativeEV = calcConservativeEV(
+    notional, opportunity.shortRate, opportunity.longRate,
+    shortDrift, longDrift, roundTripFeeDec, 0, 0,
+  );
+
+  // Use conservative EV as the base for all profit projections
   const netPerFunding = skipFees
     ? grossPerFunding
-    : notional * (calcNetSpreadPercent(opportunity.spreadPercent, 0, roundTripFeePct, 0) / 100);
+    : conservativeEV.expectedNetUSD;
   const netPer1h = netPerFunding / intervalH;
   const netPer4h = netPer1h * 4;
   const netPerDay = netPerFunding * fundingsPerDay;
@@ -461,22 +479,6 @@ export function estimateProfit(
   const compound3Month = safeCompound(fundingsPerDay * 90);
   const compound6Month = safeCompound(fundingsPerDay * 180);
   const compoundYear = safeCompound(fundingsPerDay * 365);
-
-  // Conservative EV — same formula used by actual execution guard
-  const usesInstantRate = pairUsesInstantaneousRate(
-    opportunity.shortExchange, opportunity.longExchange,
-  );
-  const shortDrift = useDriftBuffer
-    ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
-    : 0;
-  const longDrift = useDriftBuffer
-    ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
-    : 0;
-  const roundTripFeeDec = hedgeFeeBreakdown?.effectiveRoundTripRate ?? 0;
-  const conservativeEV = calcConservativeEV(
-    notional, opportunity.shortRate, opportunity.longRate,
-    shortDrift, longDrift, roundTripFeeDec, 0, 0,
-  );
 
   return {
     perFunding: grossPerFunding,
