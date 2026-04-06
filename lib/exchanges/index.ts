@@ -261,6 +261,41 @@ export async function fetchFundingRates(
 
   ex = await ensureMarkets(ex, id, config);
 
+  const fetchPerSymbol = async (targetSymbols: string[]): Promise<FundingRate[]> => {
+    const results: FundingRate[] = [];
+    const chunks: string[][] = [];
+    for (let i = 0; i < targetSymbols.length; i += 10) {
+      chunks.push(targetSymbols.slice(i, i + 10));
+    }
+
+    for (const chunk of chunks) {
+      await Promise.allSettled(
+        chunk.map(async (sym) => {
+          try {
+            const fr = await Promise.race([
+              ex.fetchFundingRate(sym),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('timeout')), 8000),
+              ),
+            ]);
+            const normalized = normalizeFr(id, sym, fr);
+            if (normalized) results.push(normalized);
+          } catch {
+            // skip failed symbol
+          }
+        }),
+      );
+    }
+
+    return results;
+  };
+
+  // In symbol-targeted mode, avoid full-market scans unless per-symbol fetch fails.
+  if (hasExplicitSymbols && symbols) {
+    const targeted = await fetchPerSymbol(symbols);
+    if (targeted.length > 0) return targeted;
+  }
+
   try {
     // ── Bulk fetch (1 API call) with 12s timeout ──
     const frs = await Promise.race([
@@ -291,29 +326,7 @@ export async function fetchFundingRates(
       throw new Error(`[${id}] fetchFundingRates bulk failed, no symbols for fallback`);
     }
 
-    const results: FundingRate[] = [];
-    // Batch symbols into chunks of 10 to avoid overwhelming
-    const chunks: string[][] = [];
-    for (let i = 0; i < fallbackSymbols.length; i += 10) {
-      chunks.push(fallbackSymbols.slice(i, i + 10));
-    }
-
-    for (const chunk of chunks) {
-      await Promise.allSettled(
-        chunk.map(async (sym) => {
-          try {
-            const fr = await Promise.race([
-              ex.fetchFundingRate(sym),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error(`timeout`)), 8000),
-              ),
-            ]);
-            const normalized = normalizeFr(id, sym, fr);
-            if (normalized) results.push(normalized);
-          } catch { /* skip failed symbol */ }
-        }),
-      );
-    }
+    const results = await fetchPerSymbol(fallbackSymbols);
 
     if (results.length === 0) {
       // Last fallback for full-scan mode: allow WS tracked subset instead of empty response.
