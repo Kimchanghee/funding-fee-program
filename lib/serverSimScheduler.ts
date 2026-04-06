@@ -61,6 +61,11 @@ const URGENT_REVALIDATE_WINDOW_MS = 15_000;
 const FINAL_REVALIDATE_GUARD_MS = 1_000;
 const FULL_REVALIDATE_CAP = 20;
 const PROBE_STATE_RETENTION_MS = 2 * 60 * 60 * 1000;
+const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
+const FULL_FUNDING_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
+const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
+const FAST_OPPORTUNITY_SEED_COUNT = 12;
 
 const PRE_EXECUTION_PROBE_POINTS = [
   { key: 'pre_30m', thresholdMs: 30 * 60 * 1000 },
@@ -360,6 +365,11 @@ interface PersistedSimSchedulerState {
   lastRatesUpdate: number;
 }
 
+interface FundingUniverseCacheEntry {
+  symbols: string[];
+  updatedAt: number;
+}
+
 type SimTradeResult = {
   success: boolean;
   error?: string;
@@ -405,6 +415,8 @@ class ServerSimScheduler {
   private mutationQueue: Promise<void> = Promise.resolve();
   private routeFailureMemory = new RouteFailureMemory();
   private scheduleProbeStates = new Map<string, ScheduleProbeState>();
+  private fundingUniverseCache = new Map<ExchangeId, FundingUniverseCacheEntry>();
+  private lastFullFundingRefreshAt = 0;
 
   static getInstance() {
     if (!ServerSimScheduler.instance) {
@@ -581,6 +593,7 @@ class ServerSimScheduler {
   updateConfig(config: ServerSimSchedulerConfig) {
     return this.enqueue(async () => {
       this.config = this.normalizeConfig(config);
+      this.pruneFundingUniverseCache();
       this.saveState();
       if (this.active) {
         await this.refreshRatesAndPlans();
@@ -678,6 +691,107 @@ class ServerSimScheduler {
     if (events.length === 0) return;
     appendTrades(events);
     this.routeFailureMemory.ingestEvents(events, { simulation: true });
+  }
+
+  private pruneFundingUniverseCache() {
+    const enabled = new Set(this.config.enabledExchanges);
+    for (const exchange of Array.from(this.fundingUniverseCache.keys())) {
+      if (!enabled.has(exchange)) {
+        this.fundingUniverseCache.delete(exchange);
+      }
+    }
+  }
+
+  private updateFundingUniverseCacheFromRates(rates: FundingRate[], now: number) {
+    const grouped = new Map<ExchangeId, Set<string>>();
+    for (const rate of rates) {
+      if (!this.config.enabledExchanges.includes(rate.exchange)) continue;
+      if (!rate.symbol || !Number.isFinite(rate.nextFundingTime)) continue;
+      let set = grouped.get(rate.exchange);
+      if (!set) {
+        set = new Set<string>();
+        grouped.set(rate.exchange, set);
+      }
+      set.add(rate.symbol);
+    }
+
+    for (const exchange of this.config.enabledExchanges) {
+      const symbols = Array.from(grouped.get(exchange) ?? []);
+      if (symbols.length === 0) continue;
+      this.fundingUniverseCache.set(exchange, {
+        symbols,
+        updatedAt: now,
+      });
+    }
+  }
+
+  private getFreshUniverseSymbols(exchange: ExchangeId, now: number): string[] | null {
+    const cached = this.fundingUniverseCache.get(exchange);
+    if (!cached) return null;
+    if (now - cached.updatedAt >= FUNDING_UNIVERSE_CACHE_TTL_MS) return null;
+    return cached.symbols;
+  }
+
+  private shouldRunFullFundingRefresh(now: number): boolean {
+    if (this.lastFullFundingRefreshAt === 0) return true;
+    if (now - this.lastFullFundingRefreshAt >= FULL_FUNDING_REFRESH_INTERVAL_MS) return true;
+    for (const exchange of this.config.enabledExchanges) {
+      if (!this.getFreshUniverseSymbols(exchange, now)) return true;
+    }
+    return false;
+  }
+
+  private buildFastFundingSymbols(now: number): Map<ExchangeId, string[]> {
+    const byExchange = new Map<ExchangeId, Set<string>>();
+    const add = (exchange: ExchangeId, symbol?: string) => {
+      if (!symbol) return;
+      if (!this.config.enabledExchanges.includes(exchange)) return;
+      let set = byExchange.get(exchange);
+      if (!set) {
+        set = new Set<string>();
+        byExchange.set(exchange, set);
+      }
+      if (set.size >= FAST_SYMBOL_CAP_PER_EXCHANGE) return;
+      set.add(symbol);
+    };
+
+    const state = this.getState();
+    for (const position of state.simPositions) {
+      add(position.exchange, position.symbol);
+    }
+
+    for (const entry of this.scheduledEntries.values()) {
+      add(entry.opportunity.shortExchange, entry.opportunity.shortSymbol);
+      add(entry.opportunity.longExchange, entry.opportunity.longSymbol);
+    }
+
+    for (const opportunity of this.opportunities.slice(0, FAST_OPPORTUNITY_SEED_COUNT)) {
+      add(opportunity.shortExchange, opportunity.shortSymbol);
+      add(opportunity.longExchange, opportunity.longSymbol);
+    }
+
+    for (const exchange of this.config.enabledExchanges) {
+      let set = byExchange.get(exchange);
+      if (!set) {
+        set = new Set<string>();
+        byExchange.set(exchange, set);
+      }
+      const universe = this.getFreshUniverseSymbols(exchange, now);
+      if (!universe) continue;
+      const minTarget = Math.min(FAST_SYMBOL_MIN_PER_EXCHANGE, FAST_SYMBOL_CAP_PER_EXCHANGE);
+      for (const symbol of universe) {
+        if (set.size >= minTarget) break;
+        set.add(symbol);
+      }
+    }
+
+    const output = new Map<ExchangeId, string[]>();
+    for (const exchange of this.config.enabledExchanges) {
+      const symbols = Array.from(byExchange.get(exchange) ?? []);
+      if (symbols.length === 0) continue;
+      output.set(exchange, symbols.slice(0, FAST_SYMBOL_CAP_PER_EXCHANGE));
+    }
+    return output;
   }
 
   private createProbeStateFromEntry(entry: ScheduledSimEntry, now: number): ScheduleProbeState {
@@ -1092,15 +1206,45 @@ class ServerSimScheduler {
       return;
     }
 
-    const results = await Promise.allSettled(
-      this.config.enabledExchanges.map((exchange) => fetchFundingRates(exchange)),
+    this.pruneFundingUniverseCache();
+    const now = Date.now();
+    const fullRefresh = this.shouldRunFullFundingRefresh(now);
+    const fastSymbols = fullRefresh ? new Map<ExchangeId, string[]>() : this.buildFastFundingSymbols(now);
+
+    let results = await Promise.allSettled(
+      this.config.enabledExchanges.map((exchange) => {
+        const symbols = fullRefresh ? undefined : fastSymbols.get(exchange);
+        if (symbols && symbols.length > 0) {
+          return fetchFundingRates(exchange, undefined, symbols);
+        }
+        return fetchFundingRates(exchange);
+      }),
     );
 
-    const allRates: FundingRate[] = [];
+    let allRates: FundingRate[] = [];
     for (const result of results) {
       if (result.status === 'fulfilled') {
         allRates.push(...result.value);
       }
+    }
+
+    let effectiveFullRefresh = fullRefresh;
+    if (allRates.length === 0 && !fullRefresh) {
+      results = await Promise.allSettled(
+        this.config.enabledExchanges.map((exchange) => fetchFundingRates(exchange)),
+      );
+      allRates = [];
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          allRates.push(...result.value);
+        }
+      }
+      effectiveFullRefresh = true;
+    }
+
+    if (effectiveFullRefresh && allRates.length > 0) {
+      this.updateFundingUniverseCacheFromRates(allRates, now);
+      this.lastFullFundingRefreshAt = now;
     }
 
     this.latestRates = allRates;

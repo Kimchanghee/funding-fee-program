@@ -76,6 +76,10 @@ const LOG_FILE = join(DATA_DIR, 'scheduler.log');
 const CLOSE_RETRY_DELAY_MS = 30_000;
 const FUNDING_MATCH_WINDOW_MS = 10 * 60 * 1000;
 const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
+const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
+const FULL_FUNDING_SCAN_INTERVAL_MS = 5 * 60 * 1000;
+const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
+const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -165,6 +169,11 @@ interface FundingVerificationResult {
   errors: string[];
 }
 
+interface FundingUniverseCacheEntry {
+  symbols: string[];
+  updatedAt: number;
+}
+
 class ServerScheduler {
   private static instance: ServerScheduler | null = null;
 
@@ -186,6 +195,8 @@ class ServerScheduler {
   private lastPollTime = 0;
   private loadedPersistedState = false;
   private routeFailureMemory = new RouteFailureMemory();
+  private fundingUniverseCache = new Map<ExchangeId, FundingUniverseCacheEntry>();
+  private lastFullFundingScanAt = 0;
 
   static getInstance(): ServerScheduler {
     if (!ServerScheduler.instance) {
@@ -220,6 +231,102 @@ class ServerScheduler {
     return getResolvedTimingConfig(this.config.timingConfig);
   }
 
+  private pruneFundingUniverseCache() {
+    const enabled = new Set(this.config.enabledExchanges);
+    for (const exchange of Array.from(this.fundingUniverseCache.keys())) {
+      if (!enabled.has(exchange)) {
+        this.fundingUniverseCache.delete(exchange);
+      }
+    }
+  }
+
+  private updateFundingUniverseCacheFromRates(rates: FundingRate[], now: number) {
+    const grouped = new Map<ExchangeId, Set<string>>();
+    for (const rate of rates) {
+      if (!this.config.enabledExchanges.includes(rate.exchange)) continue;
+      if (!rate.symbol || !Number.isFinite(rate.nextFundingTime)) continue;
+      let set = grouped.get(rate.exchange);
+      if (!set) {
+        set = new Set<string>();
+        grouped.set(rate.exchange, set);
+      }
+      set.add(rate.symbol);
+    }
+
+    for (const exchange of this.config.enabledExchanges) {
+      const symbols = Array.from(grouped.get(exchange) ?? []);
+      if (symbols.length === 0) continue;
+      this.fundingUniverseCache.set(exchange, {
+        symbols,
+        updatedAt: now,
+      });
+    }
+  }
+
+  private getFreshUniverseSymbols(exchange: ExchangeId, now: number): string[] | null {
+    const cached = this.fundingUniverseCache.get(exchange);
+    if (!cached) return null;
+    if (now - cached.updatedAt >= FUNDING_UNIVERSE_CACHE_TTL_MS) return null;
+    return cached.symbols;
+  }
+
+  private shouldRunFullFundingScan(now: number): boolean {
+    if (this.lastFullFundingScanAt === 0) return true;
+    if (now - this.lastFullFundingScanAt >= FULL_FUNDING_SCAN_INTERVAL_MS) return true;
+    for (const exchange of this.config.enabledExchanges) {
+      if (!this.getFreshUniverseSymbols(exchange, now)) return true;
+    }
+    return false;
+  }
+
+  private buildFastFundingSymbols(now: number): Map<ExchangeId, string[]> {
+    const byExchange = new Map<ExchangeId, Set<string>>();
+    const add = (exchange: ExchangeId, symbol?: string) => {
+      if (!symbol) return;
+      if (!this.config.enabledExchanges.includes(exchange)) return;
+      let set = byExchange.get(exchange);
+      if (!set) {
+        set = new Set<string>();
+        byExchange.set(exchange, set);
+      }
+      if (set.size >= FAST_SYMBOL_CAP_PER_EXCHANGE) return;
+      set.add(symbol);
+    };
+
+    for (const position of this.activePositions.values()) {
+      add(position.opportunity.shortExchange, position.opportunity.shortSymbol);
+      add(position.opportunity.longExchange, position.opportunity.longSymbol);
+    }
+
+    for (const entry of this.scheduledEntries.values()) {
+      add(entry.opportunity.shortExchange, entry.opportunity.shortSymbol);
+      add(entry.opportunity.longExchange, entry.opportunity.longSymbol);
+    }
+
+    for (const exchange of this.config.enabledExchanges) {
+      let set = byExchange.get(exchange);
+      if (!set) {
+        set = new Set<string>();
+        byExchange.set(exchange, set);
+      }
+      const universe = this.getFreshUniverseSymbols(exchange, now);
+      if (!universe) continue;
+      const minTarget = Math.min(FAST_SYMBOL_MIN_PER_EXCHANGE, FAST_SYMBOL_CAP_PER_EXCHANGE);
+      for (const symbol of universe) {
+        if (set.size >= minTarget) break;
+        set.add(symbol);
+      }
+    }
+
+    const output = new Map<ExchangeId, string[]>();
+    for (const exchange of this.config.enabledExchanges) {
+      const symbols = Array.from(byExchange.get(exchange) ?? []);
+      if (symbols.length === 0) continue;
+      output.set(exchange, symbols.slice(0, FAST_SYMBOL_CAP_PER_EXCHANGE));
+    }
+    return output;
+  }
+
   start(config: SchedulerConfig) {
     if (this.active) {
       this.stop();
@@ -229,6 +336,7 @@ class ServerScheduler {
 
     this.active = true;
     this.config = this.normalizeConfig(config);
+    this.pruneFundingUniverseCache();
     if (!continuingSession) {
       this.startedAt = Date.now();
       this.stats = { totalEntries: 0, totalCloses: 0, totalProfit: 0, errors: 0 };
@@ -253,6 +361,7 @@ class ServerScheduler {
     const nextConfig = this.normalizeConfig(config);
 
     this.config = nextConfig;
+    this.pruneFundingUniverseCache();
 
     for (const entry of this.scheduledEntries.values()) {
       if (entry.timer) clearTimeout(entry.timer);
@@ -445,17 +554,43 @@ class ServerScheduler {
     }
 
     try {
-      const results = await Promise.allSettled(
-        this.config.enabledExchanges.map((exchange) => fetchFundingRates(exchange)),
+      this.pruneFundingUniverseCache();
+      const fullScan = this.shouldRunFullFundingScan(this.lastPollTime);
+      const fastSymbols = fullScan ? new Map<ExchangeId, string[]>() : this.buildFastFundingSymbols(this.lastPollTime);
+
+      let results = await Promise.allSettled(
+        this.config.enabledExchanges.map((exchange) => {
+          const symbols = fullScan ? undefined : fastSymbols.get(exchange);
+          if (symbols && symbols.length > 0) {
+            return fetchFundingRates(exchange, undefined, symbols);
+          }
+          return fetchFundingRates(exchange);
+        }),
       );
 
-      const rates = results
+      let rates = results
         .filter((result): result is PromiseFulfilledResult<FundingRate[]> => result.status === 'fulfilled')
         .flatMap((result) => result.value);
+
+      let effectiveFullScan = fullScan;
+      if (rates.length === 0 && !fullScan) {
+        results = await Promise.allSettled(
+          this.config.enabledExchanges.map((exchange) => fetchFundingRates(exchange)),
+        );
+        rates = results
+          .filter((result): result is PromiseFulfilledResult<FundingRate[]> => result.status === 'fulfilled')
+          .flatMap((result) => result.value);
+        effectiveFullScan = true;
+      }
 
       if (rates.length === 0) {
         this.saveState();
         return;
+      }
+
+      if (effectiveFullScan) {
+        this.updateFundingUniverseCacheFromRates(rates, this.lastPollTime);
+        this.lastFullFundingScanAt = this.lastPollTime;
       }
 
       const opportunities = findOpportunities(
