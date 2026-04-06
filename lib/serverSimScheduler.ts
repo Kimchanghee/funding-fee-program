@@ -1565,22 +1565,6 @@ class ServerSimScheduler {
     for (const entry of dueEntries) {
       this.scheduledEntries.delete(entry.opportunityId);
       const probeState = this.ensureProbeState(entry, now);
-      if (!probeState.executeCaptured) {
-        this.recordTrades([this.buildScheduleProbeEvent(
-          'execute',
-          entry.opportunity,
-          entry.investmentUSDT,
-          now,
-          {
-            status: probeState.status,
-            timeToExecutionMs: entry.targetTime - now,
-            shortSlippagePercent: probeState.lastShortSlippagePercent,
-            longSlippagePercent: probeState.lastLongSlippagePercent,
-          },
-        )]);
-        probeState.executeCaptured = true;
-        this.scheduleProbeStates.set(probeState.probeId, probeState);
-      }
       const latestById = this.opportunities.find(
         (candidate) => getOpportunityId(candidate) === entry.opportunityId,
       );
@@ -1594,6 +1578,22 @@ class ServerSimScheduler {
       const primaryOpportunity = isRouteOverridden
         ? entry.opportunity
         : (latestById ?? entry.opportunity);
+      if (!probeState.executeCaptured) {
+        this.recordTrades([this.buildScheduleProbeEvent(
+          'execute',
+          primaryOpportunity,
+          entry.investmentUSDT,
+          now,
+          {
+            status: probeState.status,
+            timeToExecutionMs: entry.targetTime - now,
+            shortSlippagePercent: probeState.lastShortSlippagePercent,
+            longSlippagePercent: probeState.lastLongSlippagePercent,
+          },
+        )]);
+        probeState.executeCaptured = true;
+        this.scheduleProbeStates.set(probeState.probeId, probeState);
+      }
 
       const primaryResult = await this.executeOpportunity(primaryOpportunity, entry.investmentUSDT, true);
       if (primaryResult.success) {
