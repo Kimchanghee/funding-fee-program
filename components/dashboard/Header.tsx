@@ -37,6 +37,19 @@ export default function Header() {
   } = useFundingStore();
 
   const anySnipeActive = simSnipeActive || realSnipeActive;
+  const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
+  const appBuildDateRaw = process.env.NEXT_PUBLIC_APP_BUILD_DATE;
+  const appBuildDate = appBuildDateRaw
+    ? new Date(appBuildDateRaw).toLocaleString('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    : '-';
 
   const handleRefresh = async () => {
     await Promise.all([refreshRates(), refreshPositions(), refreshBalances()]);
@@ -96,6 +109,13 @@ export default function Header() {
           마지막 업데이트: {new Date(lastRatesUpdate).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })}
         </span>
       )}
+      <span
+        className="header-hide-mobile"
+        title={appBuildDateRaw ? `build: ${appBuildDateRaw}` : 'build: unknown'}
+        style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+      >
+        버전 {appVersion} · 배포 {appBuildDate} KST
+      </span>
 
       <div
         title={EXCHANGE_FEE_PRESET_NOTE}
