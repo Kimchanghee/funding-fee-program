@@ -6,6 +6,7 @@ import { useFundingStore } from '@/store/fundingStore';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { estimateProfit } from '@/lib/opportunities';
 import { buildManagedOpportunityItems } from '@/lib/managedOpportunities';
+import { MAX_ROUND_TRIP_IMPACT_BPS } from '@/lib/types';
 
 const TIME_PERIODS = [
   { key: '1h', label: '1시간' },
@@ -26,6 +27,16 @@ export default function ReturnProjectionPanel() {
     realSpreads, snipeTargets, snipeAllocations, simPositions, positions,
   } = useFundingStore();
   const [compoundMode, setCompoundMode] = useState(false);
+  const resolveImpactPercent = useMemo(() => {
+    return (rs?: { shortSlippage: number; longSlippage: number }) => {
+      const measured = rs ? Math.max(0, (rs.shortSlippage ?? 0) + (rs.longSlippage ?? 0)) : 0;
+      if (measured > 0) return measured;
+      const snipeCfg = strategyConfig.confirmedSnipeConfig;
+      return snipeCfg?.useImpactGuards
+        ? ((snipeCfg.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 200)
+        : ((snipeCfg?.targetImpactBps ?? 4) / 100);
+    };
+  }, [strategyConfig.confirmedSnipeConfig]);
 
   // 예약 + 활성 중인 코인 목록 → 기회 매핑
   const scheduledOpps = useMemo(() => {
@@ -53,16 +64,19 @@ export default function ReturnProjectionPanel() {
         const effectiveOpp = hasRS
           ? { ...item.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
           : item.opp;
+        const impactPercent = resolveImpactPercent(hasRS ? rs : undefined);
         const profit = estimateProfit(effectiveOpp, investmentUSDT, strategyConfig.leverage, {
-          skipFees: !!hasRS,
+          skipFees: false,
           feeOverrides: strategyConfig.feeOverrides,
           paybackOverrides: strategyConfig.paybackOverrides,
           useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+          entryImpactPercent: impactPercent,
+          exitImpactPercent: impactPercent,
         });
         return { ...item, investmentUSDT, intervalH, netPerFunding: profit.netPerFunding };
       })
       .filter((item) => item.netPerFunding > 0);
-  }, [opportunities, positions, realSpreads, simulationMode, simPositions, snipeAllocations, snipeTargets, strategyConfig.feeOverrides, strategyConfig.paybackOverrides, strategyConfig.confirmedSnipeConfig, strategyConfig.investmentUSDT, strategyConfig.leverage]);
+  }, [opportunities, positions, realSpreads, simulationMode, simPositions, snipeAllocations, snipeTargets, strategyConfig.feeOverrides, strategyConfig.paybackOverrides, strategyConfig.confirmedSnipeConfig, strategyConfig.investmentUSDT, strategyConfig.leverage, resolveImpactPercent]);
   useMemo(() => {
     const modePrefix = simulationMode ? 'sim' : 'real';
     const activePositions = simulationMode ? simPositions : positions;
@@ -86,16 +100,19 @@ export default function ReturnProjectionPanel() {
       const effectiveOpp = hasRS
         ? { ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
         : opp;
+      const impactPercent = resolveImpactPercent(hasRS ? rs : undefined);
       const profit = estimateProfit(effectiveOpp, strategyConfig.investmentUSDT, strategyConfig.leverage, {
-        skipFees: !!hasRS,
+        skipFees: false,
         feeOverrides: strategyConfig.feeOverrides,
         paybackOverrides: strategyConfig.paybackOverrides,
         useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+        entryImpactPercent: impactPercent,
+        exitImpactPercent: impactPercent,
       });
       if (profit.netPerFunding > 0) result.push({ opp, intervalH, netPerFunding: profit.netPerFunding });
     }
     return result;
-  }, [opportunities, snipeTargets, simPositions, positions, simulationMode, realSpreads, strategyConfig.feeOverrides, strategyConfig.paybackOverrides, strategyConfig.confirmedSnipeConfig, strategyConfig.investmentUSDT, strategyConfig.leverage]);
+  }, [opportunities, snipeTargets, simPositions, positions, simulationMode, realSpreads, strategyConfig.feeOverrides, strategyConfig.paybackOverrides, strategyConfig.confirmedSnipeConfig, strategyConfig.investmentUSDT, strategyConfig.leverage, resolveImpactPercent]);
 
   // 예약된 쌍이 있으면 합산 기준, 없으면 best 1개 기준
   const activePairs = scheduledOpps.length > 0 ? scheduledOpps : (() => {
@@ -108,11 +125,14 @@ export default function ReturnProjectionPanel() {
     const effectiveBest = hasRS
       ? { ...best, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }
       : best;
+    const impactPercent = resolveImpactPercent(hasRS ? rs : undefined);
     const profit = estimateProfit(effectiveBest, investmentUSDT, strategyConfig.leverage, {
-      skipFees: !!hasRS,
+      skipFees: false,
       feeOverrides: strategyConfig.feeOverrides,
       paybackOverrides: strategyConfig.paybackOverrides,
       useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+      entryImpactPercent: impactPercent,
+      exitImpactPercent: impactPercent,
     });
     return [{ id: best.id, asset: best.baseAsset, opp: best, intervalH, netPerFunding: profit.netPerFunding, investmentUSDT }];
   })();

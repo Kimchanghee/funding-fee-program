@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { X, DollarSign, TrendingUp, Info, Send } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { estimateProfit } from '@/lib/opportunities';
-import { DEFAULT_CONFIRMED_SNIPE_CONFIG, type ConfirmedSnipeConfig } from '@/lib/types';
+import { DEFAULT_CONFIRMED_SNIPE_CONFIG, MAX_ROUND_TRIP_IMPACT_BPS, type ConfirmedSnipeConfig } from '@/lib/types';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { getTelegramConfig, saveTelegramConfig, sendTelegramMessage } from '@/lib/telegram';
 
@@ -18,13 +18,23 @@ export default function StrategyPanel() {
   const effectiveBest = best && hasRealSpread && realSpread
     ? { ...best, spread: realSpread.effectiveSpread / 100, spreadPercent: realSpread.effectiveSpread }
     : best;
+  const measuredImpactPercent = hasRealSpread && realSpread
+    ? Math.max(0, (realSpread.shortSlippage ?? 0) + (realSpread.longSlippage ?? 0))
+    : 0;
+  const snipeCfg = strategyConfig.confirmedSnipeConfig;
+  const fallbackImpactPercent = snipeCfg?.useImpactGuards
+    ? ((snipeCfg.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 200)
+    : ((snipeCfg?.targetImpactBps ?? 4) / 100);
+  const impactPercent = measuredImpactPercent > 0 ? measuredImpactPercent : fallbackImpactPercent;
 
   const profit = effectiveBest
     ? estimateProfit(effectiveBest, strategyConfig.investmentUSDT, strategyConfig.leverage, {
-      skipFees: hasRealSpread,
+      skipFees: false,
       feeOverrides: strategyConfig.feeOverrides,
       paybackOverrides: strategyConfig.paybackOverrides,
       useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+      entryImpactPercent: impactPercent,
+      exitImpactPercent: impactPercent,
     })
     : null;
 

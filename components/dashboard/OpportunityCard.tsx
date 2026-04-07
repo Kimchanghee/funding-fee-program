@@ -490,11 +490,19 @@ export default function OpportunityCard() {
         // effectiveSpread로 실질 수익 직접 계산
         const perSide = item.investmentUSDT ?? strategyConfig.investmentUSDT;
         const effectiveOpp = { ...item.opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread };
+        const snipeCfg = strategyConfig.confirmedSnipeConfig;
+        const measuredImpactPercent = Math.max(0, (rs.shortSlippage ?? 0) + (rs.longSlippage ?? 0));
+        const fallbackImpactPercent = snipeCfg?.useImpactGuards
+          ? ((snipeCfg.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 200)
+          : ((snipeCfg?.targetImpactBps ?? 4) / 100);
+        const impactPercent = measuredImpactPercent > 0 ? measuredImpactPercent : fallbackImpactPercent;
         const profit = estimateProfit(effectiveOpp, perSide, strategyConfig.leverage, {
-          skipFees: true,
+          skipFees: false,
           feeOverrides: strategyConfig.feeOverrides,
           paybackOverrides: strategyConfig.paybackOverrides,
           useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+          entryImpactPercent: impactPercent,
+          exitImpactPercent: impactPercent,
         });
         return profit.netPerFunding > 0;
       });
@@ -510,7 +518,7 @@ export default function OpportunityCard() {
       strategyConfig.paybackOverrides,
       strategyConfig.investmentUSDT,
       strategyConfig.leverage,
-      strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+      strategyConfig.confirmedSnipeConfig,
       realSpreads,
     ],
   );
@@ -1140,6 +1148,7 @@ export default function OpportunityCard() {
             feeOverrides={strategyConfig.feeOverrides}
             paybackOverrides={strategyConfig.paybackOverrides}
             useDriftBuffer={strategyConfig.confirmedSnipeConfig?.useDriftBuffer}
+            confirmedSnipeConfig={strategyConfig.confirmedSnipeConfig}
             compoundMode={compoundMode}
             setCompoundMode={setCompoundMode}
             realSpreads={realSpreads}
@@ -1151,7 +1160,7 @@ export default function OpportunityCard() {
 }
 
 /* ─── Portfolio Profit Summary Row ─── */
-function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, feeOverrides, paybackOverrides, useDriftBuffer, compoundMode, setCompoundMode, realSpreads }: {
+function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverage, feeOverrides, paybackOverrides, useDriftBuffer, confirmedSnipeConfig, compoundMode, setCompoundMode, realSpreads }: {
   label: string;
   labelColor: string;
   coins: ManagedOpportunityItem[];
@@ -1160,6 +1169,11 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
   feeOverrides?: FeeOverrides;
   paybackOverrides?: PaybackOverrides;
   useDriftBuffer?: boolean;
+  confirmedSnipeConfig?: {
+    useImpactGuards?: boolean;
+    maxRoundTripImpactBps?: number;
+    targetImpactBps?: number;
+  };
   compoundMode: boolean;
   setCompoundMode: (v: boolean) => void;
   realSpreads?: Record<string, { effectiveSpread: number; shortSlippage: number; longSlippage: number; updatedAt: number }>;
@@ -1196,10 +1210,24 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
         : c.opp;
       const profit = rs
         ? estimateProfit({ ...opp, spread: rs.effectiveSpread / 100, spreadPercent: rs.effectiveSpread }, perSideInvestment, leverage, {
-          skipFees: true,
+          skipFees: false,
           feeOverrides,
           paybackOverrides,
           useDriftBuffer,
+          entryImpactPercent: (() => {
+            const measured = Math.max(0, (rs.shortSlippage ?? 0) + (rs.longSlippage ?? 0));
+            if (measured > 0) return measured;
+            return confirmedSnipeConfig?.useImpactGuards
+              ? ((confirmedSnipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 200)
+              : ((confirmedSnipeConfig?.targetImpactBps ?? 4) / 100);
+          })(),
+          exitImpactPercent: (() => {
+            const measured = Math.max(0, (rs.shortSlippage ?? 0) + (rs.longSlippage ?? 0));
+            if (measured > 0) return measured;
+            return confirmedSnipeConfig?.useImpactGuards
+              ? ((confirmedSnipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 200)
+              : ((confirmedSnipeConfig?.targetImpactBps ?? 4) / 100);
+          })(),
         })
         : estimateProfit(opp, perSideInvestment, leverage, { feeOverrides, paybackOverrides, useDriftBuffer });
       // 마이너스 수익 항목은 합산에서 제외
@@ -1215,7 +1243,7 @@ function PortfolioSummaryRow({ label, labelColor, coins, investmentUSDT, leverag
     }
     return { perDay, per2Day, per3Day, per4Day, per5Day, per6Day, perWeek, per2Week, per3Week, perMonth, per3Month, per6Month,
              cDay, c2Day, c3Day, c4Day, c5Day, c6Day, cWeek, c2Week, c3Week, cMonth, c3Month, c6Month };
-  }, [activeCoins, feeOverrides, paybackOverrides, useDriftBuffer, investmentUSDT, leverage, realSpreads]);
+  }, [activeCoins, feeOverrides, paybackOverrides, useDriftBuffer, confirmedSnipeConfig, investmentUSDT, leverage, realSpreads]);
 
   if (activeCoins.length === 0) return null;
 
