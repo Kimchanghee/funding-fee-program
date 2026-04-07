@@ -6,8 +6,8 @@ import { useFundingStore } from '@/store/fundingStore';
 import {
   EXCHANGE_COLORS,
   EXCHANGE_NAMES,
+  MAX_ROUND_TRIP_IMPACT_BPS,
   type ExchangeId,
-  type ArbitrageOpportunity,
   type Position,
   type SimPosition,
   type FeeOverrides,
@@ -840,9 +840,6 @@ export default function OpportunityCard() {
               const renderedRows = scheduledCoins.map((item) => {
               const isExpanded = expandedAsset === item.id;
               const realSpread = realSpreads[item.id] ?? realSpreads[item.asset];
-              const effectiveOpp: ArbitrageOpportunity = realSpread
-                ? { ...item.opp, spread: realSpread.effectiveSpread / 100, spreadPercent: realSpread.effectiveSpread }
-                : item.opp;
 
               // 순차 잔고 기반 투자금 계산 (복리: 이전 기회 마진 소진 반영)
               let itemPerSide = item.investmentUSDT ?? perExchangeInvestment;
@@ -878,20 +875,24 @@ export default function OpportunityCard() {
               }
               // 투자금 $1 미만이면 거래 불가 — 후보는 숨김 (예약/활성은 표시)
               if (item.status === 'opportunity' && itemPerSide < 1) return null;
-              // realSpread는 슬리피지+수수료 이미 반영 → skipFees=true로 이중차감 방지
               const hasRealSpread = !!realSpread;
-              const executionProfit = estimateProfit(effectiveOpp, itemPerSide, strategyConfig.leverage, {
-                skipFees: hasRealSpread,
-                feeOverrides: strategyConfig.feeOverrides,
-                paybackOverrides: strategyConfig.paybackOverrides,
-                useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
-              });
+              const snipeCfg = strategyConfig.confirmedSnipeConfig;
+              const measuredImpactPercent = hasRealSpread
+                ? Math.max(0, (realSpread.shortSlippage ?? 0) + (realSpread.longSlippage ?? 0))
+                : null;
+              const fallbackImpactPercent = snipeCfg?.useImpactGuards
+                ? ((snipeCfg.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 200)
+                : ((snipeCfg?.targetImpactBps ?? 4) / 100);
+              const impactPercent = measuredImpactPercent ?? fallbackImpactPercent;
               const displayFeeProfit = estimateProfit(item.opp, itemPerSide, strategyConfig.leverage, {
                 skipFees: false,
                 feeOverrides: strategyConfig.feeOverrides,
                 paybackOverrides: strategyConfig.paybackOverrides,
-                useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+                useDriftBuffer: snipeCfg?.useDriftBuffer,
+                entryImpactPercent: impactPercent,
+                exitImpactPercent: impactPercent,
               });
+              const executionProfit = displayFeeProfit;
               const displayRawFees = displayFeeProfit.rawTotalFees;
               const displayTraderPayback = displayFeeProfit.traderFeePayback;
               const displayReferralPayback = displayFeeProfit.referralFeePayback;
