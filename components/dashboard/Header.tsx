@@ -39,14 +39,22 @@ export default function Header() {
   const anySnipeActive = simSnipeActive || realSnipeActive;
   const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
   const appBuildDateRaw = process.env.NEXT_PUBLIC_APP_BUILD_DATE;
-  const appBuildDate = appBuildDateRaw
+  const appBuildDateCompact = appBuildDateRaw
     ? new Date(appBuildDateRaw).toLocaleString('ko-KR', {
       timeZone: 'Asia/Seoul',
-      year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
+      hour12: false,
+    })
+    : '-';
+  const lastUpdateTime = lastRatesUpdate
+    ? new Date(lastRatesUpdate).toLocaleTimeString('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
       hour12: false,
     })
     : '-';
@@ -73,7 +81,7 @@ export default function Header() {
       }}
     >
       {/* Logo */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 8 }}>
+      <div className="header-brand" style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 8 }}>
         <div
           style={{
             width: 32,
@@ -100,24 +108,26 @@ export default function Header() {
       {/* Divider */}
       <div className="header-hide-mobile" style={{ width: 1, height: 24, background: 'var(--color-border)', flexShrink: 0 }} />
 
-      {/* Clock */}
-      <div className="header-hide-mobile"><KSTClock /></div>
-
-      {/* Last update */}
-      {lastRatesUpdate && (
-        <span className="header-hide-mobile" style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-          마지막 업데이트: {new Date(lastRatesUpdate).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' })}
-        </span>
-      )}
-      <span
+      {/* Desktop status */}
+      <div
         className="header-hide-mobile"
-        title={appBuildDateRaw ? `build: ${appBuildDateRaw}` : 'build: unknown'}
-        style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+        style={{ display: 'inline-flex', alignItems: 'center' }}
       >
-        버전 {appVersion} · 배포 {appBuildDate} KST
-      </span>
+        <div className="header-status-block" title={appBuildDateRaw ? `build: ${appBuildDateRaw}` : 'build: unknown'}>
+          <div className="header-status-main"><KSTClock /></div>
+          <div className="header-status-sub">업데이트 {lastUpdateTime}</div>
+          <div className="header-status-sub mono">v{appVersion} · {appBuildDateCompact}</div>
+        </div>
+      </div>
+
+      {/* Mobile status */}
+      <div className="header-mobile-status" title={appBuildDateRaw ? `build: ${appBuildDateRaw}` : 'build: unknown'}>
+        <KSTClock compact />
+        <span className="mono">v{appVersion}</span>
+      </div>
 
       <div
+        className="header-fee-pill"
         title={EXCHANGE_FEE_PRESET_NOTE}
         style={{
           display: 'inline-flex',
@@ -138,6 +148,7 @@ export default function Header() {
       </div>
 
       <div
+        className="header-payback-pill"
         title={EXCHANGE_PAYBACK_PRESET_NOTE}
         style={{
           display: 'inline-flex',
@@ -283,30 +294,32 @@ export default function Header() {
       </div>
 
       {/* Action buttons */}
-      <button
-        className="btn btn-ghost"
-        style={{ padding: '6px 10px' }}
-        onClick={handleRefresh}
-        disabled={isLoadingRates}
-        title="새로고침"
-      >
-        <RefreshCw size={14} style={{ animation: isLoadingRates ? 'spin 1s linear infinite' : 'none' }} />
-      </button>
-
-      <button
-        className="btn btn-ghost"
-        style={{ padding: '6px 10px' }}
-        onClick={() => setShowApiPanel(true)}
-        title="API 키 설정"
-      >
-        <Key size={14} />
-      </button>
-
-      <Link href="/settings">
-        <button className="btn btn-ghost" style={{ padding: '6px 10px' }} title="전략 설정">
-          <Settings size={14} />
+      <div className="header-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button
+          className="btn btn-ghost"
+          style={{ padding: '6px 10px' }}
+          onClick={handleRefresh}
+          disabled={isLoadingRates}
+          title="새로고침"
+        >
+          <RefreshCw size={14} style={{ animation: isLoadingRates ? 'spin 1s linear infinite' : 'none' }} />
         </button>
-      </Link>
+
+        <button
+          className="btn btn-ghost"
+          style={{ padding: '6px 10px' }}
+          onClick={() => setShowApiPanel(true)}
+          title="API 키 설정"
+        >
+          <Key size={14} />
+        </button>
+
+        <Link href="/settings">
+          <button className="btn btn-ghost" style={{ padding: '6px 10px' }} title="전략 설정">
+            <Settings size={14} />
+          </button>
+        </Link>
+      </div>
     </header>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
-export default function KSTClock() {
+export default function KSTClock({ showLabel = true, compact = false }: { showLabel?: boolean; compact?: boolean }) {
   const [time, setTime] = useState('');
 
   useEffect(() => {
@@ -23,8 +23,8 @@ export default function KSTClock() {
   }, []);
 
   return (
-    <span className="mono" style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
-      KST {time}
+    <span className="mono" style={{ fontSize: compact ? 11 : 13, color: 'var(--color-text-muted)' }}>
+      {showLabel ? `KST ${time}` : time}
     </span>
   );
 }

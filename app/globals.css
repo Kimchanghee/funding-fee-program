@@ -1,4 +1,4 @@
-@import "tailwindcss";
+﻿@import "tailwindcss";
 
 :root {
   --bg-primary: #0a0e17;
@@ -267,7 +267,7 @@ body {
 .rate-negative { color: #ef4444; }
 .rate-neutral { color: var(--color-text-muted); }
 
-/* ── Automation active effects ── */
+/* ?? Automation active effects ?? */
 @keyframes automation-pulse {
   0%, 100% { box-shadow: 0 0 8px rgba(16,185,129,0.3), 0 0 24px rgba(16,185,129,0.1); }
   50% { box-shadow: 0 0 16px rgba(16,185,129,0.5), 0 0 48px rgba(16,185,129,0.2); }
@@ -316,7 +316,29 @@ body {
   animation: spread-warning 1s ease-in-out infinite;
 }
 
-/* ── Mobile Responsive ── */
+/* ?? Mobile Responsive ?? */
+
+.header-status-block {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 170px;
+}
+
+.header-status-main {
+  line-height: 1.1;
+}
+
+.header-status-sub {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  line-height: 1.15;
+}
+
+.header-mobile-status {
+  display: none;
+}
 @media (max-width: 768px) {
   .toast {
     left: 12px;
@@ -352,7 +374,7 @@ body {
   .opp-show-mobile {
     display: flex !important;
   }
-  /* 모바일 수익 텍스트 크기 조정 */
+  /* 紐⑤컮???섏씡 ?띿뒪???ш린 議곗젙 */
   .opp-table-row .mono {
     font-size: 13px !important;
   }
@@ -425,22 +447,59 @@ body {
   .header-hide-mobile {
     display: none !important;
   }
+  .header-brand {
+    margin-right: 0 !important;
+    min-width: 0;
+  }
+  .header-mobile-status {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: rgba(15, 23, 42, 0.45);
+    font-size: 10px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    order: 1;
+  }
+  .header-fee-pill {
+    order: 2;
+  }
+  .header-payback-pill {
+    order: 3;
+  }
+  .header-actions {
+    order: 4;
+    margin-left: auto;
+    gap: 4px !important;
+  }
   .header-exchanges {
-    order: 10;
+    order: 8;
     width: 100%;
-    justify-content: center !important;
-    flex-wrap: wrap !important;
-    padding-bottom: 2px;
+    justify-content: flex-start !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    padding-bottom: 0;
     gap: 3px !important;
+    scrollbar-width: none;
+  }
+  .header-exchanges::-webkit-scrollbar {
+    display: none;
   }
   .header-exchanges button {
     padding: 2px 5px !important;
+    flex: 0 0 auto;
   }
   .header-exchanges span {
     font-size: 9px !important;
   }
   .header-mode-group {
-    order: 2;
+    order: 5;
+    width: 100%;
+    justify-content: flex-start;
     gap: 4px !important;
   }
 
@@ -450,23 +509,23 @@ body {
     gap: 10px !important;
   }
 
-  /* Glass cards — 모바일 패딩 축소 */
+  /* Glass cards ??紐⑤컮???⑤뵫 異뺤냼 */
   .glass-card {
     border-radius: 10px !important;
   }
 
-  /* Balance cards — 세로 스택 시 컴팩트 */
+  /* Balance cards ???몃줈 ?ㅽ깮 ??而댄뙥??*/
   .balance-cards-container > div {
     padding: 8px 10px !important;
   }
 
-  /* 예상 수익 그리드 — 2열로 */
+  /* ?덉긽 ?섏씡 洹몃━????2?대줈 */
   .profit-grid-6 {
     grid-template-columns: repeat(2, 1fr) !important;
   }
 }
 
-/* 초소형 모바일 (< 480px) */
+/* 珥덉냼??紐⑤컮??(< 480px) */
 @media (max-width: 480px) {
   .app-header {
     padding: 0 6px !important;
@@ -484,3 +543,5 @@ body {
     gap: 4px !important;
   }
 }
+
+
