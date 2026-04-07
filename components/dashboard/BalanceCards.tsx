@@ -1,6 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { Wallet, TrendingUp, FlaskConical, RotateCcw } from 'lucide-react';
+import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import StatusDot from '@/components/ui/StatusDot';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
@@ -289,6 +291,7 @@ export default function BalanceCards() {
     simTotalFundingEarned, simTotalFees,
     enabledExchanges, resetSimulation, strategyConfig,
   } = useFundingStore();
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   const totalUSDT = Object.values(balances)
     .filter(b => b?.status === 'connected')
     .reduce((sum, b) => sum + (b?.totalUSDT || 0), 0);
@@ -316,36 +319,52 @@ export default function BalanceCards() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* 초기화 버튼 */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <button
-          onClick={() => { if (confirm('시뮬레이션을 초기화하시겠습니까?')) resetSimulation(); }}
-          style={{
-            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 4,
-            fontSize: 10, fontWeight: 700, color: '#ef4444',
-          }}
-        >
-          <RotateCcw size={11} /> 전체 초기화
-        </button>
+    <>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* 초기화 버튼 */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            style={{
+              background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+              borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 4,
+              fontSize: 10, fontWeight: 700, color: '#ef4444',
+            }}
+          >
+            <RotateCcw size={11} /> 전체 초기화
+          </button>
+        </div>
+
+        {/* 헷징 컬럼 */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          <SimModeColumn
+            title="헷징 (Hedge)"
+            accentColor="#3b82f6"
+            fundingEarned={simTotalFundingEarned}
+            fees={simTotalFees}
+            positions={simPositions}
+            enabledExchanges={enabledExchanges}
+            investmentUSDT={strategyConfig.investmentUSDT}
+            leverage={strategyConfig.leverage}
+            compoundInvesting={strategyConfig.compoundInvesting}
+          />
+        </div>
       </div>
 
-      {/* 헷징 컬럼 */}
-      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-        <SimModeColumn
-          title="헷징 (Hedge)"
-          accentColor="#3b82f6"
-          fundingEarned={simTotalFundingEarned}
-          fees={simTotalFees}
-          positions={simPositions}
-          enabledExchanges={enabledExchanges}
-          investmentUSDT={strategyConfig.investmentUSDT}
-          leverage={strategyConfig.leverage}
-          compoundInvesting={strategyConfig.compoundInvesting}
-        />
-      </div>
-    </div>
+      <ConfirmDialog
+        open={showResetConfirm}
+        tone="danger"
+        title="전체 초기화"
+        description="SIM 잔고, 포지션, 누적 손익, 펀딩 내역을 모두 초기화합니다. 계속 진행할까요?"
+        confirmLabel="전체 초기화"
+        cancelLabel="취소"
+        onCancel={() => setShowResetConfirm(false)}
+        onConfirm={() => {
+          setShowResetConfirm(false);
+          resetSimulation();
+        }}
+      />
+    </>
   );
 }

@@ -496,6 +496,13 @@ class ServerSimScheduler {
     return run;
   }
 
+  private queueRefreshRatesAndPlans() {
+    void this.enqueue(async () => {
+      if (!this.active) return;
+      await this.refreshRatesAndPlans();
+    }).catch(() => {});
+  }
+
   private normalizeConfig(config: ServerSimSchedulerConfig): ServerSimSchedulerConfig {
     return {
       ...config,
@@ -673,12 +680,12 @@ class ServerSimScheduler {
   resetState(enabledExchanges: ExchangeId[], investmentUSDT: number) {
     return this.enqueue(async () => {
       const nextState = resetServerSimState(enabledExchanges, investmentUSDT);
+      this.scheduledEntries.clear();
       this.scheduleProbeStates.clear();
       this.pendingAutoCloses.clear();
+      this.saveState();
       if (this.active) {
-        await this.refreshRatesAndPlans();
-      } else {
-        this.saveState();
+        this.queueRefreshRatesAndPlans();
       }
       return nextState;
     });

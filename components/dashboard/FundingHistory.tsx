@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { DollarSign, RefreshCw, RotateCcw } from 'lucide-react';
+import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type FundingPayment } from '@/lib/types';
 
@@ -131,6 +132,7 @@ function ModePanel({ title, color, entries, total, emptyMsg, investmentUSDT, lev
 
 export default function FundingHistory() {
   const { fundingHistory, fetchFundingHistory, apiConfigs, isLoadingHistory, simulationMode, clearSimFundingHistory, strategyConfig } = useFundingStore();
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
 
   const apiConfigKeys = Object.keys(apiConfigs).join(',');
@@ -153,50 +155,66 @@ export default function FundingHistory() {
         : '수령 내역 없음';
 
   return (
-    <div className="glass-card" style={{ overflow: 'hidden' }}>
-      {/* Header */}
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <DollarSign size={15} color="#10b981" />
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text)' }}>펀딩피 수령 내역</div>
-          <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
-            {simulationMode ? '[SIM] 시뮬레이션 기록' : '자동 수령 확인'}
+    <>
+      <div className="glass-card" style={{ overflow: 'hidden' }}>
+        {/* Header */}
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <DollarSign size={15} color="#10b981" />
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text)' }}>펀딩피 수령 내역</div>
+            <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
+              {simulationMode ? '[SIM] 시뮬레이션 기록' : '자동 수령 확인'}
+            </div>
           </div>
-        </div>
-        <div style={{ flex: 1 }} />
-        {simulationMode && fundingHistory.length > 0 && (
+          <div style={{ flex: 1 }} />
+          {simulationMode && fundingHistory.length > 0 && (
+            <button
+              className="btn btn-ghost"
+              style={{ padding: '5px 8px', color: '#ef4444' }}
+              onClick={() => setShowClearConfirm(true)}
+            >
+              <RotateCcw size={12} />
+            </button>
+          )}
           <button
             className="btn btn-ghost"
-            style={{ padding: '5px 8px', color: '#ef4444' }}
-            onClick={() => { if (confirm('펀딩 수령 내역을 초기화하시겠습니까?')) clearSimFundingHistory(); }}
+            style={{ padding: '5px 8px' }}
+            onClick={() => fetchFundingHistory()}
+            disabled={isLoadingHistory}
           >
-            <RotateCcw size={12} />
+            <RefreshCw size={12} style={{ animation: isLoadingHistory ? 'spin 1s linear infinite' : 'none' }} />
           </button>
-        )}
-        <button
-          className="btn btn-ghost"
-          style={{ padding: '5px 8px' }}
-          onClick={() => fetchFundingHistory()}
-          disabled={isLoadingHistory}
-        >
-          <RefreshCw size={12} style={{ animation: isLoadingHistory ? 'spin 1s linear infinite' : 'none' }} />
-        </button>
+        </div>
+
+        {/* All entries */}
+        <div style={{ display: 'flex', gap: 0 }}>
+          <ModePanel
+            title="헷징 (숏+롱)"
+            color="#3b82f6"
+            entries={allEntries}
+            total={allTotal}
+            emptyMsg={emptyMsg}
+            investmentUSDT={strategyConfig.investmentUSDT}
+            leverage={strategyConfig.leverage}
+            notional={notional}
+            compoundInvesting={strategyConfig.compoundInvesting}
+          />
+        </div>
       </div>
 
-      {/* All entries */}
-      <div style={{ display: 'flex', gap: 0 }}>
-        <ModePanel
-          title="헷징 (숏+롱)"
-          color="#3b82f6"
-          entries={allEntries}
-          total={allTotal}
-          emptyMsg={emptyMsg}
-          investmentUSDT={strategyConfig.investmentUSDT}
-          leverage={strategyConfig.leverage}
-          notional={notional}
-          compoundInvesting={strategyConfig.compoundInvesting}
-        />
-      </div>
-    </div>
+      <ConfirmDialog
+        open={showClearConfirm}
+        tone="warning"
+        title="펀딩 내역 초기화"
+        description="SIM 펀딩 수령 기록만 초기화합니다. 포지션과 잔고는 유지됩니다. 계속 진행할까요?"
+        confirmLabel="내역 초기화"
+        cancelLabel="취소"
+        onCancel={() => setShowClearConfirm(false)}
+        onConfirm={() => {
+          setShowClearConfirm(false);
+          clearSimFundingHistory();
+        }}
+      />
+    </>
   );
 }
