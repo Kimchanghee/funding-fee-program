@@ -427,6 +427,8 @@ type SimTradeResult = {
   state?: SimStateSnapshot;
   pairId?: string;
   executedNotional?: number;
+  shortSlippagePercent?: number;
+  longSlippagePercent?: number;
 };
 
 type ProbeRoute = Pick<
@@ -1601,6 +1603,12 @@ class ServerSimScheduler {
       const primaryResult = await this.executeOpportunity(primaryOpportunity, entry.investmentUSDT, true);
       if (primaryResult.success) {
         const executedAt = Date.now();
+        if (Number.isFinite(primaryResult.shortSlippagePercent)) {
+          probeState.lastShortSlippagePercent = primaryResult.shortSlippagePercent;
+        }
+        if (Number.isFinite(primaryResult.longSlippagePercent)) {
+          probeState.lastLongSlippagePercent = primaryResult.longSlippagePercent;
+        }
         probeState.executeResultCaptured = true;
         probeState.status = 'executed';
         probeState.executedAt = executedAt;
@@ -1631,6 +1639,12 @@ class ServerSimScheduler {
       const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true);
       if (flippedResult.success) {
         const executedAt = Date.now();
+        if (Number.isFinite(flippedResult.shortSlippagePercent)) {
+          probeState.lastShortSlippagePercent = flippedResult.shortSlippagePercent;
+        }
+        if (Number.isFinite(flippedResult.longSlippagePercent)) {
+          probeState.lastLongSlippagePercent = flippedResult.longSlippagePercent;
+        }
         probeState.executeResultCaptured = true;
         probeState.status = 'executed';
         probeState.executedAt = executedAt;
@@ -1658,6 +1672,12 @@ class ServerSimScheduler {
 
       const failedAt = Date.now();
       const failureReason = mapSimEntryErrorToGuardReason(primaryResult.error);
+      if (Number.isFinite(primaryResult.shortSlippagePercent)) {
+        probeState.lastShortSlippagePercent = primaryResult.shortSlippagePercent;
+      }
+      if (Number.isFinite(primaryResult.longSlippagePercent)) {
+        probeState.lastLongSlippagePercent = primaryResult.longSlippagePercent;
+      }
       probeState.executeResultCaptured = true;
       probeState.status = 'failed';
       probeState.finalizedAt = failedAt;
@@ -2030,7 +2050,12 @@ class ServerSimScheduler {
             notional = nextNotional;
             continue;
           }
-          return { success: false, error: `impact exceeded: ${roundTripImpactBps.toFixed(1)}bps > ${impactCapBps}bps (notional=$${notional.toFixed(2)})` };
+          return {
+            success: false,
+            error: `impact exceeded: ${roundTripImpactBps.toFixed(1)}bps > ${impactCapBps}bps (notional=$${notional.toFixed(2)})`,
+            shortSlippagePercent: shortFill.slippagePercent,
+            longSlippagePercent: longFill.slippagePercent,
+          };
         }
       } else {
         const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
@@ -2044,6 +2069,8 @@ class ServerSimScheduler {
           return {
             success: false,
             error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${maxSlippagePct}% (notional=$${notional.toFixed(2)})`,
+            shortSlippagePercent: shortFill.slippagePercent,
+            longSlippagePercent: longFill.slippagePercent,
           };
         }
       }
@@ -2063,6 +2090,8 @@ class ServerSimScheduler {
         return {
           success: false,
           error: `entry gap drift exceeded: ${entryGap.driftPercent.toFixed(4)}% > ${effectiveGapThreshold.toFixed(4)}% (baseThreshold=${gapThreshold.toFixed(4)}% tol=${ENTRY_GAP_TOLERANCE_PCT.toFixed(4)}% live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%)`,
+          shortSlippagePercent: shortFill.slippagePercent,
+          longSlippagePercent: longFill.slippagePercent,
         };
       }
       // v2: hedge ratio pre-check
@@ -2071,7 +2100,12 @@ class ServerSimScheduler {
         const longQtyEst = notional / longFill.fillPrice;
         const hedgeRatio = Math.abs((longQtyEst * longFill.fillPrice) / (shortQtyEst * shortFill.fillPrice));
         if (hedgeRatio < HEDGE_RATIO_MIN || hedgeRatio > HEDGE_RATIO_MAX) {
-          return { success: false, error: `hedge ratio ${hedgeRatio.toFixed(6)} outside [${HEDGE_RATIO_MIN}, ${HEDGE_RATIO_MAX}]` };
+          return {
+            success: false,
+            error: `hedge ratio ${hedgeRatio.toFixed(6)} outside [${HEDGE_RATIO_MIN}, ${HEDGE_RATIO_MAX}]`,
+            shortSlippagePercent: shortFill.slippagePercent,
+            longSlippagePercent: longFill.slippagePercent,
+          };
         }
       }
 
@@ -2122,7 +2156,12 @@ class ServerSimScheduler {
         shortDrift, longDrift, roundTripFeeDec, entryImpactDec, entryImpactDec,
       );
       if (!ev.passesMinProfit || !ev.passesEVRatio) {
-        return { success: false, error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}` };
+        return {
+          success: false,
+          error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
+          shortSlippagePercent,
+          longSlippagePercent,
+        };
       }
     }
 
@@ -2268,6 +2307,8 @@ class ServerSimScheduler {
       state: savedState,
       pairId,
       executedNotional: notional,
+      shortSlippagePercent,
+      longSlippagePercent,
     };
   }
 }
