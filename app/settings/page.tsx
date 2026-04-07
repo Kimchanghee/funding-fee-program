@@ -98,6 +98,19 @@ export default function SettingsPage() {
 
   const bestOpp = opportunities[0];
   const timingConfig = strategyConfig.timingConfig ?? DEFAULT_TIMING_CONFIG;
+  const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
+  const appBuildDateRaw = process.env.NEXT_PUBLIC_APP_BUILD_DATE;
+  const appBuildDate = appBuildDateRaw
+    ? new Date(appBuildDateRaw).toLocaleString('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    : '-';
 
   const updateTimingConfig = (patch: Partial<typeof timingConfig>) => {
     setStrategyConfig({
@@ -590,6 +603,18 @@ export default function SettingsPage() {
                 <span style={{ color: 'var(--color-text-muted)' }}>마지막 업데이트</span>
                 <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
                   {lastRatesUpdate ? new Date(lastRatesUpdate).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }) : '—'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
+                <span style={{ color: 'var(--color-text-muted)' }}>?? ??</span>
+                <span className="mono" style={{ fontSize: 12, color: '#93c5fd', fontWeight: 700 }}>
+                  {appVersion}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
+                <span style={{ color: 'var(--color-text-muted)' }}>?? ?? (KST)</span>
+                <span className="mono" style={{ fontSize: 12, color: 'var(--color-text-muted)' }} title={appBuildDateRaw ?? 'unknown'}>
+                  {appBuildDate}
                 </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0' }}>
