@@ -1181,6 +1181,9 @@ class ServerSimScheduler {
         if (!this.active) return;
         // Execute due entries first so refresh/rebuild cannot drop matured schedules.
         await this.executeDueEntries();
+        // Process funding/auto-close before heavy refresh calls to minimize post-funding exposure.
+        await this.processFunding();
+        await this.processPendingAutoCloses();
         if (this.lastRatesUpdate === 0 || Date.now() - this.lastRatesUpdate >= RATES_REFRESH_INTERVAL_MS) {
           await this.refreshRatesAndPlans();
         } else {
