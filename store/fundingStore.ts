@@ -2063,7 +2063,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // 3초 간격 SIM 서버 상태 동기화 (API 호출 — 매초는 과도)
     const simSyncInterval = setInterval(() => {
-      if (get().simSnipeActive || get().simulationMode) {
+      if (get().simSnipeActive) {
         void fetchServerSimSchedulerStatus()
           .then((status) => {
             applyServerSimStateSnapshot(set, status.state, { getState: get });
@@ -2084,13 +2084,22 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             });
           })
           .catch(() => {});
+      } else if (get().simulationMode) {
+        void fetchServerSimStateSnapshot()
+          .then((snapshot) => {
+            applyServerSimStateSnapshot(set, snapshot, { getState: get });
+          })
+          .catch(() => {});
       }
     }, SIM_SYNC_INTERVAL_MS);
 
     const positionsInterval = setInterval(() => {
-      get().refreshPositions();
-      get().refreshBalances();
-      get().fetchFundingHistory();
+      const shouldPollRealAccountData = !get().simulationMode || get().realSnipeActive;
+      if (shouldPollRealAccountData) {
+        get().refreshPositions();
+        get().refreshBalances();
+        get().fetchFundingHistory();
+      }
       if (get().simulationMode || get().simSnipeActive) {
         void fetchServerSimStateSnapshot()
           .then((snapshot) => applyServerSimStateSnapshot(set, snapshot, { getState: get }))

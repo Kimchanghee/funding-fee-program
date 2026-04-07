@@ -53,6 +53,7 @@ const DATA_DIR = getDataDir();
 const STATE_FILE = join(DATA_DIR, 'sim-scheduler-state.json');
 const LOOP_INTERVAL_MS = 1_000;
 const RATES_REFRESH_INTERVAL_MS = 3_000;
+const TICK_STATE_PERSIST_INTERVAL_MS = 3_000;
 const MAX_FUNDING_HISTORY = 500;
 const BASE_REVALIDATE_BATCH_SIZE = 3;
 const URGENT_REVALIDATE_BATCH_SIZE = 12;
@@ -470,6 +471,7 @@ class ServerSimScheduler {
   private scheduleProbeStates = new Map<string, ScheduleProbeState>();
   private fundingUniverseCache = new Map<ExchangeId, FundingUniverseCacheEntry>();
   private lastFullFundingRefreshAt = 0;
+  private lastStatePersistAt = 0;
 
   static getInstance() {
     if (!ServerSimScheduler.instance) {
@@ -524,6 +526,7 @@ class ServerSimScheduler {
       lastRatesUpdate: this.lastRatesUpdate,
     };
     writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+    this.lastStatePersistAt = Date.now();
   }
 
   private loadState() {
@@ -1206,7 +1209,9 @@ class ServerSimScheduler {
         await this.processFunding();
         await this.processPendingAutoCloses();
         this.pruneProbeStates(Date.now());
-        this.saveState();
+        if (Date.now() - this.lastStatePersistAt >= TICK_STATE_PERSIST_INTERVAL_MS) {
+          this.saveState();
+        }
       });
     } finally {
       this.ticking = false;
