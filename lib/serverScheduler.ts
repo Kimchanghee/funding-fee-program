@@ -1828,9 +1828,10 @@ class ServerScheduler {
       if (!shortResult || !longResult) {
         await this.sleep(3_000);
 
-        if (!shortResult) {
-          try {
-            shortResult = await closePosition(
+        const [shortRetry, longRetry] = await Promise.allSettled([
+          shortResult
+            ? Promise.resolve(shortResult)
+            : closePosition(
               position.opportunity.shortExchange,
               shortConfig,
               position.opportunity.shortSymbol,
@@ -1838,22 +1839,10 @@ class ServerScheduler {
               position.shortAmount,
               this.config.feeOverrides,
               this.config.paybackOverrides,
-            );
-            if (!existingShortLeg) {
-              removeServerPositionMeta([makeServerPositionKey(
-                position.opportunity.shortExchange,
-                position.opportunity.shortSymbol,
-                'short',
-              )]);
-            }
-          } catch (retryErr) {
-            errors.push(`short-retry:${(retryErr as Error).message}`);
-          }
-        }
-
-        if (!longResult) {
-          try {
-            longResult = await closePosition(
+            ),
+          longResult
+            ? Promise.resolve(longResult)
+            : closePosition(
               position.opportunity.longExchange,
               longConfig,
               position.opportunity.longSymbol,
@@ -1861,7 +1850,27 @@ class ServerScheduler {
               position.longAmount,
               this.config.feeOverrides,
               this.config.paybackOverrides,
-            );
+            ),
+        ]);
+
+        if (!shortResult) {
+          if (shortRetry.status === 'fulfilled') {
+            shortResult = shortRetry.value;
+            if (!existingShortLeg) {
+              removeServerPositionMeta([makeServerPositionKey(
+                position.opportunity.shortExchange,
+                position.opportunity.shortSymbol,
+                'short',
+              )]);
+            }
+          } else {
+            errors.push(`short-retry:${getErrorMessage(shortRetry.reason)}`);
+          }
+        }
+
+        if (!longResult) {
+          if (longRetry.status === 'fulfilled') {
+            longResult = longRetry.value;
             if (!existingLongLeg) {
               removeServerPositionMeta([makeServerPositionKey(
                 position.opportunity.longExchange,
@@ -1869,8 +1878,8 @@ class ServerScheduler {
                 'long',
               )]);
             }
-          } catch (retryErr) {
-            errors.push(`long-retry:${(retryErr as Error).message}`);
+          } else {
+            errors.push(`long-retry:${getErrorMessage(longRetry.reason)}`);
           }
         }
       }

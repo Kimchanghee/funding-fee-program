@@ -445,6 +445,18 @@ type ProbeRoute = Pick<
   | 'nextFundingTime'
 >;
 
+type PreparedSimCloseLeg = {
+  position: SimPosition;
+  exitPrice: number;
+  exitFee: number;
+  pricePnl: number;
+  actualFunding: number;
+  fundingBalanceCredit: number;
+  fundingPayment?: FundingPayment;
+  fillSource: 'orderbook' | 'mark';
+  fillCapturedAt: number;
+};
+
 class ServerSimScheduler {
   private static instance: ServerSimScheduler | null = null;
 
@@ -1850,9 +1862,151 @@ class ServerSimScheduler {
   private async closePair(pairId: string) {
     const state = this.getState();
     const pairPositions = state.simPositions.filter((position) => position.pairId === pairId);
-    for (const position of pairPositions) {
-      await this.closePositionInternal(position.simId);
+    if (pairPositions.length === 0) return;
+
+    const closeStartedAt = Date.now();
+    const preparedLegs = await Promise.all(
+      pairPositions.map((position) => this.prepareCloseLeg(position)),
+    );
+    const closeFinishedAt = Date.now();
+    const fillCapturedAts = preparedLegs.map((leg) => leg.fillCapturedAt);
+    const pairCloseGapMs = fillCapturedAts.length > 1
+      ? Math.max(...fillCapturedAts) - Math.min(...fillCapturedAts)
+      : 0;
+    const closeWindowMs = closeFinishedAt - closeStartedAt;
+
+    const fundingEvents: FundingPayment[] = [];
+    const tradeEvents: TradeEvent[] = [];
+
+    for (const leg of preparedLegs) {
+      const returnAmount = leg.position.margin + leg.pricePnl - leg.exitFee;
+      const netPnl = leg.pricePnl + leg.actualFunding - (leg.position.entryFee ?? 0) - leg.exitFee;
+
+      state.simPositions = state.simPositions.filter((candidate) => candidate.simId !== leg.position.simId);
+      state.simBalances[leg.position.exchange] = (state.simBalances[leg.position.exchange] ?? 0)
+        + returnAmount
+        + leg.fundingBalanceCredit;
+      state.simTotalFees += leg.exitFee;
+      state.simTotalClosedPnl += leg.pricePnl;
+      state.simClosedPnlPerExchange = {
+        ...state.simClosedPnlPerExchange,
+        [leg.position.exchange]: (state.simClosedPnlPerExchange[leg.position.exchange] ?? 0) + leg.pricePnl,
+      };
+      state.simClosedFeesPerExchange = {
+        ...state.simClosedFeesPerExchange,
+        [leg.position.exchange]: (state.simClosedFeesPerExchange[leg.position.exchange] ?? 0)
+          + (leg.position.entryFee ?? 0)
+          + leg.exitFee,
+      };
+
+      if (leg.fundingPayment) {
+        fundingEvents.push(leg.fundingPayment);
+        state.simTotalFundingEarned += leg.actualFunding;
+        tradeEvents.push({
+          timestamp: leg.fillCapturedAt,
+          type: 'funding',
+          simulation: true,
+          baseAsset: leg.position.baseAsset,
+          exchange: leg.position.exchange,
+          side: leg.position.side,
+          symbol: leg.position.symbol,
+          pairId: leg.position.pairId,
+          fundingAmount: leg.actualFunding,
+          fundingRate: leg.position.fundingRate,
+          detail: `pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
+        });
+      }
+
+      tradeEvents.push({
+        timestamp: leg.fillCapturedAt,
+        type: leg.position.isSnipe ? 'snipe_exit' : 'exit',
+        simulation: true,
+        baseAsset: leg.position.baseAsset,
+        exchange: leg.position.exchange,
+        side: leg.position.side,
+        symbol: leg.position.symbol,
+        pairId: leg.position.pairId,
+        pnl: netPnl,
+        fundingAmount: leg.actualFunding,
+        exitFee: leg.exitFee,
+        entryFee: leg.position.entryFee ?? 0,
+        pricePnl: leg.pricePnl,
+        exitPrice: leg.exitPrice,
+        detail: `fill:${leg.fillSource} pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
+      });
     }
+
+    if (fundingEvents.length > 0) {
+      state.fundingHistory = [...fundingEvents, ...state.fundingHistory]
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, MAX_FUNDING_HISTORY);
+    }
+
+    this.setState(state);
+    this.pendingAutoCloses.delete(pairId);
+    if (tradeEvents.length > 0) {
+      this.recordTrades(tradeEvents);
+    }
+  }
+
+  private async prepareCloseLeg(position: SimPosition): Promise<PreparedSimCloseLeg> {
+    let exitPrice = position.markPrice;
+    let fillSource: 'orderbook' | 'mark' = 'mark';
+    try {
+      const fill = await fetchMarketFillPrice(
+        position.exchange,
+        position.symbol,
+        position.side === 'short' ? 'buy' : 'sell',
+        position.sizeUSD,
+      );
+      exitPrice = fill.fillPrice;
+      fillSource = 'orderbook';
+    } catch {
+      // Use mark price fallback.
+    }
+    const fillCapturedAt = Date.now();
+
+    const exitNotional = position.size * exitPrice;
+    const exitFee = exitNotional * resolveRuntimeFee(
+      position.exchange,
+      'taker',
+      this.config.feeOverrides,
+      this.config.paybackOverrides,
+    );
+    const pricePnl = position.side === 'short'
+      ? (position.entryPrice - exitPrice) * position.size
+      : (exitPrice - position.entryPrice) * position.size;
+
+    let actualFunding = position.fundingCollected;
+    let fundingBalanceCredit = 0;
+    let fundingPayment: FundingPayment | undefined;
+
+    if (position.isSnipe && actualFunding === 0) {
+      actualFunding = position.side === 'short'
+        ? position.sizeUSD * position.fundingRate
+        : position.sizeUSD * (-position.fundingRate);
+      fundingBalanceCredit = actualFunding;
+      fundingPayment = {
+        exchange: position.exchange,
+        symbol: position.symbol,
+        amount: actualFunding,
+        rate: position.fundingRate,
+        timestamp: fillCapturedAt,
+        side: position.side,
+      };
+    }
+
+    return {
+      position,
+      exitPrice,
+      exitFee,
+      pricePnl,
+      actualFunding,
+      fundingBalanceCredit,
+      fundingPayment,
+      fillSource,
+      fillCapturedAt,
+    };
   }
 
   private async closePositionInternal(simId: string): Promise<{ netPnl: number; funding: number; pairId?: string } | null> {
