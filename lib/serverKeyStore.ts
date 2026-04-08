@@ -2,8 +2,9 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypt
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import type { ApiConfig, ExchangeId } from './types';
+import { getDataDir } from './dataDir';
 
-const DATA_DIR = join(process.cwd(), 'data');
+const DATA_DIR = getDataDir();
 const KEY_FILE = join(DATA_DIR, 'api-keys.enc.json');
 const MASTER_KEY_FILE = join(DATA_DIR, '.master-key');
 

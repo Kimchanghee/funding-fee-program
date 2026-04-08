@@ -1,7 +1,8 @@
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
+import { getDataDir } from './dataDir';
 
-const SNAPSHOT_DIR = path.join(process.cwd(), 'data', 'snapshots');
+const SNAPSHOT_DIR = path.join(getDataDir(), 'snapshots');
 
 // 마지막 저장한 1위 코인 기록 (순위 변경 감지용)
 let lastTopAsset: string | null = null;

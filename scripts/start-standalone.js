@@ -20,10 +20,19 @@ applyPortFromArgs(process.argv.slice(2));
 const rootDir = process.cwd();
 const standaloneDir = path.join(rootDir, '.next', 'standalone');
 const serverEntry = path.join(standaloneDir, 'server.js');
+const resolvedDataDir = process.env.FUNDING_FEE_DATA_DIR
+  ? path.resolve(process.env.FUNDING_FEE_DATA_DIR)
+  : path.join(rootDir, 'data');
+
+process.env.FUNDING_FEE_DATA_DIR = resolvedDataDir;
 
 if (!fs.existsSync(serverEntry)) {
   console.error('[start-standalone] missing .next/standalone/server.js. Run "npm run build" first.');
   process.exit(1);
+}
+
+if (!fs.existsSync(resolvedDataDir)) {
+  fs.mkdirSync(resolvedDataDir, { recursive: true });
 }
 
 process.chdir(standaloneDir);

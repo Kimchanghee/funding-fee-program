@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import type { SnipeStateSnapshot } from '@/lib/types';
+import { getDataDir } from '@/lib/dataDir';
 
-const STATE_FILE = path.join(process.cwd(), 'data', 'snipe-state.json');
+const STATE_FILE = path.join(getDataDir(), 'snipe-state.json');
 
 function buildDefaultState(): SnipeStateSnapshot {
   return {

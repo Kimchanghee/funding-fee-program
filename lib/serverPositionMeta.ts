@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { ExchangeId, OrderLiquidity } from './types';
+import { getDataDir } from './dataDir';
 
-const DATA_DIR = join(process.cwd(), 'data');
+const DATA_DIR = getDataDir();
 const META_FILE = join(DATA_DIR, 'real-position-meta.json');
 
 export interface ServerRealPositionMeta {

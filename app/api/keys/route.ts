@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { saveServerApiConfig, removeServerApiConfig, listConfiguredExchanges } from '@/lib/serverKeyStore';
+import { getMissingApiCredentialFields } from '@/lib/apiCredentials';
 
 /** GET: 설정된 거래소 목록만 반환 (키 노출 X) */
 export async function GET() {
@@ -14,15 +15,20 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as { exchange: string; config: ApiConfig };
     const { exchange, config } = body;
+    const exchangeId = exchange as ExchangeId;
 
-    if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) {
+    if (!SUPPORTED_EXCHANGES.includes(exchangeId)) {
       return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
     }
-    if (!config?.apiKey || !config?.secret) {
-      return NextResponse.json({ success: false, error: 'apiKey and secret required' }, { status: 400 });
+    const missingFields = getMissingApiCredentialFields(exchangeId, config);
+    if (missingFields.length > 0) {
+      return NextResponse.json(
+        { success: false, error: `missing required credentials: ${missingFields.join(', ')}` },
+        { status: 400 },
+      );
     }
 
-    saveServerApiConfig(exchange as ExchangeId, {
+    saveServerApiConfig(exchangeId, {
       apiKey: config.apiKey,
       secret: config.secret,
       ...(config.passphrase ? { passphrase: config.passphrase } : {}),

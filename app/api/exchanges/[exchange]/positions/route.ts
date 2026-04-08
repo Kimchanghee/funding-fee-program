@@ -4,6 +4,7 @@ import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { fetchPositions } from '@/lib/exchanges';
 import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
 import { loadAllServerPositionMeta, makeServerPositionKey } from '@/lib/serverPositionMeta';
+import { hasRequiredApiCredentials } from '@/lib/apiCredentials';
 
 export async function GET(
   req: NextRequest,
@@ -17,7 +18,7 @@ export async function GET(
   const id = exchange as ExchangeId;
   const config = getApiConfigFromRequest(req, id);
 
-  if (!config.apiKey || !config.secret) {
+  if (!hasRequiredApiCredentials(id, config)) {
     return NextResponse.json({ success: false, error: 'API credentials required' }, { status: 401 });
   }
 

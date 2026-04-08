@@ -3,6 +3,7 @@ import type { ExchangeId } from '@/lib/types';
 import { SUPPORTED_EXCHANGES } from '@/lib/types';
 import { fetchBalance } from '@/lib/exchanges';
 import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
+import { hasRequiredApiCredentials } from '@/lib/apiCredentials';
 
 export async function GET(
   req: NextRequest,
@@ -16,7 +17,7 @@ export async function GET(
   const id = exchange as ExchangeId;
   const config = getApiConfigFromRequest(req, id);
 
-  if (!config.apiKey || !config.secret) {
+  if (!hasRequiredApiCredentials(id, config)) {
     return NextResponse.json({ success: false, error: 'API credentials required' }, { status: 401 });
   }
 

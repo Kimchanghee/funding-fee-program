@@ -4,8 +4,7 @@ import { useState } from 'react';
 import { X, Eye, EyeOff, CheckCircle, Loader, Key } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES, type ExchangeId } from '@/lib/types';
-
-const NEEDS_PASSPHRASE: ExchangeId[] = ['okx', 'bitget'];
+import { hasRequiredApiCredentials, requiresPassphrase } from '@/lib/apiCredentials';
 
 export default function ApiPanel() {
   const { apiConfigs, setApiConfig, removeApiConfig, testConnection, setShowApiPanel, refreshBalances } = useFundingStore();
@@ -26,14 +25,16 @@ export default function ApiPanel() {
   };
 
   const handleSave = () => {
-    if (!form.apiKey || !form.secret) return;
-    setApiConfig(activeTab, { apiKey: form.apiKey, secret: form.secret, passphrase: form.passphrase || undefined });
+    const draftConfig = { apiKey: form.apiKey, secret: form.secret, passphrase: form.passphrase || undefined };
+    if (!hasRequiredApiCredentials(activeTab, draftConfig)) return;
+    setApiConfig(activeTab, draftConfig);
     setTimeout(() => refreshBalances(), 500);
   };
 
   const handleTest = async () => {
-    if (!form.apiKey || !form.secret) return;
-    setApiConfig(activeTab, { apiKey: form.apiKey, secret: form.secret, passphrase: form.passphrase || undefined });
+    const draftConfig = { apiKey: form.apiKey, secret: form.secret, passphrase: form.passphrase || undefined };
+    if (!hasRequiredApiCredentials(activeTab, draftConfig)) return;
+    setApiConfig(activeTab, draftConfig);
     setTesting(true);
     const ok = await testConnection(activeTab);
     setTestResult(ok);
@@ -47,7 +48,12 @@ export default function ApiPanel() {
   };
 
   const color = EXCHANGE_COLORS[activeTab];
-  const needsPass = NEEDS_PASSPHRASE.includes(activeTab);
+  const needsPass = requiresPassphrase(activeTab);
+  const canSubmit = hasRequiredApiCredentials(activeTab, {
+    apiKey: form.apiKey,
+    secret: form.secret,
+    passphrase: form.passphrase || undefined,
+  });
 
   return (
     <div
@@ -197,7 +203,7 @@ export default function ApiPanel() {
               className="btn btn-ghost"
               style={{ flex: 1 }}
               onClick={handleTest}
-              disabled={!form.apiKey || !form.secret || testing}
+              disabled={!canSubmit || testing}
             >
               {testing ? <Loader size={13} style={{ animation: 'spin 1s linear infinite' }} /> : null}
               연결 테스트
@@ -208,9 +214,9 @@ export default function ApiPanel() {
                 flex: 2,
                 background: color,
                 color: 'white',
-                opacity: (!form.apiKey || !form.secret) ? 0.5 : 1,
+                opacity: canSubmit ? 1 : 0.5,
               }}
-              disabled={!form.apiKey || !form.secret}
+              disabled={!canSubmit}
               onClick={handleSave}
             >
               저장 & 연결
