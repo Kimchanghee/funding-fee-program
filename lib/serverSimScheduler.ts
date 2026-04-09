@@ -89,6 +89,17 @@ const POST_EXECUTION_PROBE_POINTS = [
   { key: 'post_30m', thresholdMs: 30 * 60 * 1000 },
 ] as const;
 
+const POST_FUNDING_PROBE_POINTS = [
+  { key: 'post_funding_1s', thresholdMs: 1_000 },
+  { key: 'post_funding_5s', thresholdMs: 5_000 },
+  { key: 'post_funding_7s', thresholdMs: 7_000 },
+  { key: 'post_funding_10s', thresholdMs: 10_000 },
+  { key: 'post_funding_15s', thresholdMs: 15_000 },
+  { key: 'post_funding_20s', thresholdMs: 20_000 },
+  { key: 'post_funding_25s', thresholdMs: 25_000 },
+  { key: 'post_funding_30s', thresholdMs: 30_000 },
+] as const;
+
 function ensureDataDir() {
   if (!existsSync(DATA_DIR)) {
     mkdirSync(DATA_DIR, { recursive: true });
@@ -393,10 +404,12 @@ interface ScheduleProbeState {
   createdAt: number;
   preMilestones: string[];
   postMilestones: string[];
+  postFundingMilestones: string[];
   executeCaptured: boolean;
   executeResultCaptured: boolean;
   status: 'scheduled' | 'executed' | 'failed' | 'canceled';
   executedAt?: number;
+  fundingCapturedAt?: number;
   finalizedAt?: number;
   pairId?: string;
   executedNotional?: number;
@@ -572,6 +585,7 @@ class ServerSimScheduler {
                 probeId,
                 preMilestones: Array.isArray(state.preMilestones) ? state.preMilestones : [],
                 postMilestones: Array.isArray(state.postMilestones) ? state.postMilestones : [],
+                postFundingMilestones: Array.isArray(state.postFundingMilestones) ? state.postFundingMilestones : [],
                 executeCaptured: !!state.executeCaptured,
                 executeResultCaptured: !!state.executeResultCaptured,
                 status: state.status ?? 'scheduled',
@@ -883,6 +897,7 @@ class ServerSimScheduler {
       createdAt: now,
       preMilestones: [],
       postMilestones: [],
+      postFundingMilestones: [],
       executeCaptured: false,
       executeResultCaptured: false,
       status: 'scheduled',
@@ -961,6 +976,7 @@ class ServerSimScheduler {
       pairId?: string;
       status?: ScheduleProbeState['status'];
       timeToExecutionMs?: number;
+      timeFromFundingMs?: number;
       reason?: string;
       executedNotional?: number;
       shortSlippagePercent?: number;
@@ -1030,6 +1046,7 @@ class ServerSimScheduler {
       ? (expectedNetProfit / Math.max(1, investmentUSDT * 2)) * 100
       : 0;
     const timeToExecutionMs = options?.timeToExecutionMs;
+    const timeFromFundingMs = options?.timeFromFundingMs;
 
     return {
       timestamp: now,
@@ -1058,6 +1075,7 @@ class ServerSimScheduler {
       detail: [
         `status=${options?.status ?? 'scheduled'}`,
         timeToExecutionMs == null ? null : `tteMs=${Math.round(timeToExecutionMs)}`,
+        timeFromFundingMs == null ? null : `tfMs=${Math.round(timeFromFundingMs)}`,
         `shortRate=${shortRate.toFixed(8)}`,
         `longRate=${longRate.toFixed(8)}`,
         `netSpread=${hedgedNetSpreadPercent.toFixed(4)}%`,
@@ -1176,6 +1194,47 @@ class ServerSimScheduler {
     }
   }
 
+  private capturePostFundingProbeMilestones(now: number) {
+    if (this.scheduleProbeStates.size === 0) return;
+    const events: TradeEvent[] = [];
+
+    for (const state of this.scheduleProbeStates.values()) {
+      if (state.status !== 'executed' || !state.fundingCapturedAt) continue;
+      const elapsedMs = now - state.fundingCapturedAt;
+      if (elapsedMs < 0) continue;
+      const route = this.resolveProbeRoute(state);
+
+      for (const point of POST_FUNDING_PROBE_POINTS) {
+        if (state.postFundingMilestones.includes(point.key)) continue;
+        if (elapsedMs >= point.thresholdMs) {
+          events.push(this.buildScheduleProbeEvent(
+            point.key,
+            route,
+            state.investmentUSDT,
+            now,
+            {
+              pairId: state.pairId,
+              status: 'executed',
+              reason: point.key,
+              timeToExecutionMs: state.targetTime - now,
+              timeFromFundingMs: elapsedMs,
+              executedNotional: state.executedNotional,
+              shortSlippagePercent: state.lastShortSlippagePercent,
+              longSlippagePercent: state.lastLongSlippagePercent,
+            },
+          ));
+          state.postFundingMilestones.push(point.key);
+        }
+      }
+
+      this.scheduleProbeStates.set(state.probeId, state);
+    }
+
+    if (events.length > 0) {
+      this.recordTrades(events);
+    }
+  }
+
   private pruneProbeStates(now: number) {
     for (const [probeId, state] of this.scheduleProbeStates.entries()) {
       const finalizedAt = state.finalizedAt
@@ -1207,6 +1266,7 @@ class ServerSimScheduler {
         await this.executeDueEntries();
         // Process funding/auto-close before heavy refresh calls to minimize post-funding exposure.
         await this.processFunding();
+        this.capturePostFundingProbeMilestones(Date.now());
         await this.processPendingAutoCloses();
         if (this.lastRatesUpdate === 0 || Date.now() - this.lastRatesUpdate >= RATES_REFRESH_INTERVAL_MS) {
           await this.refreshRatesAndPlans();
@@ -1219,6 +1279,7 @@ class ServerSimScheduler {
         await this.executeDueEntries();
         this.capturePostExecutionProbeMilestones(Date.now());
         await this.processFunding();
+        this.capturePostFundingProbeMilestones(Date.now());
         await this.processPendingAutoCloses();
         this.pruneProbeStates(Date.now());
         if (Date.now() - this.lastStatePersistAt >= TICK_STATE_PERSIST_INTERVAL_MS) {
@@ -1636,8 +1697,11 @@ class ServerSimScheduler {
         probeState.executeResultCaptured = true;
         probeState.status = 'executed';
         probeState.executedAt = executedAt;
+        probeState.fundingCapturedAt = undefined;
         probeState.pairId = primaryResult.pairId;
         probeState.executedNotional = primaryResult.executedNotional;
+        probeState.postMilestones = [];
+        probeState.postFundingMilestones = [];
         probeState.lastReason = 'primary_success';
         this.scheduleProbeStates.set(probeState.probeId, probeState);
         this.recordTrades([this.buildScheduleProbeEvent(
@@ -1672,8 +1736,11 @@ class ServerSimScheduler {
         probeState.executeResultCaptured = true;
         probeState.status = 'executed';
         probeState.executedAt = executedAt;
+        probeState.fundingCapturedAt = undefined;
         probeState.pairId = flippedResult.pairId;
         probeState.executedNotional = flippedResult.executedNotional;
+        probeState.postMilestones = [];
+        probeState.postFundingMilestones = [];
         probeState.lastReason = 'flipped_success';
         this.scheduleProbeStates.set(probeState.probeId, probeState);
         this.recordTrades([this.buildScheduleProbeEvent(
@@ -1747,6 +1814,7 @@ class ServerSimScheduler {
     const closeDelayMs = Math.max(0, Math.min(timing.closeDelayMs, 1_000));
     const fundingEvents: FundingPayment[] = [];
     const tradeEvents: Array<Parameters<typeof appendTrades>[0][number]> = [];
+    const fundedPairIds = new Set<string>();
     let changed = false;
 
     const nextPositions = state.simPositions.map((position) => {
@@ -1797,6 +1865,9 @@ class ServerSimScheduler {
         fundingAmount: funding,
         fundingRate: liveFundingRate,
       });
+      if (position.pairId) {
+        fundedPairIds.add(position.pairId);
+      }
       changed = true;
 
       const updatedFundingReceived = (position.fundingReceived ?? 0) + 1;
@@ -1842,6 +1913,19 @@ class ServerSimScheduler {
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, MAX_FUNDING_HISTORY);
     this.setState(state);
+    if (fundedPairIds.size > 0) {
+      for (const probeState of this.scheduleProbeStates.values()) {
+        if (
+          probeState.status === 'executed'
+          && probeState.pairId
+          && fundedPairIds.has(probeState.pairId)
+          && probeState.fundingCapturedAt == null
+        ) {
+          probeState.fundingCapturedAt = now;
+          this.scheduleProbeStates.set(probeState.probeId, probeState);
+        }
+      }
+    }
     if (tradeEvents.length > 0) {
       this.recordTrades(tradeEvents);
     }
@@ -1877,6 +1961,7 @@ class ServerSimScheduler {
 
     const fundingEvents: FundingPayment[] = [];
     const tradeEvents: TradeEvent[] = [];
+    const fundedPairIds = new Set<string>();
 
     for (const leg of preparedLegs) {
       const returnAmount = leg.position.margin + leg.pricePnl - leg.exitFee;
@@ -1902,6 +1987,9 @@ class ServerSimScheduler {
       if (leg.fundingPayment) {
         fundingEvents.push(leg.fundingPayment);
         state.simTotalFundingEarned += leg.actualFunding;
+        if (leg.position.pairId) {
+          fundedPairIds.add(leg.position.pairId);
+        }
         tradeEvents.push({
           timestamp: leg.fillCapturedAt,
           type: 'funding',
@@ -1943,6 +2031,19 @@ class ServerSimScheduler {
     }
 
     this.setState(state);
+    if (fundedPairIds.size > 0) {
+      for (const probeState of this.scheduleProbeStates.values()) {
+        if (
+          probeState.status === 'executed'
+          && probeState.pairId
+          && fundedPairIds.has(probeState.pairId)
+          && probeState.fundingCapturedAt == null
+        ) {
+          probeState.fundingCapturedAt = closeFinishedAt;
+          this.scheduleProbeStates.set(probeState.probeId, probeState);
+        }
+      }
+    }
     this.pendingAutoCloses.delete(pairId);
     if (tradeEvents.length > 0) {
       this.recordTrades(tradeEvents);
@@ -2073,6 +2174,18 @@ class ServerSimScheduler {
     };
 
     this.setState(state);
+    if (position.pairId && actualFunding !== 0) {
+      for (const probeState of this.scheduleProbeStates.values()) {
+        if (
+          probeState.status === 'executed'
+          && probeState.pairId === position.pairId
+          && probeState.fundingCapturedAt == null
+        ) {
+          probeState.fundingCapturedAt = Date.now();
+          this.scheduleProbeStates.set(probeState.probeId, probeState);
+        }
+      }
+    }
     if (position.pairId) {
       const remainingPairPositions = state.simPositions.filter((candidate) => candidate.pairId === position.pairId);
       if (remainingPairPositions.length === 0) {
