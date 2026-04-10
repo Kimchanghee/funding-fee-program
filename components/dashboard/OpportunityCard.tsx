@@ -7,6 +7,7 @@ import {
   EXCHANGE_COLORS,
   EXCHANGE_NAMES,
   MAX_ROUND_TRIP_IMPACT_BPS,
+  SUPPORTED_EXCHANGES,
   type ExchangeId,
   type Position,
   type SimPosition,
@@ -131,7 +132,7 @@ export default function OpportunityCard() {
     snipeTargets, snipeAllocations, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
-    simBalances, balances, fundingRates, enabledExchanges,
+    simBalances, simInitialBalances, balances, fundingRates, enabledExchanges,
   } = useFundingStore();
 
   const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
@@ -543,6 +544,45 @@ export default function OpportunityCard() {
   const activeCount = scheduledCoins.filter(c => c.status === 'active').length;
   const candidateCount = scheduledCoins.filter(c => c.status === 'opportunity').length;
 
+  const totalBalanceSummary = useMemo(() => {
+    if (simulationMode) {
+      const currentTotal = SUPPORTED_EXCHANGES
+        .reduce((sum, exchange) => sum + (simBalances[exchange] ?? 0), 0);
+      const initialTotal = SUPPORTED_EXCHANGES
+        .reduce((sum, exchange) => sum + (simInitialBalances[exchange] ?? 0), 0);
+      const pnl = currentTotal - initialTotal;
+      const roiPercent = initialTotal > 0 ? (pnl / initialTotal) * 100 : 0;
+      return {
+        currentTotal,
+        initialTotal,
+        pnl,
+        roiPercent,
+        availableTotal: currentTotal,
+        usedTotal: 0,
+        unrealizedTotal: 0,
+      };
+    }
+
+    const currentTotal = SUPPORTED_EXCHANGES
+      .reduce((sum, exchange) => sum + (balances[exchange]?.totalUSDT ?? 0), 0);
+    const availableTotal = SUPPORTED_EXCHANGES
+      .reduce((sum, exchange) => sum + (balances[exchange]?.availableUSDT ?? 0), 0);
+    const usedTotal = SUPPORTED_EXCHANGES
+      .reduce((sum, exchange) => sum + (balances[exchange]?.usedUSDT ?? 0), 0);
+    const unrealizedTotal = SUPPORTED_EXCHANGES
+      .reduce((sum, exchange) => sum + (balances[exchange]?.unrealizedPnl ?? 0), 0);
+
+    return {
+      currentTotal,
+      initialTotal: 0,
+      pnl: 0,
+      roiPercent: 0,
+      availableTotal,
+      usedTotal,
+      unrealizedTotal,
+    };
+  }, [balances, simBalances, simInitialBalances, simulationMode]);
+
   // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 전체 펀딩 가능 코인 수
   const intervalStats = useMemo(() => {
     const buckets: Record<string, { scheduled: number; total: number; assets: string[] }> = {
@@ -643,6 +683,49 @@ export default function OpportunityCard() {
               >
                 <Settings size={11} /> 수정
               </button>
+            </div>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'linear-gradient(135deg, rgba(56,189,248,0.08), rgba(16,185,129,0.06))',
+              border: '1px solid rgba(56,189,248,0.25)',
+              flexWrap: 'wrap',
+            }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 700, letterSpacing: '0.03em' }}>
+                  TOTAL BALANCE
+                </span>
+                <span className="mono" style={{ fontSize: 20, fontWeight: 900, color: '#22d3ee', lineHeight: 1 }}>
+                  ${fmtNum(totalBalanceSummary.currentTotal, 2)}
+                </span>
+              </div>
+              {simulationMode ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'right' }}>
+                  <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                    Initial ${fmtNum(totalBalanceSummary.initialTotal, 2)}
+                  </span>
+                  <span className="mono" style={{
+                    fontSize: 13,
+                    fontWeight: 800,
+                    color: totalBalanceSummary.pnl >= 0 ? '#10b981' : '#ef4444',
+                  }}>
+                    PnL {totalBalanceSummary.pnl >= 0 ? '+' : ''}${fmtNum(totalBalanceSummary.pnl, 2)}
+                    {' '}
+                    ({totalBalanceSummary.roiPercent >= 0 ? '+' : ''}{fmtNum(totalBalanceSummary.roiPercent, 2)}%)
+                  </span>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'right', fontSize: 11, color: 'var(--color-text-muted)' }}>
+                  <span>Avail ${fmtNum(totalBalanceSummary.availableTotal, 2)} / Used ${fmtNum(totalBalanceSummary.usedTotal, 2)}</span>
+                  <span className="mono" style={{ color: totalBalanceSummary.unrealizedTotal >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
+                    Unrealized {totalBalanceSummary.unrealizedTotal >= 0 ? '+' : ''}${fmtNum(totalBalanceSummary.unrealizedTotal, 2)}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
