@@ -278,7 +278,16 @@ function SimModeColumn({
       </div>
 
       {/* 거래소 미니 카드 */}
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${enabledExchanges.length}, 1fr)`, gap: 8, marginTop: 10 }}>
+      <div
+        className="hedge-exchange-grid"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+          gap: 8,
+          marginTop: 10,
+          width: '100%',
+        }}
+      >
         {enabledExchanges.map(ex => <ExchangeMiniCard key={ex} exchange={ex} />)}
       </div>
     </div>
@@ -299,7 +308,7 @@ export default function BalanceCards() {
   if (!simulationMode) {
     // 실거래: 기존 가로 레이아웃
     return (
-      <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
+      <div className="balance-cards-container" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
         <div className="glass-card" style={{
           minWidth: 220, padding: '16px 20px', flexShrink: 0,
           background: 'linear-gradient(135deg, rgba(59,130,246,0.08), var(--bg-card))',
@@ -320,7 +329,7 @@ export default function BalanceCards() {
 
   return (
     <>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="balance-cards-container" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 초기화 버튼 */}
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button

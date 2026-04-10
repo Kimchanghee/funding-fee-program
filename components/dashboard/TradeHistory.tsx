@@ -5,6 +5,8 @@ import { History, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import { fmtNum } from '@/lib/format';
 import { useFundingStore } from '@/store/fundingStore';
 
+const HISTORY_SCROLL_HEIGHT = 240;
+
 interface TradeEvent {
   timestamp: number;
   type: string;
@@ -501,7 +503,7 @@ export default function TradeHistory() {
 
       {/* Table header + rows */}
       {!collapsed && (
-        <>
+        <div style={{ maxHeight: HISTORY_SCROLL_HEIGHT, overflowY: 'auto' }}>
           <div style={{
             display: 'grid',
             gridTemplateColumns: '50px 70px 1fr 80px 80px 80px 80px 30px',
@@ -529,7 +531,7 @@ export default function TradeHistory() {
               거래 내역이 없습니다
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
