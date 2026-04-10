@@ -12,6 +12,7 @@ function parseTimestamp(value: string | null): number | null {
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const date = url.searchParams.get('date') || undefined;
+  const allDates = url.searchParams.get('all') === 'true';
   const listOnly = url.searchParams.get('list') === 'true';
   const typeFilter = url.searchParams.get('type');
   const simulationFilter = url.searchParams.get('simulation');
@@ -24,7 +25,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, dates: listDates('trades') });
   }
 
-  const allEvents = readTrades(date);
+  const allEvents = allDates
+    ? listDates('trades')
+      .flatMap((targetDate) => readTrades(targetDate))
+      .sort((a, b) => b.timestamp - a.timestamp)
+    : readTrades(date);
   const typeSet = typeFilter
     ? new Set(typeFilter.split(',').map((value) => value.trim()).filter(Boolean))
     : null;

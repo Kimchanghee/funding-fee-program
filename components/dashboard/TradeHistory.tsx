@@ -413,38 +413,19 @@ export default function TradeHistory() {
   const fetchTrades = useCallback(async () => {
     setLoading(true);
     try {
-      const listRes = await fetch('/api/trades/list?list=true');
-      const listJson = await listRes.json() as { success?: boolean; dates?: string[] };
-      if (!listJson.success) {
-        setEvents([]);
-        return;
-      }
-      const dates = Array.isArray(listJson.dates) ? listJson.dates : [];
-      if (dates.length === 0) {
-        setEvents([]);
-        return;
-      }
-
       const typeQuery = 'type=snipe_entry,snipe_exit,entry,exit,snipe_complete';
-      const responses = await Promise.allSettled(
-        dates.map(async (date) => {
-          const res = await fetch(`/api/trades/list?date=${encodeURIComponent(date)}&${typeQuery}`);
-          return res.json() as Promise<{ success?: boolean; events?: TradeEvent[] }>;
-        }),
-      );
-
-      const mergedEvents = responses
-        .flatMap((result) => {
-          if (result.status !== 'fulfilled') return [];
-          const payload = result.value;
-          if (!payload.success || !Array.isArray(payload.events)) return [];
-          return payload.events;
-        })
-        .sort((a, b) => b.timestamp - a.timestamp);
-
-      setEvents(mergedEvents);
-    } catch { /* ignore */ }
-    setLoading(false);
+      const res = await fetch(`/api/trades/list?all=true&${typeQuery}`);
+      const json = await res.json() as { success?: boolean; events?: TradeEvent[] };
+      if (!json.success || !Array.isArray(json.events)) {
+        setEvents([]);
+        return;
+      }
+      setEvents(json.events);
+    } catch {
+      setEvents([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { fetchTrades(); }, [fetchTrades, tradesClearedAt]);
