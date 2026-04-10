@@ -154,6 +154,7 @@ export interface TradeEvent {
   probeShortMidMoveBps?: number;
   probeLongMidMoveBps?: number;
   probeBasisMoveBps?: number;
+  analysis?: Record<string, unknown>;
   detail?: string;
 }
 

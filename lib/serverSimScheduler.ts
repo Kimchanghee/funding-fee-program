@@ -100,6 +100,10 @@ const POST_FUNDING_PROBE_POINTS = [
   { key: 'post_funding_30s', thresholdMs: 30_000 },
 ] as const;
 const PROBE_ORDERBOOK_DEPTH = 5;
+const ANALYTICS_BASE_INTERVAL_MS = 5 * 60 * 1000;
+const ANALYTICS_NEAR_DUE_INTERVAL_MS = 60 * 1000;
+const ANALYTICS_NEAR_DUE_WINDOW_MS = 30 * 60 * 1000;
+const ANALYTICS_MAX_CANDIDATES = 200;
 
 function sumDepthUsd(levels: number[][] | undefined, depth: number): number {
   if (!levels?.length || depth <= 0) return 0;
@@ -483,6 +487,7 @@ type SimTradeResult = {
   executedNotional?: number;
   shortSlippagePercent?: number;
   longSlippagePercent?: number;
+  analysis?: Record<string, unknown>;
 };
 
 type ProbeRoute = Pick<
@@ -559,6 +564,7 @@ class ServerSimScheduler {
   private fundingUniverseCache = new Map<ExchangeId, FundingUniverseCacheEntry>();
   private lastFullFundingRefreshAt = 0;
   private lastStatePersistAt = 0;
+  private lastAnalyticsSnapshotAt = 0;
 
   static getInstance() {
     if (!ServerSimScheduler.instance) {
@@ -1037,6 +1043,230 @@ class ServerSimScheduler {
     };
   }
 
+  private getAnalyticsSnapshotIntervalMs(now: number): number {
+    const hasNearDue = this.opportunities.some((opportunity) => (
+      opportunity.nextFundingTime >= now
+      && opportunity.nextFundingTime - now <= ANALYTICS_NEAR_DUE_WINDOW_MS
+    ));
+    return hasNearDue ? ANALYTICS_NEAR_DUE_INTERVAL_MS : ANALYTICS_BASE_INTERVAL_MS;
+  }
+
+  private shouldCaptureAnalyticsSnapshot(now: number): boolean {
+    if (this.lastAnalyticsSnapshotAt === 0) return true;
+    const intervalMs = this.getAnalyticsSnapshotIntervalMs(now);
+    return now - this.lastAnalyticsSnapshotAt >= intervalMs;
+  }
+
+  private captureSchedulingAnalyticsSnapshot(params: {
+    now: number;
+    state: SimStateSnapshot;
+    prePlanBalances: Record<string, number>;
+    occupiedLegs: Set<string>;
+    previousEntries: Map<string, ScheduledSimEntry>;
+    candidates: ArbitrageOpportunity[];
+    plans: Array<{ opportunity: ArbitrageOpportunity; investmentUSDT: number }>;
+    timing: TimingConfig;
+  }) {
+    const {
+      now,
+      state,
+      prePlanBalances,
+      occupiedLegs,
+      previousEntries,
+      candidates,
+      plans,
+      timing,
+    } = params;
+    if (!this.shouldCaptureAnalyticsSnapshot(now)) return;
+
+    const events: TradeEvent[] = [];
+    const strategyConfig = buildStrategyLikeConfig(this.config);
+    const selectedById = new Map<string, number>(
+      plans.map((plan) => [getOpportunityId(plan.opportunity), plan.investmentUSDT]),
+    );
+    const candidateIds = new Set(candidates.map((opportunity) => getOpportunityId(opportunity)));
+    const initialBalances = state.simInitialBalances as Record<string, number>;
+    const opportunities = this.opportunities.slice(0, ANALYTICS_MAX_CANDIDATES);
+
+    for (const exchange of this.config.enabledExchanges) {
+      const balance = prePlanBalances[exchange] ?? 0;
+      const initial = initialBalances[exchange] ?? 0;
+      const freeRatio = initial > 0 ? (balance / initial) * 100 : 0;
+      const openNotional = state.simPositions
+        .filter((position) => position.exchange === exchange)
+        .reduce((sum, position) => sum + (position.sizeUSD ?? 0), 0);
+      const scheduledMargin = plans
+        .filter((plan) => (
+          plan.opportunity.shortExchange === exchange || plan.opportunity.longExchange === exchange
+        ))
+        .reduce((sum, plan) => sum + plan.investmentUSDT, 0);
+      events.push({
+        timestamp: now,
+        type: 'schedule_probe',
+        simulation: true,
+        exchange,
+        milestone: 'analysis_balance',
+        reason: 'analysis_balance_snapshot',
+        analysis: {
+          exchange,
+          balanceUSDT: balance,
+          initialBalanceUSDT: initial,
+          freeMarginPct: freeRatio,
+          openNotionalUSDT: openNotional,
+          scheduledMarginUSDT: scheduledMargin,
+          activePositions: state.simPositions.filter((position) => position.exchange === exchange).length,
+        },
+        detail: `exchange=${exchange} bal=${balance.toFixed(4)} free=${freeRatio.toFixed(2)}% openNotional=${openNotional.toFixed(2)} scheduled=${scheduledMargin.toFixed(2)}`,
+      });
+    }
+
+    let selectedCount = 0;
+    for (const opportunity of opportunities) {
+      const opportunityId = getOpportunityId(opportunity);
+      const selectedAllocation = selectedById.get(opportunityId) ?? 0;
+      const isSelected = selectedAllocation > 0;
+      if (isSelected) selectedCount += 1;
+
+      const routeFailureKey = makeRouteFailureKey(
+        opportunity.baseAsset,
+        opportunity.shortExchange,
+        opportunity.longExchange,
+      );
+      const profileLeadMs = getPairEntryLeadMs(opportunity.shortExchange, opportunity.longExchange);
+      const entryLeadMs = Math.max(profileLeadMs, timing.entryLeadMs);
+      const targetTime = opportunity.nextFundingTime - entryLeadMs;
+      const inReplanFreeze = targetTime <= now + SCHEDULE_REPLAN_FREEZE_MS;
+      const previousExists = previousEntries.has(opportunityId);
+      const withinGrace = targetTime > now + NEAR_DUE_GRACE_MS;
+      const inAheadWindow = targetTime <= now + getScheduleAheadWindowMs(opportunity);
+      const shortBalance = prePlanBalances[opportunity.shortExchange] ?? 0;
+      const longBalance = prePlanBalances[opportunity.longExchange] ?? 0;
+      const shortInitial = initialBalances[opportunity.shortExchange] ?? 0;
+      const longInitial = initialBalances[opportunity.longExchange] ?? 0;
+      const shortFreeRatio = shortInitial > 0 ? (shortBalance / shortInitial) * 100 : 0;
+      const longFreeRatio = longInitial > 0 ? (longBalance / longInitial) * 100 : 0;
+      const fundingTsDiffMs = (() => {
+        const shortRate = this.latestRates.find((rate) => (
+          rate.exchange === opportunity.shortExchange && rate.symbol === opportunity.shortSymbol
+        ));
+        const longRate = this.latestRates.find((rate) => (
+          rate.exchange === opportunity.longExchange && rate.symbol === opportunity.longSymbol
+        ));
+        if (!shortRate || !longRate) return null;
+        return Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
+      })();
+      const rejectReasons: string[] = [];
+      if (!this.config.enabledExchanges.includes(opportunity.shortExchange)
+        || !this.config.enabledExchanges.includes(opportunity.longExchange)) {
+        rejectReasons.push('disabled_exchange');
+      }
+      if (hasTierCExchange(opportunity.shortExchange, opportunity.longExchange)) {
+        const tierCEx = opportunity.shortExchange === 'bingx' ? opportunity.shortExchange : opportunity.longExchange;
+        if (!this.config.enabledExchanges.includes(tierCEx)) {
+          rejectReasons.push('tier_c_disabled');
+        }
+      }
+      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
+        rejectReasons.push('spread_below_threshold');
+      }
+      if (this.routeFailureMemory.isBlocked(routeFailureKey, now)) {
+        rejectReasons.push('route_failure_blocked');
+      }
+      if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
+        rejectReasons.push('leg_occupied');
+      }
+      if (
+        (this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG).useConfirmedClose
+        && fundingTsDiffMs != null
+        && fundingTsDiffMs > MAX_FUNDING_TIMESTAMP_DIFF_MS
+      ) {
+        rejectReasons.push('funding_timestamp_mismatch');
+      }
+      if (inReplanFreeze && !previousExists && !withinGrace) {
+        rejectReasons.push('near_due_grace_block');
+      }
+      if (!inReplanFreeze && !inAheadWindow) {
+        rejectReasons.push('outside_schedule_window');
+      }
+      if (rejectReasons.length === 0 && !candidateIds.has(opportunityId)) {
+        rejectReasons.push('not_in_candidates');
+      }
+      if (rejectReasons.length === 0 && !isSelected) {
+        rejectReasons.push('allocation_skip');
+      }
+
+      const score = getOpportunityYieldScore(opportunity, strategyConfig);
+      const status = isSelected
+        ? 'selected'
+        : rejectReasons.length === 0
+          ? 'unselected'
+          : 'rejected';
+      events.push({
+        timestamp: now,
+        type: 'schedule_probe',
+        simulation: true,
+        baseAsset: opportunity.baseAsset,
+        shortExchange: opportunity.shortExchange,
+        longExchange: opportunity.longExchange,
+        spread: opportunity.spread,
+        spreadPercent: opportunity.spreadPercent,
+        margin: selectedAllocation > 0 ? selectedAllocation : strategyConfig.investmentUSDT,
+        leverage: strategyConfig.leverage,
+        notional: (selectedAllocation > 0 ? selectedAllocation : strategyConfig.investmentUSDT) * strategyConfig.leverage,
+        shortRate: opportunity.shortRate,
+        longRate: opportunity.longRate,
+        expectedNetProfit: opportunity.netProfit,
+        milestone: 'analysis_candidate',
+        reason: status,
+        analysis: {
+          opportunityId,
+          status,
+          selected: isSelected,
+          selectedAllocationUSDT: selectedAllocation,
+          candidateIncluded: candidateIds.has(opportunityId),
+          scorePerHourUSD: score,
+          rejectReasons,
+          timeToFundingMs: opportunity.nextFundingTime - now,
+          targetTimeMs: targetTime,
+          targetTimeInMs: targetTime - now,
+          entryLeadMs,
+          routeFailureBlocked: this.routeFailureMemory.isBlocked(routeFailureKey, now),
+          shortBalanceUSDT: shortBalance,
+          longBalanceUSDT: longBalance,
+          shortFreeMarginPct: shortFreeRatio,
+          longFreeMarginPct: longFreeRatio,
+          fundingTimestampDiffMs: fundingTsDiffMs,
+          inReplanFreeze,
+          previousScheduleExists: previousExists,
+          withinNearDueGrace: withinGrace,
+          inScheduleAheadWindow: inAheadWindow,
+        },
+        detail: `status=${status} alloc=${selectedAllocation.toFixed(4)} score=${score.toFixed(6)} reasons=${rejectReasons.join(',') || 'none'} ttfMs=${Math.round(opportunity.nextFundingTime - now)}`,
+      });
+    }
+
+    events.push({
+      timestamp: now,
+      type: 'schedule_probe',
+      simulation: true,
+      milestone: 'analysis_summary',
+      reason: 'analysis_summary',
+      analysis: {
+        totalOpportunities: this.opportunities.length,
+        analyzedOpportunities: opportunities.length,
+        candidateCount: candidates.length,
+        selectedCount,
+        scheduledEntriesCount: this.scheduledEntries.size,
+        activePositionsCount: state.simPositions.length,
+        intervalMs: this.getAnalyticsSnapshotIntervalMs(now),
+      },
+      detail: `opps=${this.opportunities.length} analyzed=${opportunities.length} candidates=${candidates.length} selected=${selectedCount} scheduled=${this.scheduledEntries.size}`,
+    });
+
+    this.lastAnalyticsSnapshotAt = now;
+    this.recordTrades(events);
+  }
+
   private async captureProbeMarketSnapshot(
     route: ProbeRoute,
     notional: number,
@@ -1129,6 +1359,7 @@ class ServerSimScheduler {
       shortMidMoveBps?: number;
       longMidMoveBps?: number;
       basisMoveBps?: number;
+      analysis?: Record<string, unknown>;
     },
   ): TradeEvent {
     const shortLive = this.latestRates.find((rate) => (
@@ -1199,6 +1430,7 @@ class ServerSimScheduler {
     const shortMidMoveBps = options?.shortMidMoveBps;
     const longMidMoveBps = options?.longMidMoveBps;
     const basisMoveBps = options?.basisMoveBps;
+    const analysis = options?.analysis;
 
     return {
       timestamp: now,
@@ -1246,6 +1478,7 @@ class ServerSimScheduler {
       probeShortMidMoveBps: shortMidMoveBps,
       probeLongMidMoveBps: longMidMoveBps,
       probeBasisMoveBps: basisMoveBps,
+      analysis,
       detail: [
         `status=${options?.status ?? 'scheduled'}`,
         timeToExecutionMs == null ? null : `tteMs=${Math.round(timeToExecutionMs)}`,
@@ -1731,6 +1964,7 @@ class ServerSimScheduler {
     const previousEntries = this.scheduledEntries;
     const timing = this.getTimingConfig();
     const availableBalance = { ...state.simBalances } as Record<string, number>;
+    const prePlanBalances = { ...availableBalance } as Record<string, number>;
     const occupiedLegs = new Set<string>();
 
     for (const position of state.simPositions) {
@@ -1790,6 +2024,16 @@ class ServerSimScheduler {
       availableBalance,
       buildStrategyLikeConfig(this.config),
     );
+    this.captureSchedulingAnalyticsSnapshot({
+      now,
+      state,
+      prePlanBalances,
+      occupiedLegs,
+      previousEntries,
+      candidates,
+      plans,
+      timing,
+    });
 
     const nextEntries = new Map<string, ScheduledSimEntry>();
     const canceledProbeEvents: TradeEvent[] = [];
@@ -2008,6 +2252,13 @@ class ServerSimScheduler {
             timeToExecutionMs: entry.targetTime - failedAt,
             shortSlippagePercent: probeState.lastShortSlippagePercent,
             longSlippagePercent: probeState.lastLongSlippagePercent,
+            analysis: {
+              failureReason,
+              primaryAnalysis: primaryResult.analysis ?? null,
+              flippedAnalysis: flippedResult.analysis ?? null,
+              primaryError: primaryResult.error ?? null,
+              flippedError: flippedResult.error ?? null,
+            },
           },
         ),
         {
@@ -2020,6 +2271,11 @@ class ServerSimScheduler {
           spread: primaryOpportunity.spread,
           spreadPercent: primaryOpportunity.spreadPercent,
           reason: failureReason,
+          analysis: {
+            failureReason,
+            primaryAnalysis: primaryResult.analysis ?? null,
+            flippedAnalysis: flippedResult.analysis ?? null,
+          },
           detail: `primary:${primaryResult.error ?? 'unknown'} | flipped:${flippedResult.error ?? 'unknown'}`,
         },
       ]);
@@ -2489,6 +2745,105 @@ class ServerSimScheduler {
     }
 
     const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+    const shortBal = state.simBalances[opportunity.shortExchange] ?? 0;
+    const longBal = state.simBalances[opportunity.longExchange] ?? 0;
+    const shortInitial = state.simInitialBalances[opportunity.shortExchange] ?? 1;
+    const longInitial = state.simInitialBalances[opportunity.longExchange] ?? 1;
+    const shortFreeRatio = shortInitial > 0 ? (shortBal / shortInitial) * 100 : 0;
+    const longFreeRatio = longInitial > 0 ? (longBal / longInitial) * 100 : 0;
+    const shortFeeRate = resolveRuntimeFee(
+      opportunity.shortExchange,
+      'taker',
+      this.config.feeOverrides,
+      this.config.paybackOverrides,
+    );
+    const longFeeRate = resolveRuntimeFee(
+      opportunity.longExchange,
+      'taker',
+      this.config.feeOverrides,
+      this.config.paybackOverrides,
+    );
+    const shortCostFactor = 1 + (leverage * shortFeeRate);
+    const longCostFactor = 1 + (leverage * longFeeRate);
+    const maxFeasibleMarginByBalance = Math.max(0, Math.min(
+      shortCostFactor > 0 ? shortBal / shortCostFactor : 0,
+      longCostFactor > 0 ? longBal / longCostFactor : 0,
+    ));
+    const buildCounterfactualEv = (
+      notionalRef: number,
+      shortImpactPct?: number,
+      longImpactPct?: number,
+    ) => {
+      if (!Number.isFinite(notionalRef) || notionalRef <= 0) return null;
+      const usesInstantRate = pairUsesInstantaneousRate(
+        opportunity.shortExchange,
+        opportunity.longExchange,
+      );
+      const shortDrift = snipeConfig.useDriftBuffer
+        ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
+        : 0;
+      const longDrift = snipeConfig.useDriftBuffer
+        ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
+        : 0;
+      const fallbackImpactDec = snipeConfig.useImpactGuards
+        ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 10000 / 2
+        : (snipeConfig.targetImpactBps ?? 4) / 10000;
+      const shortImpactDec = Number.isFinite(shortImpactPct) ? (shortImpactPct as number) / 100 : fallbackImpactDec;
+      const longImpactDec = Number.isFinite(longImpactPct) ? (longImpactPct as number) / 100 : fallbackImpactDec;
+      const roundTripFeeDec = (shortFeeRate + longFeeRate) * 2;
+      const factors = [0.25, 0.5, 0.75, 1];
+      const out: Record<string, number> = {};
+      for (const factor of factors) {
+        const scaledNotional = notionalRef * factor;
+        const ev = calcConservativeEV(
+          scaledNotional,
+          opportunity.shortRate,
+          opportunity.longRate,
+          shortDrift,
+          longDrift,
+          roundTripFeeDec,
+          shortImpactDec,
+          longImpactDec,
+        );
+        out[`evNetUSD_${Math.round(factor * 100)}pct`] = ev.expectedNetUSD;
+        out[`evRatio_${Math.round(factor * 100)}pct`] = ev.evRatio;
+      }
+      return out;
+    };
+    const buildFailureAnalysis = (args?: {
+      attemptedNotionalUSDT?: number;
+      effectiveNotionalUSDT?: number;
+      shortSlippagePercent?: number;
+      longSlippagePercent?: number;
+      extra?: Record<string, unknown>;
+    }): Record<string, unknown> => {
+      const attemptedNotionalUSDT = Number.isFinite(args?.attemptedNotionalUSDT)
+        ? (args?.attemptedNotionalUSDT as number)
+        : baseNotional;
+      const effectiveNotionalUSDT = Number.isFinite(args?.effectiveNotionalUSDT)
+        ? (args?.effectiveNotionalUSDT as number)
+        : attemptedNotionalUSDT;
+      return {
+        attemptedMarginUSDT: margin,
+        attemptedNotionalUSDT,
+        effectiveNotionalUSDT,
+        shortBalanceUSDT: shortBal,
+        longBalanceUSDT: longBal,
+        shortFreeMarginPct: shortFreeRatio,
+        longFreeMarginPct: longFreeRatio,
+        minFreeMarginPct: MIN_FREE_MARGIN_PCT,
+        maxFeasibleMarginByBalanceUSDT: maxFeasibleMarginByBalance,
+        maxFeasibleNotionalByBalanceUSDT: maxFeasibleMarginByBalance * leverage,
+        shortSlippagePercent: args?.shortSlippagePercent,
+        longSlippagePercent: args?.longSlippagePercent,
+        counterfactualEV: buildCounterfactualEv(
+          effectiveNotionalUSDT,
+          args?.shortSlippagePercent,
+          args?.longSlippagePercent,
+        ),
+        ...(args?.extra ?? {}),
+      };
+    };
 
     // v2: dynamic notional based on orderbook depth
     let notional = baseNotional;
@@ -2502,22 +2857,44 @@ class ServerSimScheduler {
         const longImpact = calcOrderbookImpactBps(longOb.bids, longOb.asks, baseNotional, 'buy');
         notional = Math.min(baseNotional, shortImpact.depthCapNotional, longImpact.depthCapNotional, snipeConfig.dynamicNotionalCap);
         if (notional < 100) {
-          return { success: false, error: `depth too shallow: $${notional.toFixed(0)}` };
+          return {
+            success: false,
+            error: `depth too shallow: $${notional.toFixed(0)}`,
+            analysis: buildFailureAnalysis({
+              attemptedNotionalUSDT: baseNotional,
+              effectiveNotionalUSDT: notional,
+              extra: {
+                depthCapShortUSDT: shortImpact.depthCapNotional,
+                depthCapLongUSDT: longImpact.depthCapNotional,
+                dynamicNotionalCapUSDT: snipeConfig.dynamicNotionalCap,
+              },
+            }),
+          };
         }
       } catch (err) {
-        return { success: false, error: `orderbook unavailable for dynamic notional: ${(err as Error).message ?? err}` };
+        return {
+          success: false,
+          error: `orderbook unavailable for dynamic notional: ${(err as Error).message ?? err}`,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            extra: {
+              dynamicNotionalError: (err as Error).message ?? String(err),
+            },
+          }),
+        };
       }
     }
 
     // v2: free margin guard (simulated)
-    const shortBal = state.simBalances[opportunity.shortExchange] ?? 0;
-    const longBal = state.simBalances[opportunity.longExchange] ?? 0;
-    const shortInitial = state.simInitialBalances[opportunity.shortExchange] ?? 1;
-    const longInitial = state.simInitialBalances[opportunity.longExchange] ?? 1;
-    const shortFreeRatio = shortInitial > 0 ? (shortBal / shortInitial) * 100 : 0;
-    const longFreeRatio = longInitial > 0 ? (longBal / longInitial) * 100 : 0;
     if (shortFreeRatio < MIN_FREE_MARGIN_PCT || longFreeRatio < MIN_FREE_MARGIN_PCT) {
-      return { success: false, error: `free margin low: ${opportunity.shortExchange}=${shortFreeRatio.toFixed(1)}% ${opportunity.longExchange}=${longFreeRatio.toFixed(1)}%` };
+      return {
+        success: false,
+        error: `free margin low: ${opportunity.shortExchange}=${shortFreeRatio.toFixed(1)}% ${opportunity.longExchange}=${longFreeRatio.toFixed(1)}%`,
+        analysis: buildFailureAnalysis({
+          attemptedNotionalUSDT: baseNotional,
+          effectiveNotionalUSDT: notional,
+        }),
+      };
     }
 
     let shortFillPrice = opportunity.shortMarkPrice;
@@ -2538,7 +2915,17 @@ class ServerSimScheduler {
           fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
         ]);
       } catch (err) {
-        return { success: false, error: `orderbook fetch failed ??cannot validate slippage: ${(err as Error).message ?? err}` };
+        return {
+          success: false,
+          error: `orderbook fetch failed ??cannot validate slippage: ${(err as Error).message ?? err}`,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            effectiveNotionalUSDT: notional,
+            extra: {
+              orderbookError: (err as Error).message ?? String(err),
+            },
+          }),
+        };
       }
 
       if (snipeConfig.useImpactGuards) {
@@ -2555,6 +2942,16 @@ class ServerSimScheduler {
             error: `impact exceeded: ${roundTripImpactBps.toFixed(1)}bps > ${impactCapBps}bps (notional=$${notional.toFixed(2)})`,
             shortSlippagePercent: shortFill.slippagePercent,
             longSlippagePercent: longFill.slippagePercent,
+            analysis: buildFailureAnalysis({
+              attemptedNotionalUSDT: baseNotional,
+              effectiveNotionalUSDT: notional,
+              shortSlippagePercent: shortFill.slippagePercent,
+              longSlippagePercent: longFill.slippagePercent,
+              extra: {
+                roundTripImpactBps,
+                impactCapBps,
+              },
+            }),
           };
         }
       } else {
@@ -2571,6 +2968,15 @@ class ServerSimScheduler {
             error: `slippage exceeded: short=${shortFill.slippagePercent.toFixed(4)}% long=${longFill.slippagePercent.toFixed(4)}% max=${maxSlippagePct}% (notional=$${notional.toFixed(2)})`,
             shortSlippagePercent: shortFill.slippagePercent,
             longSlippagePercent: longFill.slippagePercent,
+            analysis: buildFailureAnalysis({
+              attemptedNotionalUSDT: baseNotional,
+              effectiveNotionalUSDT: notional,
+              shortSlippagePercent: shortFill.slippagePercent,
+              longSlippagePercent: longFill.slippagePercent,
+              extra: {
+                maxSlippagePct,
+              },
+            }),
           };
         }
       }
@@ -2592,6 +2998,18 @@ class ServerSimScheduler {
           error: `entry gap drift exceeded: ${entryGap.driftPercent.toFixed(4)}% > ${effectiveGapThreshold.toFixed(4)}% (baseThreshold=${gapThreshold.toFixed(4)}% tol=${ENTRY_GAP_TOLERANCE_PCT.toFixed(4)}% live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%)`,
           shortSlippagePercent: shortFill.slippagePercent,
           longSlippagePercent: longFill.slippagePercent,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            effectiveNotionalUSDT: notional,
+            shortSlippagePercent: shortFill.slippagePercent,
+            longSlippagePercent: longFill.slippagePercent,
+            extra: {
+              entryGapDriftPercent: entryGap.driftPercent,
+              entryGapLivePercent: entryGap.liveGapPercent,
+              entryGapBaselinePercent: entryGap.baselineGapPercent,
+              entryGapThresholdPercent: effectiveGapThreshold,
+            },
+          }),
         };
       }
       // v2: hedge ratio pre-check
@@ -2605,6 +3023,17 @@ class ServerSimScheduler {
             error: `hedge ratio ${hedgeRatio.toFixed(6)} outside [${HEDGE_RATIO_MIN}, ${HEDGE_RATIO_MAX}]`,
             shortSlippagePercent: shortFill.slippagePercent,
             longSlippagePercent: longFill.slippagePercent,
+            analysis: buildFailureAnalysis({
+              attemptedNotionalUSDT: baseNotional,
+              effectiveNotionalUSDT: notional,
+              shortSlippagePercent: shortFill.slippagePercent,
+              longSlippagePercent: longFill.slippagePercent,
+              extra: {
+                hedgeRatio,
+                hedgeRatioMin: HEDGE_RATIO_MIN,
+                hedgeRatioMax: HEDGE_RATIO_MAX,
+              },
+            }),
           };
         }
       }
@@ -2617,7 +3046,14 @@ class ServerSimScheduler {
       break;
     }
     if (!fillsValidated) {
-      return { success: false, error: 'unable to validate entry slippage' };
+      return {
+        success: false,
+        error: 'unable to validate entry slippage',
+        analysis: buildFailureAnalysis({
+          attemptedNotionalUSDT: baseNotional,
+          effectiveNotionalUSDT: notional,
+        }),
+      };
     }
     // Sign convention: (longFill - shortFill) / shortFill. Positive means worse entry.
     const entryGap = getEntryGapMetrics({
@@ -2661,6 +3097,18 @@ class ServerSimScheduler {
           error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
           shortSlippagePercent,
           longSlippagePercent,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            effectiveNotionalUSDT: notional,
+            shortSlippagePercent,
+            longSlippagePercent,
+            extra: {
+              conservativeEvUSD: ev.expectedNetUSD,
+              conservativeEvRatio: ev.evRatio,
+              passesMinProfit: ev.passesMinProfit,
+              passesEVRatio: ev.passesEVRatio,
+            },
+          }),
         };
       }
     }
@@ -2699,7 +3147,21 @@ class ServerSimScheduler {
       }
 
       if ((workingBalances[target] ?? 0) < required) {
-        return { success: false, error: `insufficient sim balance on ${target}` };
+        return {
+          success: false,
+          error: `insufficient sim balance on ${target}`,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            effectiveNotionalUSDT: notional,
+            shortSlippagePercent,
+            longSlippagePercent,
+            extra: {
+              insufficientTarget: target,
+              requiredBalanceUSDT: required,
+              availableBalanceUSDT: workingBalances[target] ?? 0,
+            },
+          }),
+        };
       }
     }
 
