@@ -132,6 +132,28 @@ export interface TradeEvent {
   hedgedNetSpreadPercent?: number;
   expectedNetProfit?: number;
   expectedRoiPercent?: number;
+  probeShortBid?: number;
+  probeShortAsk?: number;
+  probeLongBid?: number;
+  probeLongAsk?: number;
+  probeShortMid?: number;
+  probeLongMid?: number;
+  probeBasisBps?: number;
+  probeShortSpreadBps?: number;
+  probeLongSpreadBps?: number;
+  probeShortBidDepthUsd5?: number;
+  probeShortAskDepthUsd5?: number;
+  probeLongBidDepthUsd5?: number;
+  probeLongAskDepthUsd5?: number;
+  probeShortImbalance?: number;
+  probeLongImbalance?: number;
+  probeShortImpactBps?: number;
+  probeLongImpactBps?: number;
+  probeEntryCapacityUsd5?: number;
+  probeExitCapacityUsd5?: number;
+  probeShortMidMoveBps?: number;
+  probeLongMidMoveBps?: number;
+  probeBasisMoveBps?: number;
   detail?: string;
 }
 

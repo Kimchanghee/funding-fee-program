@@ -99,6 +99,43 @@ const POST_FUNDING_PROBE_POINTS = [
   { key: 'post_funding_25s', thresholdMs: 25_000 },
   { key: 'post_funding_30s', thresholdMs: 30_000 },
 ] as const;
+const PROBE_ORDERBOOK_DEPTH = 5;
+
+function sumDepthUsd(levels: number[][] | undefined, depth: number): number {
+  if (!levels?.length || depth <= 0) return 0;
+  return levels.slice(0, depth).reduce((sum, [price, qty]) => {
+    const levelPrice = Number(price);
+    const levelQty = Number(qty);
+    if (!Number.isFinite(levelPrice) || !Number.isFinite(levelQty)) return sum;
+    return sum + (levelPrice * levelQty);
+  }, 0);
+}
+
+function calcBookSpreadBps(bid: number, ask: number): number {
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return 0;
+  const mid = (bid + ask) / 2;
+  if (!Number.isFinite(mid) || mid <= 0) return 0;
+  return ((ask - bid) / mid) * 10000;
+}
+
+function calcBasisBps(shortMid: number, longMid: number): number {
+  if (!Number.isFinite(shortMid) || !Number.isFinite(longMid) || shortMid <= 0 || longMid <= 0) return 0;
+  const reference = (shortMid + longMid) / 2;
+  if (!Number.isFinite(reference) || reference <= 0) return 0;
+  return ((shortMid - longMid) / reference) * 10000;
+}
+
+function calcMoveBps(current: number, baseline: number): number {
+  if (!Number.isFinite(current) || !Number.isFinite(baseline) || current <= 0 || baseline <= 0) return 0;
+  return ((current - baseline) / baseline) * 10000;
+}
+
+function calcDepthImbalance(bidDepthUsd: number, askDepthUsd: number): number {
+  if (!Number.isFinite(bidDepthUsd) || !Number.isFinite(askDepthUsd)) return 0;
+  const total = bidDepthUsd + askDepthUsd;
+  if (total <= 0) return 0;
+  return (bidDepthUsd - askDepthUsd) / total;
+}
 
 function ensureDataDir() {
   if (!existsSync(DATA_DIR)) {
@@ -410,6 +447,9 @@ interface ScheduleProbeState {
   status: 'scheduled' | 'executed' | 'failed' | 'canceled';
   executedAt?: number;
   fundingCapturedAt?: number;
+  fundingBaseShortMid?: number;
+  fundingBaseLongMid?: number;
+  fundingBaseBasisBps?: number;
   finalizedAt?: number;
   pairId?: string;
   executedNotional?: number;
@@ -457,6 +497,28 @@ type ProbeRoute = Pick<
   | 'fundingIntervalMs'
   | 'nextFundingTime'
 >;
+
+type ProbeMarketSnapshot = {
+  shortBid: number;
+  shortAsk: number;
+  shortMid: number;
+  shortSpreadBps: number;
+  shortBidDepthUsd5: number;
+  shortAskDepthUsd5: number;
+  shortImbalance: number;
+  shortImpactBps: number;
+  longBid: number;
+  longAsk: number;
+  longMid: number;
+  longSpreadBps: number;
+  longBidDepthUsd5: number;
+  longAskDepthUsd5: number;
+  longImbalance: number;
+  longImpactBps: number;
+  basisBps: number;
+  entryCapacityUsd5: number;
+  exitCapacityUsd5: number;
+};
 
 type PreparedSimCloseLeg = {
   position: SimPosition;
@@ -916,6 +978,11 @@ class ServerSimScheduler {
       existing.status = 'scheduled';
       existing.finalizedAt = undefined;
       existing.lastReason = undefined;
+      existing.fundingCapturedAt = undefined;
+      existing.fundingBaseShortMid = undefined;
+      existing.fundingBaseLongMid = undefined;
+      existing.fundingBaseBasisBps = undefined;
+      existing.postFundingMilestones = [];
     }
 
     if (existing.status === 'scheduled') {
@@ -927,6 +994,9 @@ class ServerSimScheduler {
       existing.shortSymbol = entry.opportunity.shortSymbol;
       existing.longSymbol = entry.opportunity.longSymbol;
       existing.opportunityId = entry.opportunityId;
+      existing.fundingBaseShortMid = undefined;
+      existing.fundingBaseLongMid = undefined;
+      existing.fundingBaseBasisBps = undefined;
     }
 
     this.scheduleProbeStates.set(entry.probeId, existing);
@@ -967,6 +1037,80 @@ class ServerSimScheduler {
     };
   }
 
+  private async captureProbeMarketSnapshot(
+    route: ProbeRoute,
+    notional: number,
+  ): Promise<ProbeMarketSnapshot | undefined> {
+    try {
+      const [shortBook, longBook] = await Promise.all([
+        fetchOrderbook(route.shortExchange, route.shortSymbol, PROBE_ORDERBOOK_DEPTH),
+        fetchOrderbook(route.longExchange, route.longSymbol, PROBE_ORDERBOOK_DEPTH),
+      ]);
+
+      const shortBid = shortBook.bids?.[0]?.[0];
+      const shortAsk = shortBook.asks?.[0]?.[0];
+      const longBid = longBook.bids?.[0]?.[0];
+      const longAsk = longBook.asks?.[0]?.[0];
+      if (
+        !Number.isFinite(shortBid)
+        || !Number.isFinite(shortAsk)
+        || !Number.isFinite(longBid)
+        || !Number.isFinite(longAsk)
+      ) {
+        return undefined;
+      }
+
+      const shortMid = ((shortBid as number) + (shortAsk as number)) / 2;
+      const longMid = ((longBid as number) + (longAsk as number)) / 2;
+      const shortBidDepthUsd5 = sumDepthUsd(shortBook.bids, PROBE_ORDERBOOK_DEPTH);
+      const shortAskDepthUsd5 = sumDepthUsd(shortBook.asks, PROBE_ORDERBOOK_DEPTH);
+      const longBidDepthUsd5 = sumDepthUsd(longBook.bids, PROBE_ORDERBOOK_DEPTH);
+      const longAskDepthUsd5 = sumDepthUsd(longBook.asks, PROBE_ORDERBOOK_DEPTH);
+
+      let shortImpactBps = 0;
+      let longImpactBps = 0;
+      const impactNotional = Math.max(0, notional);
+      if (impactNotional > 0) {
+        shortImpactBps = calcOrderbookImpactBps(
+          shortBook.bids,
+          shortBook.asks,
+          impactNotional,
+          'sell',
+        ).impactBps;
+        longImpactBps = calcOrderbookImpactBps(
+          longBook.bids,
+          longBook.asks,
+          impactNotional,
+          'buy',
+        ).impactBps;
+      }
+
+      return {
+        shortBid: shortBid as number,
+        shortAsk: shortAsk as number,
+        shortMid,
+        shortSpreadBps: calcBookSpreadBps(shortBid as number, shortAsk as number),
+        shortBidDepthUsd5,
+        shortAskDepthUsd5,
+        shortImbalance: calcDepthImbalance(shortBidDepthUsd5, shortAskDepthUsd5),
+        shortImpactBps,
+        longBid: longBid as number,
+        longAsk: longAsk as number,
+        longMid,
+        longSpreadBps: calcBookSpreadBps(longBid as number, longAsk as number),
+        longBidDepthUsd5,
+        longAskDepthUsd5,
+        longImbalance: calcDepthImbalance(longBidDepthUsd5, longAskDepthUsd5),
+        longImpactBps,
+        basisBps: calcBasisBps(shortMid, longMid),
+        entryCapacityUsd5: Math.min(shortBidDepthUsd5, longAskDepthUsd5),
+        exitCapacityUsd5: Math.min(shortAskDepthUsd5, longBidDepthUsd5),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
   private buildScheduleProbeEvent(
     milestone: string,
     route: ProbeRoute,
@@ -981,6 +1125,10 @@ class ServerSimScheduler {
       executedNotional?: number;
       shortSlippagePercent?: number;
       longSlippagePercent?: number;
+      marketSnapshot?: ProbeMarketSnapshot;
+      shortMidMoveBps?: number;
+      longMidMoveBps?: number;
+      basisMoveBps?: number;
     },
   ): TradeEvent {
     const shortLive = this.latestRates.find((rate) => (
@@ -1047,6 +1195,10 @@ class ServerSimScheduler {
       : 0;
     const timeToExecutionMs = options?.timeToExecutionMs;
     const timeFromFundingMs = options?.timeFromFundingMs;
+    const marketSnapshot = options?.marketSnapshot;
+    const shortMidMoveBps = options?.shortMidMoveBps;
+    const longMidMoveBps = options?.longMidMoveBps;
+    const basisMoveBps = options?.basisMoveBps;
 
     return {
       timestamp: now,
@@ -1072,6 +1224,28 @@ class ServerSimScheduler {
       hedgedNetSpreadPercent,
       expectedNetProfit,
       expectedRoiPercent,
+      probeShortBid: marketSnapshot?.shortBid,
+      probeShortAsk: marketSnapshot?.shortAsk,
+      probeLongBid: marketSnapshot?.longBid,
+      probeLongAsk: marketSnapshot?.longAsk,
+      probeShortMid: marketSnapshot?.shortMid,
+      probeLongMid: marketSnapshot?.longMid,
+      probeBasisBps: marketSnapshot?.basisBps,
+      probeShortSpreadBps: marketSnapshot?.shortSpreadBps,
+      probeLongSpreadBps: marketSnapshot?.longSpreadBps,
+      probeShortBidDepthUsd5: marketSnapshot?.shortBidDepthUsd5,
+      probeShortAskDepthUsd5: marketSnapshot?.shortAskDepthUsd5,
+      probeLongBidDepthUsd5: marketSnapshot?.longBidDepthUsd5,
+      probeLongAskDepthUsd5: marketSnapshot?.longAskDepthUsd5,
+      probeShortImbalance: marketSnapshot?.shortImbalance,
+      probeLongImbalance: marketSnapshot?.longImbalance,
+      probeShortImpactBps: marketSnapshot?.shortImpactBps,
+      probeLongImpactBps: marketSnapshot?.longImpactBps,
+      probeEntryCapacityUsd5: marketSnapshot?.entryCapacityUsd5,
+      probeExitCapacityUsd5: marketSnapshot?.exitCapacityUsd5,
+      probeShortMidMoveBps: shortMidMoveBps,
+      probeLongMidMoveBps: longMidMoveBps,
+      probeBasisMoveBps: basisMoveBps,
       detail: [
         `status=${options?.status ?? 'scheduled'}`,
         timeToExecutionMs == null ? null : `tteMs=${Math.round(timeToExecutionMs)}`,
@@ -1085,6 +1259,15 @@ class ServerSimScheduler {
         `passEV=${ev.passesMinProfit && ev.passesEVRatio}`,
         `impactSrc=${hasMeasuredImpact ? 'measured' : 'cap'}`,
         `impactUsed=${(entryImpactDec * 100).toFixed(4)}%`,
+        marketSnapshot == null ? null : `basis=${marketSnapshot.basisBps.toFixed(2)}bps`,
+        marketSnapshot == null ? null : `liqIn=${marketSnapshot.entryCapacityUsd5.toFixed(2)}`,
+        marketSnapshot == null ? null : `liqOut=${marketSnapshot.exitCapacityUsd5.toFixed(2)}`,
+        marketSnapshot == null
+          ? null
+          : `impactNow=${(marketSnapshot.shortImpactBps + marketSnapshot.longImpactBps).toFixed(2)}bps`,
+        shortMidMoveBps == null ? null : `shortMove=${shortMidMoveBps.toFixed(2)}bps`,
+        longMidMoveBps == null ? null : `longMove=${longMidMoveBps.toFixed(2)}bps`,
+        basisMoveBps == null ? null : `basisMove=${basisMoveBps.toFixed(2)}bps`,
       ].filter(Boolean).join(' '),
     };
   }
@@ -1194,7 +1377,7 @@ class ServerSimScheduler {
     }
   }
 
-  private capturePostFundingProbeMilestones(now: number) {
+  private async capturePostFundingProbeMilestones(now: number) {
     if (this.scheduleProbeStates.size === 0) return;
     const events: TradeEvent[] = [];
 
@@ -1203,28 +1386,60 @@ class ServerSimScheduler {
       const elapsedMs = now - state.fundingCapturedAt;
       if (elapsedMs < 0) continue;
       const route = this.resolveProbeRoute(state);
+      const pendingPoints = POST_FUNDING_PROBE_POINTS.filter((point) => (
+        !state.postFundingMilestones.includes(point.key) && elapsedMs >= point.thresholdMs
+      ));
+      if (pendingPoints.length === 0) {
+        this.scheduleProbeStates.set(state.probeId, state);
+        continue;
+      }
 
-      for (const point of POST_FUNDING_PROBE_POINTS) {
-        if (state.postFundingMilestones.includes(point.key)) continue;
-        if (elapsedMs >= point.thresholdMs) {
-          events.push(this.buildScheduleProbeEvent(
-            point.key,
-            route,
-            state.investmentUSDT,
-            now,
-            {
-              pairId: state.pairId,
-              status: 'executed',
-              reason: point.key,
-              timeToExecutionMs: state.targetTime - now,
-              timeFromFundingMs: elapsedMs,
-              executedNotional: state.executedNotional,
-              shortSlippagePercent: state.lastShortSlippagePercent,
-              longSlippagePercent: state.lastLongSlippagePercent,
-            },
-          ));
-          state.postFundingMilestones.push(point.key);
+      const notional = Math.max(0, state.executedNotional ?? state.investmentUSDT * this.config.leverage);
+      const marketSnapshot = await this.captureProbeMarketSnapshot(route, notional);
+      if (marketSnapshot) {
+        if (!Number.isFinite(state.fundingBaseShortMid ?? Number.NaN)) {
+          state.fundingBaseShortMid = marketSnapshot.shortMid;
         }
+        if (!Number.isFinite(state.fundingBaseLongMid ?? Number.NaN)) {
+          state.fundingBaseLongMid = marketSnapshot.longMid;
+        }
+        if (!Number.isFinite(state.fundingBaseBasisBps ?? Number.NaN)) {
+          state.fundingBaseBasisBps = marketSnapshot.basisBps;
+        }
+      }
+
+      const shortMidMoveBps = marketSnapshot && Number.isFinite(state.fundingBaseShortMid ?? Number.NaN)
+        ? calcMoveBps(marketSnapshot.shortMid, state.fundingBaseShortMid as number)
+        : undefined;
+      const longMidMoveBps = marketSnapshot && Number.isFinite(state.fundingBaseLongMid ?? Number.NaN)
+        ? calcMoveBps(marketSnapshot.longMid, state.fundingBaseLongMid as number)
+        : undefined;
+      const basisMoveBps = marketSnapshot && Number.isFinite(state.fundingBaseBasisBps ?? Number.NaN)
+        ? (marketSnapshot.basisBps - (state.fundingBaseBasisBps as number))
+        : undefined;
+
+      for (const point of pendingPoints) {
+        events.push(this.buildScheduleProbeEvent(
+          point.key,
+          route,
+          state.investmentUSDT,
+          now,
+          {
+            pairId: state.pairId,
+            status: 'executed',
+            reason: point.key,
+            timeToExecutionMs: state.targetTime - now,
+            timeFromFundingMs: elapsedMs,
+            executedNotional: state.executedNotional,
+            shortSlippagePercent: state.lastShortSlippagePercent,
+            longSlippagePercent: state.lastLongSlippagePercent,
+            marketSnapshot,
+            shortMidMoveBps,
+            longMidMoveBps,
+            basisMoveBps,
+          },
+        ));
+        state.postFundingMilestones.push(point.key);
       }
 
       this.scheduleProbeStates.set(state.probeId, state);
@@ -1266,7 +1481,7 @@ class ServerSimScheduler {
         await this.executeDueEntries();
         // Process funding/auto-close before heavy refresh calls to minimize post-funding exposure.
         await this.processFunding();
-        this.capturePostFundingProbeMilestones(Date.now());
+        await this.capturePostFundingProbeMilestones(Date.now());
         await this.processPendingAutoCloses();
         if (this.lastRatesUpdate === 0 || Date.now() - this.lastRatesUpdate >= RATES_REFRESH_INTERVAL_MS) {
           await this.refreshRatesAndPlans();
@@ -1279,7 +1494,7 @@ class ServerSimScheduler {
         await this.executeDueEntries();
         this.capturePostExecutionProbeMilestones(Date.now());
         await this.processFunding();
-        this.capturePostFundingProbeMilestones(Date.now());
+        await this.capturePostFundingProbeMilestones(Date.now());
         await this.processPendingAutoCloses();
         this.pruneProbeStates(Date.now());
         if (Date.now() - this.lastStatePersistAt >= TICK_STATE_PERSIST_INTERVAL_MS) {
@@ -1698,6 +1913,9 @@ class ServerSimScheduler {
         probeState.status = 'executed';
         probeState.executedAt = executedAt;
         probeState.fundingCapturedAt = undefined;
+        probeState.fundingBaseShortMid = undefined;
+        probeState.fundingBaseLongMid = undefined;
+        probeState.fundingBaseBasisBps = undefined;
         probeState.pairId = primaryResult.pairId;
         probeState.executedNotional = primaryResult.executedNotional;
         probeState.postMilestones = [];
@@ -1737,6 +1955,9 @@ class ServerSimScheduler {
         probeState.status = 'executed';
         probeState.executedAt = executedAt;
         probeState.fundingCapturedAt = undefined;
+        probeState.fundingBaseShortMid = undefined;
+        probeState.fundingBaseLongMid = undefined;
+        probeState.fundingBaseBasisBps = undefined;
         probeState.pairId = flippedResult.pairId;
         probeState.executedNotional = flippedResult.executedNotional;
         probeState.postMilestones = [];
