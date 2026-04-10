@@ -7,6 +7,8 @@ import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
 import { estimateProfit } from '@/lib/opportunities';
 import { fmtNum } from '@/lib/format';
 
+const OPPORTUNITY_SCROLL_HEIGHT = 240;
+
 type SortField = 'netProfit' | 'spread' | 'annualReturn' | 'baseAsset' | 'minutesToFunding';
 type SortDir = 'asc' | 'desc';
 
@@ -137,7 +139,7 @@ export default function FundingRateTable() {
       </div>
 
       {/* Table */}
-      <div style={{ overflowX: 'auto' }}>
+      <div style={{ maxHeight: OPPORTUNITY_SCROLL_HEIGHT, overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
