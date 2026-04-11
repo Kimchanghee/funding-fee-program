@@ -30,6 +30,21 @@ interface OrderbookSnapshot {
   updatedAt: number;
 }
 
+interface LoopStatus {
+  lastSuccessAt: number | null;
+  lastErrorAt: number | null;
+  lastError?: string;
+  retries: number;
+}
+
+interface ExchangeLoopSummary {
+  loops: number;
+  healthyLoops: number;
+  errorLoops: number;
+  lastSuccessAgeMs: number | null;
+  lastError?: string;
+}
+
 const trackedBaseSet = new Set(TRACKED_SYMBOLS);
 
 const PRO_MODULE_BY_EXCHANGE: Record<ExchangeId, string> = {
@@ -48,6 +63,8 @@ const fundingLoopKeys = new Set<string>();
 const orderbookLoopKeys = new Set<string>();
 const orderbookStateCache = new Map<string, OrderbookSnapshot>();
 const lastWarnAt = new Map<string, number>();
+const fundingLoopStatus = new Map<string, LoopStatus>();
+const orderbookLoopStatus = new Map<string, LoopStatus>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -378,6 +395,11 @@ function startFundingLoop(
 ): void {
   if (fundingLoopKeys.has(loopKey)) return;
   fundingLoopKeys.add(loopKey);
+  fundingLoopStatus.set(loopKey, {
+    lastSuccessAt: null,
+    lastErrorAt: null,
+    retries: 0,
+  });
 
   void (async () => {
     let retries = 0;
@@ -385,8 +407,19 @@ function startFundingLoop(
       try {
         await runner();
         retries = 0;
+        fundingLoopStatus.set(loopKey, {
+          lastSuccessAt: Date.now(),
+          lastErrorAt: null,
+          retries: 0,
+        });
       } catch (err) {
         retries += 1;
+        fundingLoopStatus.set(loopKey, {
+          lastSuccessAt: fundingLoopStatus.get(loopKey)?.lastSuccessAt ?? null,
+          lastErrorAt: Date.now(),
+          lastError: (err as Error).message,
+          retries,
+        });
         warnThrottled(loopKey, `[WS] ${loopKey} failed: ${(err as Error).message}`);
         const waitMs = Math.min(5_000, 300 * 2 ** Math.min(retries, 4));
         await sleep(waitMs);
@@ -443,6 +476,11 @@ function ensureOrderbookLoop(id: ExchangeId, symbol: string, depth: number): voi
   const loopKey = `${id}:${symbol}:orderbook`;
   if (orderbookLoopKeys.has(loopKey)) return;
   orderbookLoopKeys.add(loopKey);
+  orderbookLoopStatus.set(loopKey, {
+    lastSuccessAt: null,
+    lastErrorAt: null,
+    retries: 0,
+  });
 
   const watchDepth = getWatchDepth(id, depth);
 
@@ -465,8 +503,19 @@ function ensureOrderbookLoop(id: ExchangeId, symbol: string, depth: number): voi
           updatedAt: Date.now(),
         });
         retries = 0;
+        orderbookLoopStatus.set(loopKey, {
+          lastSuccessAt: Date.now(),
+          lastErrorAt: null,
+          retries: 0,
+        });
       } catch (err) {
         retries += 1;
+        orderbookLoopStatus.set(loopKey, {
+          lastSuccessAt: orderbookLoopStatus.get(loopKey)?.lastSuccessAt ?? null,
+          lastErrorAt: Date.now(),
+          lastError: (err as Error).message,
+          retries,
+        });
         warnThrottled(loopKey, `[WS] ${loopKey} failed: ${(err as Error).message}`);
         const waitMs = Math.min(5_000, 300 * 2 ** Math.min(retries, 4));
         await sleep(waitMs);
@@ -518,6 +567,25 @@ export async function fetchFundingRatesViaWs(
   return rates;
 }
 
+export async function warmFundingRatesWs(
+  id: ExchangeId,
+  symbols?: string[],
+): Promise<string[]> {
+  const targetSymbols = await resolveRequestedSymbols(id, symbols);
+  for (const symbol of targetSymbols) {
+    ensureFundingLoops(id, symbol);
+  }
+  return targetSymbols;
+}
+
+export function warmOrderbookWs(
+  id: ExchangeId,
+  symbol: string,
+  depth = 50,
+): void {
+  ensureOrderbookLoop(id, symbol, depth);
+}
+
 export async function fetchOrderbookViaWs(
   id: ExchangeId,
   symbol: string,
@@ -548,4 +616,48 @@ export async function fetchOrderbookViaWs(
   }
 
   throw new Error(`[${id}] watchOrderBook timeout`);
+}
+
+function summarizeLoopsByExchange(
+  loopMap: Map<string, LoopStatus>,
+): Record<string, ExchangeLoopSummary> {
+  const now = Date.now();
+  const result: Record<string, ExchangeLoopSummary> = {};
+
+  for (const [key, status] of loopMap.entries()) {
+    const exchange = key.split(':', 1)[0];
+    if (!exchange) continue;
+
+    const current = result[exchange] ?? {
+      loops: 0,
+      healthyLoops: 0,
+      errorLoops: 0,
+      lastSuccessAgeMs: null,
+      lastError: undefined,
+    };
+
+    current.loops += 1;
+    if (status.lastSuccessAt) {
+      current.healthyLoops += 1;
+      const ageMs = Math.max(0, now - status.lastSuccessAt);
+      current.lastSuccessAgeMs = current.lastSuccessAgeMs == null
+        ? ageMs
+        : Math.min(current.lastSuccessAgeMs, ageMs);
+    }
+    if (status.lastErrorAt && (!status.lastSuccessAt || status.lastErrorAt >= status.lastSuccessAt)) {
+      current.errorLoops += 1;
+      if (!current.lastError && status.lastError) current.lastError = status.lastError;
+    }
+
+    result[exchange] = current;
+  }
+
+  return result;
+}
+
+export function getWsPublicDataHealth() {
+  return {
+    fundingByExchange: summarizeLoopsByExchange(fundingLoopStatus),
+    orderbookByExchange: summarizeLoopsByExchange(orderbookLoopStatus),
+  };
 }

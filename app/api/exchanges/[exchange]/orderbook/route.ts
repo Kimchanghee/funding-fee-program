@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchMarketFillPrice } from '@/lib/exchanges';
+import { getOrderbookFillSnapshot } from '@/lib/publicMarketDataCache';
 import type { ExchangeId } from '@/lib/types';
 
 export async function GET(
@@ -20,12 +20,15 @@ export async function GET(
   }
 
   try {
-    const result = await fetchMarketFillPrice(
+    const result = await getOrderbookFillSnapshot(
       exchange as ExchangeId,
       symbol,
       side,
       notional,
     );
+    if (!Number.isFinite(result.fillPrice)) {
+      throw new Error(result.error || 'orderbook unavailable');
+    }
     return NextResponse.json({ success: true, ...result });
   } catch (err) {
     return NextResponse.json(

@@ -13,6 +13,7 @@ import {
   openPositionExact,
   type ExecutedOrderSummary,
 } from './exchanges';
+import { warmFundingRatesWs, warmOrderbookWs } from './exchanges/wsPublicData';
 import {
   EXCHANGE_PROFILES,
   getPairEntryLeadMs,
@@ -24,6 +25,7 @@ import {
 import { appendTrades, readTrades, type TradeEvent } from './fileLogger';
 import { getEntryGapMetrics } from './entryGapGuard';
 import { rebalanceExecutedHedge } from './hedgeRebalance';
+import { getFundingExchangeSnapshot } from './publicMarketDataCache';
 import { refreshAllFeeCaches, resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
 import { checkPairLiquidationDistance } from './liquidationGuard';
 import {
@@ -83,6 +85,7 @@ const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
 const COMPOUND_BALANCE_USAGE_PCT = 0.9;
 const MIN_ENTRY_NOTIONAL_USDT = 100;
 const MAX_ADAPTIVE_NOTIONAL_ATTEMPTS = 4;
+const WS_WARM_INTERVAL_MS = 15_000;
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -252,6 +255,7 @@ class ServerScheduler {
   private scheduledEntries = new Map<string, ScheduledEntry>();
   private activePositions = new Map<string, ActivePosition>();
   private lastPollTime = 0;
+  private lastWsWarmAt = 0;
   private loadedPersistedState = false;
   private routeFailureMemory = new RouteFailureMemory();
   private fundingUniverseCache = new Map<ExchangeId, FundingUniverseCacheEntry>();
@@ -596,6 +600,37 @@ class ServerScheduler {
     this.pollInterval = setInterval(() => void this.poll(), 5_000);
   }
 
+  private prewarmWsMarketData(now: number, fundingSymbols: Map<ExchangeId, string[]>) {
+    if (now - this.lastWsWarmAt < WS_WARM_INTERVAL_MS) return;
+    this.lastWsWarmAt = now;
+
+    const orderbookTargets = new Map<string, { exchange: ExchangeId; symbol: string }>();
+    const addOrderbookTarget = (exchange: ExchangeId, symbol?: string) => {
+      if (!symbol) return;
+      const key = `${exchange}:${symbol}`;
+      if (!orderbookTargets.has(key)) {
+        orderbookTargets.set(key, { exchange, symbol });
+      }
+    };
+
+    for (const entry of this.scheduledEntries.values()) {
+      addOrderbookTarget(entry.opportunity.shortExchange, entry.opportunity.shortSymbol);
+      addOrderbookTarget(entry.opportunity.longExchange, entry.opportunity.longSymbol);
+    }
+
+    for (const position of this.activePositions.values()) {
+      addOrderbookTarget(position.opportunity.shortExchange, position.opportunity.shortSymbol);
+      addOrderbookTarget(position.opportunity.longExchange, position.opportunity.longSymbol);
+    }
+
+    void Promise.allSettled([
+      ...Array.from(fundingSymbols.entries()).map(([exchange, symbols]) => warmFundingRatesWs(exchange, symbols)),
+      ...Array.from(orderbookTargets.values()).map(async ({ exchange, symbol }) => {
+        warmOrderbookWs(exchange, symbol, 50);
+      }),
+    ]);
+  }
+
   private lastFeeCacheRefresh = 0;
   private static FEE_CACHE_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -615,8 +650,10 @@ class ServerScheduler {
 
     try {
       this.pruneFundingUniverseCache();
+      const wsWarmSymbols = this.buildFastFundingSymbols(this.lastPollTime);
+      this.prewarmWsMarketData(this.lastPollTime, wsWarmSymbols);
       const fullScan = this.shouldRunFullFundingScan(this.lastPollTime);
-      const fastSymbols = fullScan ? new Map<ExchangeId, string[]>() : this.buildFastFundingSymbols(this.lastPollTime);
+      const fastSymbols = fullScan ? new Map<ExchangeId, string[]>() : wsWarmSymbols;
 
       let results = await Promise.allSettled(
         this.config.enabledExchanges.map((exchange) => {
@@ -624,7 +661,7 @@ class ServerScheduler {
           if (symbols && symbols.length > 0) {
             return fetchFundingRates(exchange, undefined, symbols);
           }
-          return fetchFundingRates(exchange);
+          return getFundingExchangeSnapshot(exchange).then((snapshot) => snapshot.rates);
         }),
       );
 
@@ -635,7 +672,9 @@ class ServerScheduler {
       let effectiveFullScan = fullScan;
       if (rates.length === 0 && !fullScan) {
         results = await Promise.allSettled(
-          this.config.enabledExchanges.map((exchange) => fetchFundingRates(exchange)),
+          this.config.enabledExchanges.map((exchange) =>
+            getFundingExchangeSnapshot(exchange).then((snapshot) => snapshot.rates),
+          ),
         );
         rates = results
           .filter((result): result is PromiseFulfilledResult<FundingRate[]> => result.status === 'fulfilled')
