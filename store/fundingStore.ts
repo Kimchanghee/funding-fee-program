@@ -27,6 +27,12 @@ import {
   getOpportunityLegKeys,
   makeOpportunityId,
 } from '@/lib/opportunities';
+import {
+  buildBalanceEqualizationPlan,
+  getBalanceEqualizationPlanningBalances,
+  getOpportunityBalanceEqualizationMultiplier,
+  type BalanceEqualizationPlan,
+} from '@/lib/balanceEqualization';
 import { fmtNum } from '@/lib/format';
 import {
   RATES_POLL_INTERVAL_MS,
@@ -569,14 +575,19 @@ function planWindowAllocations(
   availableBalance: Record<string, number>,
   strategyConfig: StrategyConfig,
   realSpreads: Record<string, RealSpreadSnapshot>,
+  planningBalance?: Record<string, number>,
+  balancePlan?: BalanceEqualizationPlan,
 ): PlannedSnipeAllocation[] {
+  const effectiveBalance = planningBalance ? { ...planningBalance } : availableBalance;
   const candidates = opportunities
     .map((opportunity) => ({
         opportunity,
-        score: getOpportunityYieldScore(
-          opportunity,
-          getRealSpreadForOpportunity(realSpreads, opportunity),
-          strategyConfig,
+        score: (
+          getOpportunityYieldScore(
+            opportunity,
+            getRealSpreadForOpportunity(realSpreads, opportunity),
+            strategyConfig,
+          ) * getOpportunityBalanceEqualizationMultiplier(balancePlan, opportunity)
         ),
       }))
     .filter((candidate) => candidate.score > 0)
@@ -602,8 +613,8 @@ function planWindowAllocations(
   );
 
   const getCap = (opportunity: ArbitrageOpportunity) => {
-    const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
-    const longAvail = availableBalance[opportunity.longExchange] ?? 0;
+    const shortAvail = effectiveBalance[opportunity.shortExchange] ?? 0;
+    const longAvail = effectiveBalance[opportunity.longExchange] ?? 0;
     const shortFactor = getCostFactor(opportunity.shortExchange);
     const longFactor = getCostFactor(opportunity.longExchange);
     const maxByShort = shortFactor > 0 ? shortAvail / shortFactor : 0;
@@ -645,6 +656,8 @@ function planWindowAllocations(
     const allocated = allocations.get(opportunityId) ?? 0;
     const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
     const longAvail = availableBalance[opportunity.longExchange] ?? 0;
+    const effectiveShortAvail = effectiveBalance[opportunity.shortExchange] ?? 0;
+    const effectiveLongAvail = effectiveBalance[opportunity.longExchange] ?? 0;
     const shortFactor = getCostFactor(opportunity.shortExchange);
     const longFactor = getCostFactor(opportunity.longExchange);
     const chunk = Math.min(
@@ -659,6 +672,8 @@ function planWindowAllocations(
     allocations.set(opportunityId, allocated + chunk);
     availableBalance[opportunity.shortExchange] = Math.max(0, shortAvail - shortCost);
     availableBalance[opportunity.longExchange] = Math.max(0, longAvail - longCost);
+    effectiveBalance[opportunity.shortExchange] = Math.max(0, effectiveShortAvail - shortCost);
+    effectiveBalance[opportunity.longExchange] = Math.max(0, effectiveLongAvail - longCost);
     totalAllocated += chunk;
   }
 
@@ -3735,18 +3750,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       .sort((a, b) => a[0] - b[0]);
 
     for (const [, group] of orderedWindows) {
+      const balancePlan = buildBalanceEqualizationPlan(currentEnabled, availableBalance);
+      const planningBalances = getBalanceEqualizationPlanningBalances(balancePlan, isSim);
+      const getPlanningScore = (opportunity: ArbitrageOpportunity) => (
+        getOpportunityYieldScore(
+          opportunity,
+          getRealSpreadForOpportunity(currentRealSpreads, opportunity),
+          strategyConfig,
+        ) * getOpportunityBalanceEqualizationMultiplier(balancePlan, opportunity)
+      );
       const groupCandidates = group
         .filter((opportunity) => !opportunityConflictsWithLegs(opportunity, occupiedLegs))
         .sort((a, b) => {
-          const scoreDiff = getOpportunityYieldScore(
-            b,
-            getRealSpreadForOpportunity(currentRealSpreads, b),
-            strategyConfig,
-          ) - getOpportunityYieldScore(
-            a,
-            getRealSpreadForOpportunity(currentRealSpreads, a),
-            strategyConfig,
-          );
+          const scoreDiff = getPlanningScore(b) - getPlanningScore(a);
           if (scoreDiff !== 0) return scoreDiff;
           return getLiveNetProfit(b) - getLiveNetProfit(a);
         });
@@ -3756,6 +3772,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         availableBalance,
         strategyConfig,
         currentRealSpreads,
+        planningBalances,
+        balancePlan,
       );
 
       if (planned.length === 0) {

@@ -27,6 +27,12 @@ import { getEntryGapMetrics } from './entryGapGuard';
 import { rebalanceExecutedHedge } from './hedgeRebalance';
 import { getFundingExchangeSnapshot } from './publicMarketDataCache';
 import { refreshAllFeeCaches, resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
+import {
+  buildBalanceEqualizationPlan,
+  getBalanceEqualizationPlanningBalances,
+  getOpportunityBalanceEqualizationMultiplier,
+  type BalanceEqualizationPlan,
+} from './balanceEqualization';
 import { checkPairLiquidationDistance } from './liquidationGuard';
 import {
   findOpportunities,
@@ -62,6 +68,7 @@ import {
   HEDGE_RATIO_MAX,
   type ApiConfig,
   type ArbitrageOpportunity,
+  type Balance,
   type ConfirmedSnipeConfig,
   type ExchangeId,
   type FeeOverrides,
@@ -260,6 +267,11 @@ class ServerScheduler {
   private routeFailureMemory = new RouteFailureMemory();
   private fundingUniverseCache = new Map<ExchangeId, FundingUniverseCacheEntry>();
   private lastFullFundingScanAt = 0;
+  private balanceSnapshot: Partial<Record<ExchangeId, Balance>> = {};
+  private lastBalanceRefreshAt = 0;
+  private lastBalanceEqualizationPlan: BalanceEqualizationPlan | null = null;
+
+  private static BALANCE_REFRESH_INTERVAL_MS = 60_000;
 
   static getInstance(): ServerScheduler {
     if (!ServerScheduler.instance) {
@@ -391,6 +403,34 @@ class ServerScheduler {
     return output;
   }
 
+  private async maybeRefreshBalanceSnapshot(apiConfigs: Partial<Record<ExchangeId, ApiConfig>>) {
+    const now = Date.now();
+    const hasSnapshot = this.config.enabledExchanges.some((exchange) => !!this.balanceSnapshot[exchange]);
+    if (hasSnapshot && now - this.lastBalanceRefreshAt < ServerScheduler.BALANCE_REFRESH_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastBalanceRefreshAt = now;
+    const nextSnapshot = { ...this.balanceSnapshot };
+    const targets = this.config.enabledExchanges.filter((exchange) => !!apiConfigs[exchange]);
+
+    await Promise.allSettled(
+      targets.map(async (exchange) => {
+        const balance = await fetchBalance(exchange, apiConfigs[exchange]!);
+        if (balance.status === 'connected') {
+          nextSnapshot[exchange] = balance;
+        }
+      }),
+    );
+
+    this.balanceSnapshot = nextSnapshot;
+    const balanceMap = {} as Partial<Record<ExchangeId, number>>;
+    for (const exchange of this.config.enabledExchanges) {
+      balanceMap[exchange] = nextSnapshot[exchange]?.availableUSDT ?? 0;
+    }
+    this.lastBalanceEqualizationPlan = buildBalanceEqualizationPlan(this.config.enabledExchanges, balanceMap);
+  }
+
   start(config: SchedulerConfig) {
     if (this.active) {
       this.stop();
@@ -500,6 +540,7 @@ class ServerScheduler {
         closeAttempts: pos.closeAttempts,
       })),
       lastPollTime: this.lastPollTime,
+      balanceEqualization: this.lastBalanceEqualizationPlan,
     };
   }
 
@@ -638,17 +679,18 @@ class ServerScheduler {
     if (!this.active) return;
 
     this.lastPollTime = Date.now();
+    const apiConfigs = loadAllServerApiConfigs();
 
     // Periodically refresh runtime fee cache from exchange APIs
     if (Date.now() - this.lastFeeCacheRefresh > ServerScheduler.FEE_CACHE_REFRESH_INTERVAL_MS) {
       this.lastFeeCacheRefresh = Date.now();
-      const apiConfigs = loadAllServerApiConfigs();
       refreshAllFeeCaches(apiConfigs).catch((err) => {
         this.log('warning', `fee cache refresh failed: ${getErrorMessage(err)}`);
       });
     }
 
     try {
+      await this.maybeRefreshBalanceSnapshot(apiConfigs);
       this.pruneFundingUniverseCache();
       const wsWarmSymbols = this.buildFastFundingSymbols(this.lastPollTime);
       this.prewarmWsMarketData(this.lastPollTime, wsWarmSymbols);
@@ -757,13 +799,48 @@ class ServerScheduler {
 
       const currentCount = this.scheduledEntries.size + this.activePositions.size;
       const slotsAvailable = this.config.maxConcurrentPairs - currentCount;
+      const balancePlan = this.lastBalanceEqualizationPlan;
+      const workingBalances = balancePlan && balancePlan.totalBalanceUSDT > 0
+        ? getBalanceEqualizationPlanningBalances(balancePlan, false)
+        : null;
+      const getPlanningCostFactor = (exchange: ExchangeId) => (
+        1 + (this.config.leverage * resolveRuntimeFee(
+          exchange,
+          'taker',
+          this.config.feeOverrides,
+          this.config.paybackOverrides,
+        ))
+      );
+      const getOpportunityPlanScore = (opportunity: ArbitrageOpportunity) => {
+        const preEntryEv = estimatePreEntryConservativeEV(opportunity, this.config);
+        const baseScore = preEntryEv?.expectedNetUSD ?? opportunity.netProfit ?? opportunity.spreadPercent;
+        return baseScore * getOpportunityBalanceEqualizationMultiplier(balancePlan, opportunity);
+      };
+      const ranked = [...filtered].sort((a, b) => {
+        const scoreDiff = getOpportunityPlanScore(b) - getOpportunityPlanScore(a);
+        if (scoreDiff !== 0) return scoreDiff;
+        if (b.spreadPercent !== a.spreadPercent) return b.spreadPercent - a.spreadPercent;
+        return a.nextFundingTime - b.nextFundingTime;
+      });
       const toSchedule: ArbitrageOpportunity[] = [];
       const selectedLegs = new Set(occupiedLegs);
 
-      for (const opportunity of filtered) {
+      for (const opportunity of ranked) {
         if (toSchedule.length >= Math.max(0, slotsAvailable)) break;
         const legKeys = getOpportunityLegKeys(opportunity);
         if (legKeys.some((legKey) => selectedLegs.has(legKey))) continue;
+
+        if (workingBalances) {
+          const baseMargin = Math.max(0, this.config.investmentUSDT);
+          const shortCost = baseMargin * getPlanningCostFactor(opportunity.shortExchange);
+          const longCost = baseMargin * getPlanningCostFactor(opportunity.longExchange);
+          const shortAvail = workingBalances[opportunity.shortExchange] ?? 0;
+          const longAvail = workingBalances[opportunity.longExchange] ?? 0;
+          if (shortAvail < shortCost || longAvail < longCost) continue;
+          workingBalances[opportunity.shortExchange] = Math.max(0, shortAvail - shortCost);
+          workingBalances[opportunity.longExchange] = Math.max(0, longAvail - longCost);
+        }
+
         toSchedule.push(opportunity);
         legKeys.forEach((legKey) => selectedLegs.add(legKey));
       }

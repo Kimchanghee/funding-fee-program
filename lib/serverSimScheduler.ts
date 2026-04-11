@@ -6,6 +6,12 @@ import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs, getPai
 import { getEntryGapMetrics } from './entryGapGuard';
 import { getFundingExchangeSnapshot } from './publicMarketDataCache';
 import { refreshAllFeeCaches, resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
+import {
+  buildBalanceEqualizationPlan,
+  getBalanceEqualizationPlanningBalances,
+  getOpportunityBalanceEqualizationMultiplier,
+  type BalanceEqualizationPlan,
+} from './balanceEqualization';
 import { appendTrades, readTrades, type TradeEvent } from './fileLogger';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import { loadAllServerApiConfigs } from './serverKeyStore';
@@ -322,11 +328,15 @@ function planWindowAllocations(
   opportunities: ArbitrageOpportunity[],
   availableBalance: Record<string, number>,
   strategyConfig: StrategyConfig,
+  planningBalance?: Record<string, number>,
+  balancePlan?: BalanceEqualizationPlan,
 ): Array<{ opportunity: ArbitrageOpportunity; investmentUSDT: number }> {
+  const effectiveBalance = planningBalance ? { ...planningBalance } : availableBalance;
   const candidates = opportunities
     .map((opportunity) => ({
       opportunity,
-      score: getOpportunityYieldScore(opportunity, strategyConfig),
+      score: getOpportunityYieldScore(opportunity, strategyConfig)
+        * getOpportunityBalanceEqualizationMultiplier(balancePlan, opportunity),
     }))
     .filter((candidate) => candidate.score > 0)
     .sort((a, b) => {
@@ -358,8 +368,8 @@ function planWindowAllocations(
   );
 
   const getCap = (opportunity: ArbitrageOpportunity) => {
-    const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
-    const longAvail = availableBalance[opportunity.longExchange] ?? 0;
+    const shortAvail = effectiveBalance[opportunity.shortExchange] ?? 0;
+    const longAvail = effectiveBalance[opportunity.longExchange] ?? 0;
     const shortFactor = getCostFactor(opportunity.shortExchange);
     const longFactor = getCostFactor(opportunity.longExchange);
     const maxByShort = shortFactor > 0 ? shortAvail / shortFactor : 0;
@@ -401,6 +411,8 @@ function planWindowAllocations(
     const allocated = allocations.get(opportunityId) ?? 0;
     const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
     const longAvail = availableBalance[opportunity.longExchange] ?? 0;
+    const effectiveShortAvail = effectiveBalance[opportunity.shortExchange] ?? 0;
+    const effectiveLongAvail = effectiveBalance[opportunity.longExchange] ?? 0;
     const shortFactor = getCostFactor(opportunity.shortExchange);
     const longFactor = getCostFactor(opportunity.longExchange);
     const chunk = Math.min(
@@ -415,6 +427,8 @@ function planWindowAllocations(
     allocations.set(opportunityId, allocated + chunk);
     availableBalance[opportunity.shortExchange] = Math.max(0, shortAvail - shortCost);
     availableBalance[opportunity.longExchange] = Math.max(0, longAvail - longCost);
+    effectiveBalance[opportunity.shortExchange] = Math.max(0, effectiveShortAvail - shortCost);
+    effectiveBalance[opportunity.longExchange] = Math.max(0, effectiveLongAvail - longCost);
     totalAllocated += chunk;
   }
 
@@ -736,6 +750,11 @@ class ServerSimScheduler {
   }
 
   getStatus() {
+    const state = this.getState();
+    const balanceEqualization = buildBalanceEqualizationPlan(
+      this.config.enabledExchanges,
+      state.simBalances,
+    );
     return {
       active: this.active,
       config: this.config,
@@ -748,7 +767,8 @@ class ServerSimScheduler {
       snipeAllocations: Object.fromEntries(
         Array.from(this.scheduledEntries.values()).map((entry) => [`sim:${entry.opportunityId}`, entry.investmentUSDT]),
       ),
-      state: this.getState(),
+      state,
+      balanceEqualization,
     };
   }
 
@@ -2026,6 +2046,8 @@ class ServerSimScheduler {
     const timing = this.getTimingConfig();
     const availableBalance = { ...state.simBalances } as Record<string, number>;
     const prePlanBalances = { ...availableBalance } as Record<string, number>;
+    const balancePlan = buildBalanceEqualizationPlan(this.config.enabledExchanges, availableBalance);
+    const planningBalances = getBalanceEqualizationPlanningBalances(balancePlan, true);
     const occupiedLegs = new Set<string>();
 
     for (const position of state.simPositions) {
@@ -2084,6 +2106,8 @@ class ServerSimScheduler {
       candidates,
       availableBalance,
       buildStrategyLikeConfig(this.config),
+      planningBalances,
+      balancePlan,
     );
     this.captureSchedulingAnalyticsSnapshot({
       now,
