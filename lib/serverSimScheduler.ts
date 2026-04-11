@@ -1,11 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
+import { warmFundingRatesWs, warmOrderbookWs } from './exchanges/wsPublicData';
 import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs, getPairMaxSettlementWaitMs } from './exchangeProfiles';
 import { getEntryGapMetrics } from './entryGapGuard';
-import { resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
+import { getFundingExchangeSnapshot } from './publicMarketDataCache';
+import { refreshAllFeeCaches, resolveRuntimeFee, resolveRuntimeFeeDetailed } from './runtimeFeeCache';
 import { appendTrades, readTrades, type TradeEvent } from './fileLogger';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
+import { loadAllServerApiConfigs } from './serverKeyStore';
 import {
   findOpportunities,
   getOpportunityId,
@@ -69,9 +72,11 @@ const FULL_REVALIDATE_CAP = 20;
 const PROBE_STATE_RETENTION_MS = 2 * 60 * 60 * 1000;
 const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
 const FULL_FUNDING_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
 const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
 const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
 const FAST_OPPORTUNITY_SEED_COUNT = 12;
+const WS_WARM_INTERVAL_MS = 15_000;
 
 const PRE_EXECUTION_PROBE_POINTS = [
   { key: 'pre_30m', thresholdMs: 30 * 60 * 1000 },
@@ -139,6 +144,12 @@ function calcDepthImbalance(bidDepthUsd: number, askDepthUsd: number): number {
   const total = bidDepthUsd + askDepthUsd;
   if (total <= 0) return 0;
   return (bidDepthUsd - askDepthUsd) / total;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'unknown';
 }
 
 function ensureDataDir() {
@@ -232,6 +243,12 @@ function buildStrategyLikeConfig(config: ServerSimSchedulerConfig): StrategyConf
 
 function mapSimEntryErrorToGuardReason(error?: string): string {
   const normalized = (error ?? '').toLowerCase();
+  if (normalized.includes('funding revalidate missing')) return 'funding_revalidate_missing';
+  if (normalized.includes('live spread revalidate')) return 'live_spread_reverted';
+  if (normalized.includes('funding window shift')) return 'funding_window_shifted';
+  if (normalized.includes('funding timestamp mismatch')) return 'funding_timestamp_mismatch';
+  if (normalized.includes('runtime fee unavailable')) return 'fee_cache_unavailable';
+  if (normalized.includes('funding revalidate error')) return 'funding_revalidate_failed';
   if (normalized.includes('slippage exceeded')) return 'slippage_exceeded';
   if (normalized.includes('impact exceeded')) return 'impact_exceeded';
   if (normalized.includes('entry gap')) return 'entry_gap_exceeded';
@@ -420,7 +437,7 @@ export interface ServerSimSchedulerConfig {
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // maximum slippage percent (default 1.5%)
   minVolume24hUSD?: number; // minimum 24h volume in USD
-  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all toggles OFF (profile timing & Tier C still apply)
+  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1; undefined = all toggles OFF (profile timing & Tier C still apply)
 }
 
 interface ScheduledSimEntry {
@@ -565,6 +582,10 @@ class ServerSimScheduler {
   private lastFullFundingRefreshAt = 0;
   private lastStatePersistAt = 0;
   private lastAnalyticsSnapshotAt = 0;
+  private lastWsWarmAt = 0;
+  private lastFeeCacheRefresh = 0;
+
+  private static FEE_CACHE_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 
   static getInstance() {
     if (!ServerSimScheduler.instance) {
@@ -741,7 +762,7 @@ class ServerSimScheduler {
       getOrCreateServerSimState(this.config.enabledExchanges, this.config.investmentUSDT);
       this.startLoop();
       this.saveState();
-      // rates 로딩은 백그라운드 — API 즉시 응답
+      // rates 濡쒕뵫? 諛깃렇?쇱슫????API 利됱떆 ?묐떟
       void this.refreshRatesAndPlans();
       return this.getStatus();
     });
@@ -1390,7 +1411,7 @@ class ServerSimScheduler {
     const totalRoundTripFees = notional * roundTripFeePct;
     const perFunding = notional * spread;
 
-    // Conservative EV — same formula used by actual execution guard
+    // Conservative EV ??same formula used by actual execution guard
     const usesInstantRate = pairUsesInstantaneousRate(
       route.shortExchange, route.longExchange,
     );
@@ -1536,7 +1557,7 @@ class ServerSimScheduler {
             state.lastLongSlippagePercent = longFill.slippagePercent;
           }
         } catch {
-          // Leave as undefined — buildScheduleProbeEvent will fall back to cap
+          // Leave as undefined ??buildScheduleProbeEvent will fall back to cap
         }
       }
 
@@ -1739,6 +1760,36 @@ class ServerSimScheduler {
     }
   }
 
+  private prewarmWsMarketData(now: number, fundingSymbols: Map<ExchangeId, string[]>) {
+    if (now - this.lastWsWarmAt < WS_WARM_INTERVAL_MS) return;
+    this.lastWsWarmAt = now;
+
+    const orderbookTargets = new Map<string, { exchange: ExchangeId; symbol: string }>();
+    const addOrderbookTarget = (exchange: ExchangeId, symbol?: string) => {
+      if (!symbol) return;
+      const key = `${exchange}:${symbol}`;
+      if (!orderbookTargets.has(key)) {
+        orderbookTargets.set(key, { exchange, symbol });
+      }
+    };
+
+    for (const entry of this.scheduledEntries.values()) {
+      addOrderbookTarget(entry.opportunity.shortExchange, entry.opportunity.shortSymbol);
+      addOrderbookTarget(entry.opportunity.longExchange, entry.opportunity.longSymbol);
+    }
+
+    for (const position of this.getState().simPositions) {
+      addOrderbookTarget(position.exchange, position.symbol);
+    }
+
+    void Promise.allSettled([
+      ...Array.from(fundingSymbols.entries()).map(([exchange, symbols]) => warmFundingRatesWs(exchange, symbols)),
+      ...Array.from(orderbookTargets.values()).map(async ({ exchange, symbol }) => {
+        warmOrderbookWs(exchange, symbol, 50);
+      }),
+    ]);
+  }
+
   /** Orderbook-based schedule revalidation. Only replaces route when flipped direction is better. */
   private async revalidateScheduledByOrderbook() {
     if (this.scheduledEntries.size === 0) return;
@@ -1746,14 +1797,14 @@ class ServerSimScheduler {
     const now = Date.now();
     const toReplace = new Map<string, ScheduledSimEntry>();
 
-    // ???60珥??댁긽 ?⑥? ?덉빟留??ш?利?(吏곸쟾? executeDueEntries?먯꽌 泥섎━)
+    // ????60????곴맒 ??? ??됰튋筌????筌?(筌욊낯??? executeDueEntries?癒?퐣 筌ｌ꼶??
     const candidates = Array.from(this.scheduledEntries.entries())
       .filter(([, entry]) => entry.targetTime - now > FINAL_REVALIDATE_GUARD_MS)
       .sort((a, b) => a[1].targetTime - b[1].targetTime);
     if (candidates.length === 0) return;
 
-    // 理쒕? 3媛쒖뵫 諛곗튂濡??ㅻ뜑遺?議고쉶 (API 遺???쒗븳)
-    // 怨좎젙 slice(0,3) ???round-robin?쇰줈 ?쒗솚 ?먭??댁꽌 ?꾨씫??諛⑹??쒕떎.
+    // 筌ㅼ뮆? 3揶쏆뮇逾?獄쏄퀣?귝에???삳쐭??鈺곌퀬??(API ?봔????쀫립)
+    // ?⑥쥙??slice(0,3) ????round-robin??곗쨮 ??쀬넎 ?癒???곴퐣 ?袁⑥뵭??獄쎻뫗???뺣뼄.
     let batch: Array<[string, ScheduledSimEntry]> = [];
     if (candidates.length <= FULL_REVALIDATE_CAP) {
       batch = candidates;
@@ -1839,7 +1890,7 @@ class ServerSimScheduler {
           }
         }
       } catch {
-        // ?ㅻ뜑遺?議고쉶 ?ㅽ뙣 ???좎? (?ㅽ뻾 ?쒖젏?먯꽌 ?ㅼ떆 寃利?
+        // ??삳쐭??鈺곌퀬????쎈솭 ???醫? (??쎈뻬 ??뽰젎?癒?퐣 ??쇰뻻 野꺜筌?
       }
     }));
 
@@ -1861,8 +1912,16 @@ class ServerSimScheduler {
 
     this.pruneFundingUniverseCache();
     const now = Date.now();
+    if (now - this.lastFeeCacheRefresh > ServerSimScheduler.FEE_CACHE_REFRESH_INTERVAL_MS) {
+      this.lastFeeCacheRefresh = now;
+      const apiConfigs = loadAllServerApiConfigs();
+      refreshAllFeeCaches(apiConfigs).catch(() => {});
+    }
+
     const fullRefresh = this.shouldRunFullFundingRefresh(now);
-    const fastSymbols = fullRefresh ? new Map<ExchangeId, string[]>() : this.buildFastFundingSymbols(now);
+    const wsWarmSymbols = this.buildFastFundingSymbols(now);
+    this.prewarmWsMarketData(now, wsWarmSymbols);
+    const fastSymbols = fullRefresh ? new Map<ExchangeId, string[]>() : wsWarmSymbols;
 
     let results = await Promise.allSettled(
       this.config.enabledExchanges.map((exchange) => {
@@ -1870,7 +1929,7 @@ class ServerSimScheduler {
         if (symbols && symbols.length > 0) {
           return fetchFundingRates(exchange, undefined, symbols);
         }
-        return fetchFundingRates(exchange);
+        return getFundingExchangeSnapshot(exchange).then((snapshot) => snapshot.rates);
       }),
     );
 
@@ -1884,7 +1943,9 @@ class ServerSimScheduler {
     let effectiveFullRefresh = fullRefresh;
     if (allRates.length === 0 && !fullRefresh) {
       results = await Promise.allSettled(
-        this.config.enabledExchanges.map((exchange) => fetchFundingRates(exchange)),
+        this.config.enabledExchanges.map((exchange) =>
+          getFundingExchangeSnapshot(exchange).then((snapshot) => snapshot.rates),
+        ),
       );
       allRates = [];
       for (const result of results) {
@@ -2056,7 +2117,7 @@ class ServerSimScheduler {
       });
     }
 
-    // Preserve due/near-due entries that disappeared from opportunities — executeDueEntries must handle them
+    // Preserve due/near-due entries that disappeared from opportunities ??executeDueEntries must handle them
     for (const [opportunityId, previousEntry] of previousEntries.entries()) {
       if (nextEntries.has(opportunityId)) continue;
       if (previousEntry.targetTime <= now + SCHEDULE_REPLAN_FREEZE_MS) {
@@ -2144,7 +2205,7 @@ class ServerSimScheduler {
         this.scheduleProbeStates.set(probeState.probeId, probeState);
       }
 
-      const primaryResult = await this.executeOpportunity(primaryOpportunity, entry.investmentUSDT, true);
+      const primaryResult = await this.executeOpportunity(primaryOpportunity, entry.investmentUSDT, true, entry.targetTime);
       if (primaryResult.success) {
         const executedAt = Date.now();
         if (Number.isFinite(primaryResult.shortSlippagePercent)) {
@@ -2184,9 +2245,9 @@ class ServerSimScheduler {
         continue;
       }
 
-      // 留덉?留?吏꾩엯 吏곸쟾???쒖꽭媛 ?ㅼ쭛?덈뒗 寃쎌슦瑜??鍮꾪빐 諛섎? 諛⑺뼢????踰????쒕룄?쒕떎.
+      // 筌띾뜆?筌?筌욊쑴??筌욊낯?????뽮쉭揶쎛 ??쇱춿??덈뮉 野껋럩??몴?????쑵鍮?獄쏆꼶? 獄쎻뫚堉????甕?????뺣즲??뺣뼄.
       const flipped = flipOpportunityDirection(primaryOpportunity);
-      const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true);
+      const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true, entry.targetTime);
       if (flippedResult.success) {
         const executedAt = Date.now();
         if (Number.isFinite(flippedResult.shortSlippagePercent)) {
@@ -2349,7 +2410,7 @@ class ServerSimScheduler {
 
       const updatedFundingReceived = (position.fundingReceived ?? 0) + 1;
       if (position.isSnipe && position.pairId && updatedFundingReceived >= 1) {
-        // v2: confirmed close — model settlement wait window for realistic SIM KPI
+        // v2: confirmed close ??model settlement wait window for realistic SIM KPI
         const simSnipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
         let settlementWaitMs = closeDelayMs;
         if (simSnipeConfig.useConfirmedClose && position.pairId) {
@@ -2709,6 +2770,7 @@ class ServerSimScheduler {
     opportunity: ArbitrageOpportunity,
     investmentUSDT: number,
     isSnipe: boolean,
+    targetFundingTime = opportunity.nextFundingTime,
   ): Promise<SimTradeResult> {
     if (!isSnipe && opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
       return { success: false, error: 'spread below threshold' };
@@ -2729,7 +2791,7 @@ class ServerSimScheduler {
       return { success: false, error: 'position already active for route' };
     }
 
-    // v2: Tier C filter — skip unless explicitly enabled
+    // v2: Tier C filter ??skip unless explicitly enabled
     if (hasTierCExchange(opportunity.shortExchange, opportunity.longExchange)) {
       const tierCEx = opportunity.shortExchange === 'bingx' ? opportunity.shortExchange : opportunity.longExchange;
       if (!this.config.enabledExchanges.includes(tierCEx)) {
@@ -2745,24 +2807,30 @@ class ServerSimScheduler {
     }
 
     const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+    let shortRateForDecision = opportunity.shortRate;
+    let longRateForDecision = opportunity.longRate;
+    let spreadForDecision = opportunity.spread;
+    let spreadPercentForDecision = opportunity.spreadPercent;
     const shortBal = state.simBalances[opportunity.shortExchange] ?? 0;
     const longBal = state.simBalances[opportunity.longExchange] ?? 0;
     const shortInitial = state.simInitialBalances[opportunity.shortExchange] ?? 1;
     const longInitial = state.simInitialBalances[opportunity.longExchange] ?? 1;
     const shortFreeRatio = shortInitial > 0 ? (shortBal / shortInitial) * 100 : 0;
     const longFreeRatio = longInitial > 0 ? (longBal / longInitial) * 100 : 0;
-    const shortFeeRate = resolveRuntimeFee(
+    const shortFeeInfo = resolveRuntimeFeeDetailed(
       opportunity.shortExchange,
       'taker',
       this.config.feeOverrides,
       this.config.paybackOverrides,
     );
-    const longFeeRate = resolveRuntimeFee(
+    const longFeeInfo = resolveRuntimeFeeDetailed(
       opportunity.longExchange,
       'taker',
       this.config.feeOverrides,
       this.config.paybackOverrides,
     );
+    const shortFeeRate = shortFeeInfo.fee;
+    const longFeeRate = longFeeInfo.fee;
     const shortCostFactor = 1 + (leverage * shortFeeRate);
     const longCostFactor = 1 + (leverage * longFeeRate);
     const maxFeasibleMarginByBalance = Math.max(0, Math.min(
@@ -2780,10 +2848,10 @@ class ServerSimScheduler {
         opportunity.longExchange,
       );
       const shortDrift = snipeConfig.useDriftBuffer
-        ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
+        ? calcDriftBuffer(shortRateForDecision, undefined, usesInstantRate)
         : 0;
       const longDrift = snipeConfig.useDriftBuffer
-        ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
+        ? calcDriftBuffer(longRateForDecision, undefined, usesInstantRate)
         : 0;
       const fallbackImpactDec = snipeConfig.useImpactGuards
         ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 10000 / 2
@@ -2797,8 +2865,8 @@ class ServerSimScheduler {
         const scaledNotional = notionalRef * factor;
         const ev = calcConservativeEV(
           scaledNotional,
-          opportunity.shortRate,
-          opportunity.longRate,
+          shortRateForDecision,
+          longRateForDecision,
           shortDrift,
           longDrift,
           roundTripFeeDec,
@@ -2844,6 +2912,110 @@ class ServerSimScheduler {
         ...(args?.extra ?? {}),
       };
     };
+
+    try {
+      const [shortRates, longRates] = await Promise.all([
+        fetchFundingRates(opportunity.shortExchange, undefined, [opportunity.shortSymbol]),
+        fetchFundingRates(opportunity.longExchange, undefined, [opportunity.longSymbol]),
+      ]);
+      const shortLiveRate = shortRates.find((rate) => rate.symbol === opportunity.shortSymbol)
+        ?? shortRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+      const longLiveRate = longRates.find((rate) => rate.symbol === opportunity.longSymbol)
+        ?? longRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+      if (!shortLiveRate || !longLiveRate) {
+        return {
+          success: false,
+          error: `funding revalidate missing: short=${shortRates.length} long=${longRates.length}`,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            extra: {
+              shortRevalidateCount: shortRates.length,
+              longRevalidateCount: longRates.length,
+            },
+          }),
+        };
+      }
+
+      const liveSpread = shortLiveRate.rate - longLiveRate.rate;
+      const liveSpreadPercent = liveSpread * 100;
+      if (liveSpread <= 0 || liveSpreadPercent < this.config.minSpreadPercent) {
+        return {
+          success: false,
+          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% < ${this.config.minSpreadPercent.toFixed(4)}%`,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            extra: {
+              liveSpreadPercent,
+              minSpreadPercent: this.config.minSpreadPercent,
+            },
+          }),
+        };
+      }
+
+      const shortFundingShiftMs = Math.abs(shortLiveRate.nextFundingTime - targetFundingTime);
+      const longFundingShiftMs = Math.abs(longLiveRate.nextFundingTime - targetFundingTime);
+      if (shortFundingShiftMs > LIVE_FUNDING_TIME_DRIFT_MS || longFundingShiftMs > LIVE_FUNDING_TIME_DRIFT_MS) {
+        return {
+          success: false,
+          error: `funding window shift: short=${shortFundingShiftMs}ms long=${longFundingShiftMs}ms`,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            extra: {
+              shortFundingShiftMs,
+              longFundingShiftMs,
+              liveFundingTimeDriftMs: LIVE_FUNDING_TIME_DRIFT_MS,
+            },
+          }),
+        };
+      }
+
+      if (snipeConfig.useConfirmedClose) {
+        const tsDiff = Math.abs(shortLiveRate.nextFundingTime - longLiveRate.nextFundingTime);
+        if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) {
+          return {
+            success: false,
+            error: `funding timestamp mismatch: ${tsDiff}ms > ${MAX_FUNDING_TIMESTAMP_DIFF_MS}ms`,
+            analysis: buildFailureAnalysis({
+              attemptedNotionalUSDT: baseNotional,
+              extra: {
+                fundingTimestampDiffMs: tsDiff,
+                maxFundingTimestampDiffMs: MAX_FUNDING_TIMESTAMP_DIFF_MS,
+              },
+            }),
+          };
+        }
+      }
+
+      shortRateForDecision = shortLiveRate.rate;
+      longRateForDecision = longLiveRate.rate;
+      spreadForDecision = liveSpread;
+      spreadPercentForDecision = liveSpreadPercent;
+    } catch (revalidateErr) {
+      return {
+        success: false,
+        error: `funding revalidate error: ${getErrorMessage(revalidateErr)}`,
+        analysis: buildFailureAnalysis({
+          attemptedNotionalUSDT: baseNotional,
+          extra: {
+            fundingRevalidateError: getErrorMessage(revalidateErr),
+          },
+        }),
+      };
+    }
+
+    if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
+      return {
+        success: false,
+        error: `runtime fee unavailable: ${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source}`,
+        analysis: buildFailureAnalysis({
+          attemptedNotionalUSDT: baseNotional,
+          extra: {
+            shortFeeSource: shortFeeInfo.source,
+            longFeeSource: longFeeInfo.source,
+          },
+        }),
+      };
+    }
 
     // v2: dynamic notional based on orderbook depth
     let notional = baseNotional;
@@ -3063,32 +3235,23 @@ class ServerSimScheduler {
       baselineLongPrice: opportunity.longMarkPrice,
     });
     const entryGapPercent = entryGap.liveGapPercent;
-
-    // SIM: warn (but don't block) when fee falls back to preset — for KPI accuracy tracking
-    const shortFeeInfo = resolveRuntimeFeeDetailed(opportunity.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides);
-    const longFeeInfo = resolveRuntimeFeeDetailed(opportunity.longExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides);
-    if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
-      console.warn(
-        `[SIM] fee source fallback: ${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source} — KPI may diverge from REAL`,
-      );
-    }
     const execHedgeFeePct = (shortFeeInfo.fee + longFeeInfo.fee) * 2 * 100;
 
-    // Conservative EV — always forced ON (matches REAL fail-safe policy)
+    // Conservative EV ??always forced ON (matches REAL fail-safe policy)
     {
       const usesInstantRate = pairUsesInstantaneousRate(
         opportunity.shortExchange, opportunity.longExchange,
       );
       const shortDrift = snipeConfig.useDriftBuffer
-        ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
+        ? calcDriftBuffer(shortRateForDecision, undefined, usesInstantRate)
         : 0;
       const longDrift = snipeConfig.useDriftBuffer
-        ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
+        ? calcDriftBuffer(longRateForDecision, undefined, usesInstantRate)
         : 0;
       const roundTripFeeDec = execHedgeFeePct / 100;
       const entryImpactDec = (shortSlippagePercent + longSlippagePercent) / 100;
       const ev = calcConservativeEV(
-        notional, opportunity.shortRate, opportunity.longRate,
+        notional, shortRateForDecision, longRateForDecision,
         shortDrift, longDrift, roundTripFeeDec, entryImpactDec, entryImpactDec,
       );
       if (!ev.passesMinProfit || !ev.passesEVRatio) {
@@ -3113,8 +3276,8 @@ class ServerSimScheduler {
       }
     }
 
-    const shortEntryFee = notional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides);
-    const longEntryFee = notional * resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides);
+    const shortEntryFee = notional * shortFeeRate;
+    const longEntryFee = notional * longFeeRate;
     const shortCostPerSide = margin + shortEntryFee;
     const longMargin = margin;
     const longCostPerSide = longMargin + longEntryFee;
@@ -3184,12 +3347,12 @@ class ServerSimScheduler {
       unrealizedPnl: -shortEntryFee,
       unrealizedPnlPercent: margin > 0 ? (-shortEntryFee / margin) * 100 : 0,
       liquidationPrice: shortFillPrice * (1 + (1 / leverage) * 0.9),
-      fundingRate: opportunity.shortRate,
+      fundingRate: shortRateForDecision,
       openedAt: timestamp,
       positionType: 'hedge_short',
       fundingCollected: 0,
-      spread: opportunity.spread,
-      nextFundingTime: opportunity.nextFundingTime,
+      spread: spreadForDecision,
+      nextFundingTime: targetFundingTime,
       isSnipe,
       fundingReceived: 0,
       entryFee: shortEntryFee,
@@ -3213,12 +3376,12 @@ class ServerSimScheduler {
       unrealizedPnl: -longEntryFee,
       unrealizedPnlPercent: longMargin > 0 ? (-longEntryFee / longMargin) * 100 : 0,
       liquidationPrice: longFillPrice * (1 - (1 / leverage) * 0.9),
-      fundingRate: opportunity.longRate,
+      fundingRate: longRateForDecision,
       openedAt: timestamp,
       positionType: 'hedge_long',
       fundingCollected: 0,
-      spread: opportunity.spread,
-      nextFundingTime: opportunity.nextFundingTime,
+      spread: spreadForDecision,
+      nextFundingTime: targetFundingTime,
       isSnipe,
       fundingReceived: 0,
       entryFee: longEntryFee,
@@ -3226,9 +3389,9 @@ class ServerSimScheduler {
       entryGapPercent,
     };
 
-    const perFunding = notional * opportunity.shortRate - notional * opportunity.longRate;
-    const totalRoundTripFees = notional * resolveRuntimeFee(opportunity.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides) * 2
-      + notional * resolveRuntimeFee(opportunity.longExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides) * 2;
+    const perFunding = notional * shortRateForDecision - notional * longRateForDecision;
+    const totalRoundTripFees = notional * shortFeeRate * 2
+      + notional * longFeeRate * 2;
     const netProfit = perFunding - totalRoundTripFees;
 
     const nextState: SimStateSnapshot = {
@@ -3251,8 +3414,8 @@ class ServerSimScheduler {
         baseAsset: opportunity.baseAsset,
         shortExchange: opportunity.shortExchange,
         longExchange: opportunity.longExchange,
-        spread: opportunity.spread,
-        spreadPercent: opportunity.spreadPercent,
+        spread: spreadForDecision,
+        spreadPercent: spreadPercentForDecision,
         margin,
         leverage,
         notional,
