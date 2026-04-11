@@ -6,6 +6,10 @@
     "dev": "next dev --turbopack",
     "build": "next build && node scripts/prepare-standalone.js",
     "start": "node scripts/start-standalone.js",
+    "pm2:start": "pm2 start ecosystem.config.cjs --update-env",
+    "pm2:reload": "pm2 reload ecosystem.config.cjs --update-env",
+    "pm2:stop": "pm2 delete funding-fee-watchdog && pm2 delete funding-fee-program",
+    "pm2:save": "pm2 save",
     "lint": "next lint",
     "typecheck": "tsc -p tsconfig.check.json --noEmit",
     "evaluate:exchanges": "npx tsx scripts/evaluate-exchanges.ts"
