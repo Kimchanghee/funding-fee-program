@@ -80,6 +80,9 @@ const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
 const FULL_FUNDING_SCAN_INTERVAL_MS = 5 * 60 * 1000;
 const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
 const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
+const COMPOUND_BALANCE_USAGE_PCT = 0.9;
+const MIN_ENTRY_NOTIONAL_USDT = 100;
+const MAX_ADAPTIVE_NOTIONAL_ATTEMPTS = 4;
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -87,7 +90,7 @@ function getErrorMessage(error: unknown): string {
   return 'unknown';
 }
 
-/** Resolve v2.1 config — missing = all toggles OFF (profile timing & Tier C still apply) */
+/** Resolve v2.1 config. Missing means all toggles OFF. */
 function getSnipeConfig(config?: ConfirmedSnipeConfig): ConfirmedSnipeConfig {
   return config ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
 }
@@ -150,14 +153,15 @@ export interface SchedulerConfig {
   investmentUSDT: number;
   leverage: number;
   minSpreadPercent: number;
+  compoundInvesting: boolean;
   enabledExchanges: ExchangeId[];
   maxConcurrentPairs: number;
   feeOverrides?: FeeOverrides;
   paybackOverrides?: PaybackOverrides;
   timingConfig?: TimingConfig;
-  maxSlippagePercent?: number; // 최대 슬리피지 % (기본 1.5%)
-  minVolume24hUSD?: number; // 최소 24시간 거래량 (USD)
-  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all toggles OFF (profile timing & Tier C still apply)
+  maxSlippagePercent?: number; // Max per-leg slippage percent (default 1.5)
+  minVolume24hUSD?: number; // Minimum 24h quote volume in USD
+  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1; undefined means all toggles OFF
 }
 
 interface SchedulerStats {
@@ -236,6 +240,7 @@ class ServerScheduler {
     investmentUSDT: 500,
     leverage: 5,
     minSpreadPercent: 0.01,
+    compoundInvesting: true,
     enabledExchanges: [],
     maxConcurrentPairs: 5,
     timingConfig: getResolvedTimingConfig(),
@@ -275,6 +280,7 @@ class ServerScheduler {
   private normalizeConfig(config: SchedulerConfig): SchedulerConfig {
     return {
       ...config,
+      compoundInvesting: config.compoundInvesting ?? true,
       feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
       paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
       timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
@@ -404,10 +410,10 @@ class ServerScheduler {
 
     this.log(
       'info',
-      `scheduler started | investment=$${this.config.investmentUSDT} leverage=${this.config.leverage}x exchanges=${this.config.enabledExchanges.join(',')} minSpread=${this.config.minSpreadPercent}%`,
+      `scheduler started | investment=$${this.config.investmentUSDT} leverage=${this.config.leverage}x compound=${this.config.compoundInvesting ? 'on' : 'off'} exchanges=${this.config.enabledExchanges.join(',')} minSpread=${this.config.minSpreadPercent}%`,
     );
     void sendTelegramMessage(
-      `[Server Scheduler] started\ninvestment: $${this.config.investmentUSDT} | leverage: ${this.config.leverage}x\nexchanges: ${this.config.enabledExchanges.join(', ')}\nminSpread: ${this.config.minSpreadPercent}%`,
+      `[Server Scheduler] started\ninvestment: $${this.config.investmentUSDT} | leverage: ${this.config.leverage}x | compound: ${this.config.compoundInvesting ? 'ON' : 'OFF'}\nexchanges: ${this.config.enabledExchanges.join(', ')}\nminSpread: ${this.config.minSpreadPercent}%`,
     );
   }
 
@@ -429,7 +435,7 @@ class ServerScheduler {
       setTimeout(() => void this.poll(), 250);
       this.log(
         'info',
-        `scheduler config updated | investment=$${nextConfig.investmentUSDT} leverage=${nextConfig.leverage}x exchanges=${nextConfig.enabledExchanges.join(',')} minSpread=${nextConfig.minSpreadPercent}%`,
+        `scheduler config updated | investment=$${nextConfig.investmentUSDT} leverage=${nextConfig.leverage}x compound=${nextConfig.compoundInvesting ? 'on' : 'off'} exchanges=${nextConfig.enabledExchanges.join(',')} minSpread=${nextConfig.minSpreadPercent}%`,
       );
     } else {
       this.saveState();
@@ -968,10 +974,87 @@ class ServerScheduler {
         return;
       }
 
-      const baseNotional = this.config.investmentUSDT * this.config.leverage;
+      const shortFeeInfo = resolveRuntimeFeeDetailed(
+        opportunity.shortExchange,
+        'taker',
+        this.config.feeOverrides,
+        this.config.paybackOverrides,
+      );
+      const longFeeInfo = resolveRuntimeFeeDetailed(
+        opportunity.longExchange,
+        'taker',
+        this.config.feeOverrides,
+        this.config.paybackOverrides,
+      );
+      if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
+        this.log(
+          'warning',
+          `entry blocked by runtime fee unavailable | asset=${asset} ${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source}`,
+        );
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'fee_cache_unavailable',
+          detail: `${opportunity.shortExchange}:${shortFeeInfo.source} ${opportunity.longExchange}:${longFeeInfo.source}`,
+        }]);
+        return;
+      }
+
+      const shortFeeRate = shortFeeInfo.fee;
+      const longFeeRate = longFeeInfo.fee;
+      const [shortBalance, longBalance] = await Promise.all([
+        fetchBalance(opportunity.shortExchange, shortConfig),
+        fetchBalance(opportunity.longExchange, longConfig),
+      ]);
+      const shortFreeRatio = shortBalance.totalUSDT > 0
+        ? (shortBalance.availableUSDT / shortBalance.totalUSDT) * 100 : 0;
+      const longFreeRatio = longBalance.totalUSDT > 0
+        ? (longBalance.availableUSDT / longBalance.totalUSDT) * 100 : 0;
+      const shortCostFactor = 1 + (this.config.leverage * shortFeeRate);
+      const longCostFactor = 1 + (this.config.leverage * longFeeRate);
+      const maxFeasibleMarginByBalance = Math.max(0, Math.min(
+        shortCostFactor > 0 ? shortBalance.availableUSDT / shortCostFactor : 0,
+        longCostFactor > 0 ? longBalance.availableUSDT / longCostFactor : 0,
+      ));
+      const requestedMargin = this.config.compoundInvesting
+        ? maxFeasibleMarginByBalance * COMPOUND_BALANCE_USAGE_PCT
+        : this.config.investmentUSDT;
+      const baseNotional = requestedMargin * this.config.leverage;
       let targetNotional = baseNotional;
 
-      // v2.1: dynamic notional based on orderbook depth
+      if (!Number.isFinite(baseNotional) || baseNotional < MIN_ENTRY_NOTIONAL_USDT) {
+        this.log(
+          'warning',
+          `entry blocked by balance sizing | asset=${asset} targetNotional=$${baseNotional.toFixed(2)} maxMargin=$${maxFeasibleMarginByBalance.toFixed(2)}`,
+        );
+        this.recordTrades([{
+          timestamp: Date.now(),
+          type: 'guard_block',
+          simulation: false,
+          baseAsset: asset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'insufficient_balance',
+          detail: `targetNotional:${baseNotional.toFixed(2)} maxMargin:${maxFeasibleMarginByBalance.toFixed(2)} shortAvail:${shortBalance.availableUSDT.toFixed(2)} longAvail:${longBalance.availableUSDT.toFixed(2)}`,
+        }]);
+        return;
+      }
+
+      if (this.config.compoundInvesting) {
+        this.log(
+          'info',
+          `compound sizing | asset=${asset} requestedMargin=$${requestedMargin.toFixed(2)} baseMargin=$${this.config.investmentUSDT.toFixed(2)} maxByBalance=$${maxFeasibleMarginByBalance.toFixed(2)}`,
+        );
+      }
+
       if (snipeConfig.useDynamicNotional) {
         try {
           const [shortOb, longOb] = await Promise.all([
@@ -982,7 +1065,7 @@ class ServerScheduler {
           const longImpact = calcOrderbookImpactBps(longOb.bids, longOb.asks, baseNotional, 'buy');
 
           targetNotional = Math.min(
-            baseNotional,
+            targetNotional,
             shortImpact.depthCapNotional,
             longImpact.depthCapNotional,
             snipeConfig.dynamicNotionalCap,
@@ -996,13 +1079,10 @@ class ServerScheduler {
             `final=$${targetNotional.toFixed(0)}`,
           );
 
-          // No floor — if depth is too shallow, check economic viability below
-          // If targetNotional is too small for fees to make sense, skip
-          const minViableNotional = 100; // $100 minimum to cover execution overhead
-          if (targetNotional < minViableNotional) {
+          if (targetNotional < MIN_ENTRY_NOTIONAL_USDT) {
             this.log(
               'warning',
-              `entry skipped — depth too shallow | asset=${asset} targetNotional=$${targetNotional.toFixed(0)} < $${minViableNotional}`,
+              `entry skipped due to shallow depth | asset=${asset} targetNotional=$${targetNotional.toFixed(0)} < $${MIN_ENTRY_NOTIONAL_USDT}`,
             );
             this.recordTrades([{
               timestamp: Date.now(),
@@ -1021,7 +1101,7 @@ class ServerScheduler {
         } catch (err) {
           this.log(
             'warning',
-            `entry blocked — orderbook unavailable for dynamic notional | asset=${asset} error=${getErrorMessage(err)}`,
+            `entry blocked by orderbook unavailable for dynamic notional | asset=${asset} error=${getErrorMessage(err)}`,
           );
           this.recordTrades([{
             timestamp: Date.now(),
@@ -1040,23 +1120,9 @@ class ServerScheduler {
       }
 
       const requiredShortBalance = (targetNotional / this.config.leverage)
-        + (targetNotional * resolveRuntimeFee(
-          opportunity.shortExchange,
-          'taker',
-          this.config.feeOverrides,
-          this.config.paybackOverrides,
-        ));
+        + (targetNotional * shortFeeRate);
       const requiredLongBalance = (targetNotional / this.config.leverage)
-        + (targetNotional * resolveRuntimeFee(
-          opportunity.longExchange,
-          'taker',
-          this.config.feeOverrides,
-          this.config.paybackOverrides,
-        ));
-      const [shortBalance, longBalance] = await Promise.all([
-        fetchBalance(opportunity.shortExchange, shortConfig),
-        fetchBalance(opportunity.longExchange, longConfig),
-      ]);
+        + (targetNotional * longFeeRate);
 
       if (shortBalance.availableUSDT < requiredShortBalance || longBalance.availableUSDT < requiredLongBalance) {
         this.log(
@@ -1080,11 +1146,6 @@ class ServerScheduler {
         return;
       }
 
-      // ── Free margin guard: block if available/total ratio is too low ──
-      const shortFreeRatio = shortBalance.totalUSDT > 0
-        ? (shortBalance.availableUSDT / shortBalance.totalUSDT) * 100 : 0;
-      const longFreeRatio = longBalance.totalUSDT > 0
-        ? (longBalance.availableUSDT / longBalance.totalUSDT) * 100 : 0;
       if (shortFreeRatio < MIN_FREE_MARGIN_PCT || longFreeRatio < MIN_FREE_MARGIN_PCT) {
         this.log(
           'warning',
@@ -1106,8 +1167,6 @@ class ServerScheduler {
         }]);
         return;
       }
-
-      // ── Liquidation distance guard ──
       try {
         const liqCheck = await checkPairLiquidationDistance(
           opportunity.shortExchange, opportunity.longExchange,
@@ -1150,43 +1209,107 @@ class ServerScheduler {
         return;
       }
 
-      const [shortFill, longFill] = await Promise.all([
-        fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
-        fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
-      ]);
+      let shortFill: Awaited<ReturnType<typeof fetchMarketFillPrice>> | null = null;
+      let longFill: Awaited<ReturnType<typeof fetchMarketFillPrice>> | null = null;
+      const maxSlippagePct = this.config.maxSlippagePercent ?? 1.5;
+      const impactCapBps = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
+      const adaptiveSizingEnabled = this.config.compoundInvesting || snipeConfig.useDynamicNotional;
 
-      // ── Liquidity guard: impact-based (v2) or slippage-based (legacy) ──
-      if (snipeConfig.useImpactGuards) {
-        const roundTripImpactBps = (shortFill.slippagePercent + longFill.slippagePercent) * 2 * 100;
-        const cap = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
-        if (roundTripImpactBps > cap) {
-          this.log(
-            'warning',
-            `entry blocked by impact guard | asset=${asset} roundTrip=${roundTripImpactBps.toFixed(1)}bps > ${cap}bps`,
-          );
-          this.recordTrades([{
-            timestamp: Date.now(),
-            type: 'guard_block',
-            simulation: false,
-            baseAsset: asset,
-            shortExchange: opportunity.shortExchange,
-            longExchange: opportunity.longExchange,
-            spread: opportunity.spread,
-            spreadPercent: opportunity.spreadPercent,
-            reason: 'impact_exceeded',
-            detail: `roundTripImpactBps:${roundTripImpactBps.toFixed(1)} cap:${cap}`,
-          }]);
-          return;
-        }
-      } else {
-        const MAX_SLIPPAGE_PCT = this.config.maxSlippagePercent ?? 1.5;
-        if (shortFill.slippagePercent > MAX_SLIPPAGE_PCT || longFill.slippagePercent > MAX_SLIPPAGE_PCT) {
-          const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
-          const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;
+      for (let attempt = 0; attempt < MAX_ADAPTIVE_NOTIONAL_ATTEMPTS; attempt += 1) {
+        [shortFill, longFill] = await Promise.all([
+          fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
+          fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
+        ]);
+
+        if (snipeConfig.useImpactGuards) {
+          const roundTripImpactBps = (shortFill.slippagePercent + longFill.slippagePercent) * 2 * 100;
+          if (roundTripImpactBps > impactCapBps) {
+            const scale = Math.max(0.2, Math.min(0.98, (impactCapBps / Math.max(roundTripImpactBps, 0.0001)) * 0.97));
+            const nextNotional = Math.floor(targetNotional * scale * 100) / 100;
+            if (
+              adaptiveSizingEnabled
+              && attempt < MAX_ADAPTIVE_NOTIONAL_ATTEMPTS - 1
+              && nextNotional >= MIN_ENTRY_NOTIONAL_USDT
+              && nextNotional < targetNotional - 1
+            ) {
+              this.log(
+                'info',
+                `adaptive notional shrink | asset=${asset} reason=impact from=$${targetNotional.toFixed(2)} to=$${nextNotional.toFixed(2)} roundTrip=${roundTripImpactBps.toFixed(1)}bps cap=${impactCapBps}bps`,
+              );
+              targetNotional = nextNotional;
+              continue;
+            }
+            this.log(
+              'warning',
+              `entry blocked by impact guard | asset=${asset} roundTrip=${roundTripImpactBps.toFixed(1)}bps > ${impactCapBps}bps`,
+            );
+            this.recordTrades([{
+              timestamp: Date.now(),
+              type: 'guard_block',
+              simulation: false,
+              baseAsset: asset,
+              shortExchange: opportunity.shortExchange,
+              longExchange: opportunity.longExchange,
+              spread: opportunity.spread,
+              spreadPercent: opportunity.spreadPercent,
+              reason: 'impact_exceeded',
+              detail: `roundTripImpactBps:${roundTripImpactBps.toFixed(1)} cap:${impactCapBps} notional:${targetNotional.toFixed(2)}`,
+            }]);
+            return;
+          }
+        } else {
           const worstSlippage = Math.max(shortFill.slippagePercent, longFill.slippagePercent);
+          if (worstSlippage > maxSlippagePct) {
+            const worstSide = shortFill.slippagePercent > longFill.slippagePercent ? 'short' : 'long';
+            const worstExchange = worstSide === 'short' ? opportunity.shortExchange : opportunity.longExchange;
+            const scale = Math.max(0.2, Math.min(0.98, (maxSlippagePct / Math.max(worstSlippage, 0.0001)) * 0.97));
+            const nextNotional = Math.floor(targetNotional * scale * 100) / 100;
+            if (
+              adaptiveSizingEnabled
+              && attempt < MAX_ADAPTIVE_NOTIONAL_ATTEMPTS - 1
+              && nextNotional >= MIN_ENTRY_NOTIONAL_USDT
+              && nextNotional < targetNotional - 1
+            ) {
+              this.log(
+                'info',
+                `adaptive notional shrink | asset=${asset} reason=slippage from=$${targetNotional.toFixed(2)} to=$${nextNotional.toFixed(2)} worst=${worstSlippage.toFixed(4)}% max=${maxSlippagePct}%`,
+              );
+              targetNotional = nextNotional;
+              continue;
+            }
+            this.log(
+              'warning',
+              `entry blocked by slippage guard | asset=${asset} ${worstSide}(${worstExchange}) slippage=${worstSlippage.toFixed(4)}% > ${maxSlippagePct}%`,
+            );
+            this.recordTrades([{
+              timestamp: Date.now(),
+              type: 'guard_block',
+              simulation: false,
+              baseAsset: asset,
+              shortExchange: opportunity.shortExchange,
+              longExchange: opportunity.longExchange,
+              spread: opportunity.spread,
+              spreadPercent: opportunity.spreadPercent,
+              reason: 'slippage_exceeded',
+              detail: `slippage_${worstSide}(${worstExchange}):${worstSlippage.toFixed(6)}% max:${maxSlippagePct}% notional:${targetNotional.toFixed(2)}`,
+            }]);
+            return;
+          }
+        }
+
+        const entryGapThreshold = snipeConfig.useImpactGuards
+          ? impactCapBps / 100
+          : maxSlippagePct;
+        const entryGap = getEntryGapMetrics({
+          shortPrice: shortFill.fillPrice,
+          longPrice: longFill.fillPrice,
+          baselineShortPrice: opportunity.shortMarkPrice,
+          baselineLongPrice: opportunity.longMarkPrice,
+        });
+        if (entryGap.driftPercent > entryGapThreshold) {
           this.log(
             'warning',
-            `entry blocked by slippage guard | asset=${asset} ${worstSide}(${worstExchange}) slippage=${worstSlippage.toFixed(4)}% > ${MAX_SLIPPAGE_PCT}%`,
+            `entry blocked by gap drift | asset=${asset} drift=${entryGap.driftPercent.toFixed(4)}% (live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%) > ${entryGapThreshold.toFixed(4)}%`,
           );
           this.recordTrades([{
             timestamp: Date.now(),
@@ -1197,82 +1320,25 @@ class ServerScheduler {
             longExchange: opportunity.longExchange,
             spread: opportunity.spread,
             spreadPercent: opportunity.spreadPercent,
-            reason: 'slippage_exceeded',
-            detail: `slippage_${worstSide}(${worstExchange}):${worstSlippage.toFixed(6)}% max:${MAX_SLIPPAGE_PCT}%`,
+            reason: 'entry_gap_exceeded',
+            detail: `entryGapDrift:${entryGap.driftPercent.toFixed(6)}% live:${entryGap.liveGapPercent.toFixed(6)}% base:${entryGap.baselineGapPercent.toFixed(6)}% threshold:${entryGapThreshold.toFixed(6)}% notional:${targetNotional.toFixed(2)}`,
           }]);
           return;
         }
+
+        break;
       }
 
-      // ── Entry gap guard ──
-      const entryGapThreshold = snipeConfig.useImpactGuards
-        ? (snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS) / 100
-        : (this.config.maxSlippagePercent ?? 1.5);
-      const entryGap = getEntryGapMetrics({
-        shortPrice: shortFill.fillPrice,
-        longPrice: longFill.fillPrice,
-        baselineShortPrice: opportunity.shortMarkPrice,
-        baselineLongPrice: opportunity.longMarkPrice,
-      });
-      if (entryGap.driftPercent > entryGapThreshold) {
-        this.log(
-          'warning',
-          `entry blocked by gap drift | asset=${asset} drift=${entryGap.driftPercent.toFixed(4)}% (live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%) > ${entryGapThreshold.toFixed(4)}%`,
-        );
-        this.recordTrades([{
-          timestamp: Date.now(),
-          type: 'guard_block',
-          simulation: false,
-          baseAsset: asset,
-          shortExchange: opportunity.shortExchange,
-          longExchange: opportunity.longExchange,
-          spread: opportunity.spread,
-          spreadPercent: opportunity.spreadPercent,
-          reason: 'entry_gap_exceeded',
-          detail: `entryGapDrift:${entryGap.driftPercent.toFixed(6)}% live:${entryGap.liveGapPercent.toFixed(6)}% base:${entryGap.baselineGapPercent.toFixed(6)}% threshold:${entryGapThreshold.toFixed(6)}%`,
-        }]);
-        return;
+      if (!shortFill || !longFill) {
+        throw new Error('unable to validate entry slippage');
       }
-      // v2: use runtime fee cache for profitability gate — warn if falling back to preset
-      const shortFeeInfo = resolveRuntimeFeeDetailed(
-        opportunity.shortExchange,
-        'taker',
-        this.config.feeOverrides,
-        this.config.paybackOverrides,
-      );
-      const longFeeInfo = resolveRuntimeFeeDetailed(
-        opportunity.longExchange,
-        'taker',
-        this.config.feeOverrides,
-        this.config.paybackOverrides,
-      );
-      if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
-        this.log(
-          'warning',
-          `entry blocked — runtime fee unavailable | asset=${asset} ${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source}`,
-        );
-        this.recordTrades([{
-          timestamp: Date.now(),
-          type: 'guard_block',
-          simulation: false,
-          baseAsset: asset,
-          shortExchange: opportunity.shortExchange,
-          longExchange: opportunity.longExchange,
-          spread: opportunity.spread,
-          spreadPercent: opportunity.spreadPercent,
-          reason: 'fee_cache_unavailable',
-          detail: `${opportunity.shortExchange}:${shortFeeInfo.source} ${opportunity.longExchange}:${longFeeInfo.source}`,
-        }]);
-        return;
-      }
-      const execHedgeFeePct = (shortFeeInfo.fee + longFeeInfo.fee) * 2 * 100;
 
-      // ── Profitability gate: conservative EV (v2) or legacy spread (v1) ──
+      const execHedgeFeePct = (shortFeeRate + longFeeRate) * 2 * 100;
       let profitabilityPassed = false;
       let profitabilityDetail = '';
       let evDecisionValue: number | undefined;
 
-      // Conservative EV — always forced ON in REAL (fail-safe policy)
+      // Profitability gate: conservative EV (REAL fail-safe)
       {
         const usesInstantRate = pairUsesInstantaneousRate(
           opportunity.shortExchange, opportunity.longExchange,
@@ -1362,7 +1428,7 @@ class ServerScheduler {
         }
       }
 
-      // ── Execute both legs with orphan timing measurement ──
+      // ???? Execute both legs with orphan timing measurement ????
       transitionPhase(opportunityId, 'submit_both');
       let shortDoneAt = 0;
       let longDoneAt = 0;
@@ -1406,7 +1472,7 @@ class ServerScheduler {
       if (orphanMs > MAX_ORPHAN_LEG_MS && shortResult.status === 'fulfilled' && longResult.status === 'fulfilled') {
         this.log(
           'warning',
-          `orphan leg exceeded — forced rollback | asset=${asset} orphan=${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms totalExec=${totalExecMs}ms`,
+          `orphan leg exceeded - forced rollback | asset=${asset} orphan=${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms totalExec=${totalExecMs}ms`,
         );
 
         await Promise.allSettled([
@@ -1437,7 +1503,7 @@ class ServerScheduler {
         this.saveState();
         return;
       } else if (orphanMs > MAX_ORPHAN_LEG_MS) {
-        // One leg failed anyway — log for telemetry
+        // One leg failed anyway; log telemetry and continue rollback handling.
         this.log(
           'warning',
           `orphan leg exposure ${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms | asset=${asset} totalExec=${totalExecMs}ms (leg failure handles rollback)`,
@@ -1522,7 +1588,7 @@ class ServerScheduler {
 
       if (shortResult.status !== 'fulfilled' || longResult.status !== 'fulfilled') return;
 
-      // ── Hedge trim: reduce excess side via shared helper ──
+      // ???? Hedge trim: reduce excess side via shared helper ????
       try {
         const trimResult = await rebalanceExecutedHedge({
           shortExchange: opportunity.shortExchange,
@@ -1604,7 +1670,7 @@ class ServerScheduler {
         longExchange: opportunity.longExchange,
         spread: spreadForDecision,
         spreadPercent: spreadPercentForDecision,
-        margin: this.config.investmentUSDT,
+        margin: Math.min(shortResult.value.filledNotional, longResult.value.filledNotional) / this.config.leverage,
         leverage: this.config.leverage,
         notional: Math.min(shortResult.value.filledNotional, longResult.value.filledNotional),
         pairId,
@@ -1672,7 +1738,7 @@ class ServerScheduler {
       return;
     }
 
-    // v2.1: confirmed close — wait for funding settlement before closing
+    // v2.1: when confirmed close is enabled, wait for funding settlement before closing.
     const snipeConfig = getSnipeConfig(this.config.confirmedSnipeConfig);
     if (
       snipeConfig.useConfirmedClose
@@ -1737,7 +1803,7 @@ class ServerScheduler {
               'warning',
               `settlement wait breaker fired | asset=${asset} adverseBps=${worstAdverseBps.toFixed(1)} > ${MAX_SETTLEMENT_ADVERSE_BPS}`,
             );
-            break; // exit wait loop → immediate flatten
+            break; // Exit wait loop and flatten immediately.
           }
         } catch { /* non-blocking */ }
 
@@ -1751,11 +1817,11 @@ class ServerScheduler {
           if (liqCheck.critical) {
             this.log(
               'warning',
-              `critical liq distance during settlement wait — force closing | asset=${asset} ${liqCheck.detail}`,
+              `critical liq distance during settlement wait - force closing | asset=${asset} ${liqCheck.detail}`,
             );
-            break; // exit wait loop → immediate flatten
+            break; // Exit wait loop and flatten immediately.
           }
-        } catch { /* non-blocking — continue wait */ }
+        } catch { /* non-blocking; continue wait */ }
 
         await this.sleep(pollIntervalMs);
       }
@@ -1763,7 +1829,7 @@ class ServerScheduler {
       if (!shortSettled || !longSettled) {
         this.log(
           'warning',
-          `close: funding confirmation timeout | asset=${asset} short=${shortSettled} long=${longSettled} — force closing`,
+          `close: funding confirmation timeout | asset=${asset} short=${shortSettled} long=${longSettled} - force closing`,
         );
       }
     }

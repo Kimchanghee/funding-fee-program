@@ -2,7 +2,11 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Zap, Crosshair, Check, Clock, TrendingDown, TrendingUp, ChevronDown, ChevronUp, Settings } from 'lucide-react';
-import { useFundingStore } from '@/store/fundingStore';
+import {
+  buildSchedulerConfig,
+  buildServerSimSchedulerConfig,
+  useFundingStore,
+} from '@/store/fundingStore';
 import {
   EXCHANGE_COLORS,
   EXCHANGE_NAMES,
@@ -265,18 +269,7 @@ export default function OpportunityCard() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               action: 'start',
-              config: {
-                investmentUSDT: state.strategyConfig.investmentUSDT,
-                leverage: state.strategyConfig.leverage,
-                minSpreadPercent: state.strategyConfig.minSpreadPercent,
-                enabledExchanges: realEnabledExchanges,
-                maxConcurrentPairs: 5,
-                feeOverrides: state.strategyConfig.feeOverrides,
-                paybackOverrides: state.strategyConfig.paybackOverrides,
-                timingConfig: state.strategyConfig.timingConfig,
-                maxSlippagePercent: state.strategyConfig.maxSlippagePercent,
-                minVolume24hUSD: state.strategyConfig.minVolume24hUSD,
-              },
+              config: buildSchedulerConfig(state.strategyConfig, realEnabledExchanges),
             }),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -301,18 +294,7 @@ export default function OpportunityCard() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               action: 'start',
-              config: {
-                investmentUSDT: state.strategyConfig.investmentUSDT,
-                leverage: state.strategyConfig.leverage,
-                minSpreadPercent: state.strategyConfig.minSpreadPercent,
-                compoundInvesting: state.strategyConfig.compoundInvesting,
-                enabledExchanges: state.enabledExchanges,
-                feeOverrides: state.strategyConfig.feeOverrides,
-                paybackOverrides: state.strategyConfig.paybackOverrides,
-                timingConfig: state.strategyConfig.timingConfig,
-                maxSlippagePercent: state.strategyConfig.maxSlippagePercent,
-                minVolume24hUSD: state.strategyConfig.minVolume24hUSD,
-              },
+              config: buildServerSimSchedulerConfig(state.strategyConfig, state.enabledExchanges),
             }),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -20,6 +20,9 @@ export async function POST(req: NextRequest) {
       if (typeof config.leverage !== 'number' || config.leverage < 1 || config.leverage > 125) {
         return 'Invalid leverage';
       }
+      if (typeof config.compoundInvesting !== 'boolean') {
+        return 'Invalid compoundInvesting';
+      }
       if (!Array.isArray(config.enabledExchanges) || config.enabledExchanges.length === 0) {
         return 'enabledExchanges required';
       }

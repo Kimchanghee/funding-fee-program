@@ -175,7 +175,7 @@ function rebuildRealSpreadsForConfig(
   return next;
 }
 
-function buildSchedulerConfig(
+export function buildSchedulerConfig(
   strategyConfig: StrategyConfig,
   enabledExchanges: ExchangeId[],
 ) {
@@ -183,6 +183,7 @@ function buildSchedulerConfig(
     investmentUSDT: strategyConfig.investmentUSDT,
     leverage: strategyConfig.leverage,
     minSpreadPercent: strategyConfig.minSpreadPercent,
+    compoundInvesting: strategyConfig.compoundInvesting,
     enabledExchanges,
     maxConcurrentPairs: 5,
     feeOverrides: strategyConfig.feeOverrides,
@@ -223,7 +224,7 @@ async function syncServerSchedulerConfig(
   }
 }
 
-function buildServerSimSchedulerConfig(
+export function buildServerSimSchedulerConfig(
   strategyConfig: StrategyConfig,
   enabledExchanges: ExchangeId[],
 ) {
@@ -826,10 +827,41 @@ function makeApiHeaders(config: ApiConfig): Record<string, string> {
 
 let logCounter = 0;
 let ratesRefreshInFlight = false;
+let ratesRefreshStartedAt = 0;
 const RATE_FETCH_TIMEOUT_MS = 20_000;
 const RATE_RETRY_DELAY_MS = 1_500;
 const RATE_RETRY_TIMEOUT_MS = 15_000;
 const EXCHANGE_STATUS_STALE_OK_MS = 90_000;
+const RATE_REFRESH_STUCK_MS = 70_000;
+
+async function fetchJsonWithDeadline<T>(url: string, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
+  let hardTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    const hardTimeout = new Promise<never>((_, reject) => {
+      hardTimeoutTimer = setTimeout(() => {
+        reject(new Error(`timeout (${Math.round(timeoutMs / 1000)}s)`));
+      }, timeoutMs + 500);
+    });
+
+    const response = await Promise.race([
+      fetch(url, { signal: controller.signal }),
+      hardTimeout,
+    ]) as Response;
+
+    return await response.json() as T;
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      throw new Error(`timeout (${Math.round(timeoutMs / 1000)}s)`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(abortTimer);
+    if (hardTimeoutTimer) clearTimeout(hardTimeoutTimer);
+  }
+}
 
 function makeLog(level: LogLevel, message: string, exchange?: ExchangeId, detail?: string): LogEntry {
   return {
@@ -1425,6 +1457,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const investmentChanged = next.investmentUSDT !== previousConfig.investmentUSDT;
     const leverageChanged = next.leverage !== previousConfig.leverage;
     const minSpreadChanged = next.minSpreadPercent !== previousConfig.minSpreadPercent;
+    const compoundChanged = next.compoundInvesting !== previousConfig.compoundInvesting;
     const feeChanged = JSON.stringify(next.feeOverrides ?? {}) !== JSON.stringify(previousConfig.feeOverrides ?? {});
     const paybackChanged = JSON.stringify(next.paybackOverrides ?? {}) !== JSON.stringify(previousConfig.paybackOverrides ?? {});
     const maxSlippageChanged = next.maxSlippagePercent !== previousConfig.maxSlippagePercent;
@@ -1433,6 +1466,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const schedulerRelevantChanged = investmentChanged
       || leverageChanged
       || minSpreadChanged
+      || compoundChanged
       || feeChanged
       || paybackChanged
       || maxSlippageChanged
@@ -1525,10 +1559,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Refresh rates (거래소별 개별 비동기 — 응답 즉시 UI 업데이트) ──
   async refreshRates(options) {
     if (ratesRefreshInFlight) {
-      console.log('[refreshRates] skip — already loading');
-      return;
+      const elapsedMs = Date.now() - ratesRefreshStartedAt;
+      if (elapsedMs > RATE_REFRESH_STUCK_MS) {
+        console.warn(`[refreshRates] stale in-flight detected (${Math.round(elapsedMs / 1000)}s) - forcing reset`);
+        ratesRefreshInFlight = false;
+        ratesRefreshStartedAt = 0;
+        set({ isLoadingRates: false });
+      } else {
+        console.log('[refreshRates] skip - already loading');
+        return;
+      }
     }
     ratesRefreshInFlight = true;
+    ratesRefreshStartedAt = Date.now();
     const showLoading = !options?.silent || !get().lastRatesUpdate;
     if (showLoading) {
       set({ isLoadingRates: true, ratesStatus: get().lastRatesUpdate ? get().ratesStatus : 'loading', ratesError: null });
@@ -1566,15 +1609,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           set(s => ({ exchangeFetchStatus: { ...s.exchangeFetchStatus, [exchangeId]: 'loading' } }));
         }
         try {
-          const res = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, {
-            signal: AbortSignal.timeout(RATE_FETCH_TIMEOUT_MS),
-          });
-          const json = await res.json() as {
+          const json = await fetchJsonWithDeadline<{
             success: boolean;
             error?: string;
             data: { rates: FundingRate[]; errors: { exchange: ExchangeId; error: string }[] };
             timestamp: number;
-          };
+          }>(`/api/funding-rates?exchanges=${exchangeId}`, RATE_FETCH_TIMEOUT_MS);
 
           if (json.success && json.data.rates.length > 0) {
             console.log(`[refreshRates] ${exchangeId}: ${json.data.rates.length}개 수신`);
@@ -1642,8 +1682,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             const errMsg = json.error || '데이터 없음';
             console.warn(`[refreshRates] ${exchangeId} 1차 실패(응답): ${errMsg} — ${RATE_RETRY_DELAY_MS / 1000}초 후 재시도`);
             await new Promise(r => setTimeout(r, RATE_RETRY_DELAY_MS));
-            const retryRes2 = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, { signal: AbortSignal.timeout(RATE_RETRY_TIMEOUT_MS) });
-            const retryJson2 = await retryRes2.json() as typeof json;
+            const retryJson2 = await fetchJsonWithDeadline<typeof json>(
+              `/api/funding-rates?exchanges=${exchangeId}`,
+              RATE_RETRY_TIMEOUT_MS,
+            );
             if (retryJson2.success && retryJson2.data.rates.length > 0) {
               console.log(`[refreshRates] ${exchangeId} 재시도 성공: ${retryJson2.data.rates.length}개`);
               set(s => {
@@ -1677,15 +1719,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           console.warn(`[refreshRates] ${exchangeId} 1차 실패(네트워크) — ${RATE_RETRY_DELAY_MS / 1000}초 후 재시도:`, (err as Error).message);
           try {
             await new Promise(r => setTimeout(r, RATE_RETRY_DELAY_MS));
-            const retryRes = await fetch(`/api/funding-rates?exchanges=${exchangeId}`, {
-              signal: AbortSignal.timeout(RATE_RETRY_TIMEOUT_MS),
-            });
-            const retryJson = await retryRes.json() as {
+            const retryJson = await fetchJsonWithDeadline<{
               success: boolean;
               error?: string;
               data: { rates: FundingRate[]; errors: { exchange: ExchangeId; error: string }[] };
               timestamp: number;
-            };
+            }>(`/api/funding-rates?exchanges=${exchangeId}`, RATE_RETRY_TIMEOUT_MS);
             if (retryJson.success && retryJson.data.rates.length > 0) {
               console.log(`[refreshRates] ${exchangeId} 재시도 성공: ${retryJson.data.rates.length}개`);
               set(s => {
@@ -1750,6 +1789,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }
     } finally {
       ratesRefreshInFlight = false;
+      ratesRefreshStartedAt = 0;
       if (showLoading) set({ isLoadingRates: false });
     }
   },
