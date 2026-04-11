@@ -1,7 +1,7 @@
-const { execFile } = require('child_process');
+const { exec } = require('child_process');
 const { promisify } = require('util');
 
-const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 
 const BASE_URL = process.env.WATCHDOG_BASE_URL || 'http://127.0.0.1:3000';
 const TARGET_PROCESS = process.env.WATCHDOG_TARGET_PROCESS || 'funding-fee-program';
@@ -60,7 +60,8 @@ async function restartTarget(reason) {
 
   lastRestartAt = now;
   log(`restarting ${TARGET_PROCESS}: ${reason}`);
-  await execFileAsync(PM2_CMD, ['restart', TARGET_PROCESS, '--update-env'], {
+  const quotedPm2 = /\s/.test(PM2_CMD) ? `"${PM2_CMD}"` : PM2_CMD;
+  await execAsync(`${quotedPm2} restart ${TARGET_PROCESS} --update-env`, {
     windowsHide: true,
   });
 }
