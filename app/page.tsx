@@ -6,6 +6,7 @@ import OpportunityCard from '@/components/dashboard/OpportunityCard';
 import FeePaybackSummary from '@/components/dashboard/FeePaybackSummary';
 import FundingRateTable from '@/components/dashboard/FundingRateTable';
 import BalanceCards from '@/components/dashboard/BalanceCards';
+import BalanceEqualizationPanel from '@/components/dashboard/BalanceEqualizationPanel';
 import PositionsTable from '@/components/dashboard/PositionsTable';
 import LogPanel from '@/components/dashboard/LogPanel';
 import ApiPanel from '@/components/dashboard/ApiPanel';
@@ -69,6 +70,9 @@ export default function DashboardPage() {
 
         {/* Balance Cards */}
         <BalanceCards />
+
+        {/* Exchange Balance Flow */}
+        <BalanceEqualizationPanel />
 
         {/* Funding History — 펀딩피 수령 내역 */}
         <FundingHistory />
