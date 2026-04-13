@@ -183,7 +183,6 @@ const DISABLED_EXCHANGE_SET = new Set<ExchangeId>(DISABLED_EXCHANGES);
 export const OPERABLE_EXCHANGES: OperableExchangeId[] = SUPPORTED_EXCHANGES.filter(
   (exchange): exchange is OperableExchangeId => !DISABLED_EXCHANGE_SET.has(exchange),
 );
-const OPERABLE_EXCHANGE_SET = new Set<OperableExchangeId>(OPERABLE_EXCHANGES);
 
 export function isSupportedExchange(exchange: unknown): exchange is ExchangeId {
   return typeof exchange === 'string' && SUPPORTED_EXCHANGES.includes(exchange as ExchangeId);
