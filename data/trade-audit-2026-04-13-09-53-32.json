@@ -1,0 +1,756 @@
+{
+  "summary": {
+    "generatedAt": "2026-04-13T00:53:32.625Z",
+    "window": {
+      "from": null,
+      "to": null
+    },
+    "coverage": {
+      "dates": [
+        "2026-04-13",
+        "2026-04-12",
+        "2026-04-11"
+      ],
+      "scannedDates": [
+        "2026-04-13",
+        "2026-04-12",
+        "2026-04-11"
+      ],
+      "totalEvents": 7612,
+      "simulationEvents": 7612,
+      "realEvents": 0
+    },
+    "normalizedCounts": {
+      "entry": 0,
+      "exit": 0,
+      "funding": 0,
+      "guard_block": 22,
+      "schedule_probe": 7590,
+      "error": 0,
+      "exit_failed": 0,
+      "completion": 0,
+      "other": 0
+    },
+    "rawTypeCounts": {
+      "schedule_probe": 7590,
+      "guard_block": 22
+    },
+    "realized": {
+      "fundingUSD": 0,
+      "exitPnlUSD": 0
+    },
+    "routeSummaries": [
+      {
+        "route": "n/a",
+        "count": 2508,
+        "types": {
+          "schedule_probe": 2508
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "RAVE:binance->bybit",
+        "count": 520,
+        "types": {
+          "schedule_probe": 515,
+          "guard_block": 5
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "XCN:binance->bybit",
+        "count": 471,
+        "types": {
+          "schedule_probe": 471
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "CL:bybit->binance",
+        "count": 431,
+        "types": {
+          "schedule_probe": 430,
+          "guard_block": 1
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "WET:binance->bybit",
+        "count": 281,
+        "types": {
+          "schedule_probe": 281
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "SIREN:binance->bybit",
+        "count": 210,
+        "types": {
+          "schedule_probe": 205,
+          "guard_block": 5
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "NOM:bybit->binance",
+        "count": 190,
+        "types": {
+          "schedule_probe": 190
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "CYS:binance->bybit",
+        "count": 158,
+        "types": {
+          "schedule_probe": 158
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "NOM:binance->bybit",
+        "count": 150,
+        "types": {
+          "schedule_probe": 147,
+          "guard_block": 3
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "CLO:bybit->binance",
+        "count": 143,
+        "types": {
+          "schedule_probe": 143
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "RDNT:binance->bybit",
+        "count": 138,
+        "types": {
+          "schedule_probe": 137,
+          "guard_block": 1
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "OXT:binance->bybit",
+        "count": 130,
+        "types": {
+          "schedule_probe": 130
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "TRU:binance->bybit",
+        "count": 130,
+        "types": {
+          "schedule_probe": 130
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "TRU:bybit->binance",
+        "count": 121,
+        "types": {
+          "schedule_probe": 121
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "ARIA:bybit->binance",
+        "count": 109,
+        "types": {
+          "schedule_probe": 109
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "ID:binance->bybit",
+        "count": 102,
+        "types": {
+          "schedule_probe": 102
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "ENJ:binance->bybit",
+        "count": 98,
+        "types": {
+          "schedule_probe": 97,
+          "guard_block": 1
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "0G:binance->bybit",
+        "count": 94,
+        "types": {
+          "schedule_probe": 94
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "SKL:binance->bybit",
+        "count": 94,
+        "types": {
+          "schedule_probe": 93,
+          "guard_block": 1
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "route": "ANKR:binance->bybit",
+        "count": 89,
+        "types": {
+          "schedule_probe": 89
+        },
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      }
+    ],
+    "latestEvents": [
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "n/a",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "n/a",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "ID:binance->bybit",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "ONG:binance->bybit",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "RAVE:binance->bybit",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "XCN:binance->bybit",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "FOLKS:bybit->binance",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "CHR:bybit->binance",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041596467,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "n/a",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "n/a",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "n/a",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "ID:binance->bybit",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "ONG:binance->bybit",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "RAVE:binance->bybit",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "XCN:binance->bybit",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "FOLKS:bybit->binance",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "CHR:bybit->binance",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041535935,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "n/a",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041473832,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "n/a",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      },
+      {
+        "timestamp": 1776041473832,
+        "type": "schedule_probe",
+        "simulation": true,
+        "route": "n/a",
+        "pnlUSD": 0,
+        "fundingUSD": 0
+      }
+    ]
+  },
+  "currentSimState": {
+    "simBalances": {
+      "binance": 1000,
+      "bybit": 1000,
+      "okx": 0,
+      "bitget": 0,
+      "gate": 0,
+      "bingx": 0
+    },
+    "simInitialBalances": {
+      "binance": 1000,
+      "bybit": 1000,
+      "okx": 0,
+      "bitget": 0,
+      "gate": 0,
+      "bingx": 0
+    },
+    "simPositions": [],
+    "simTotalFundingEarned": 0,
+    "simTotalTopUps": 0,
+    "simTotalFees": 0,
+    "simTotalClosedPnl": 0,
+    "simClosedPnlPerExchange": {
+      "binance": 0,
+      "bybit": 0,
+      "okx": 0,
+      "bitget": 0,
+      "gate": 0,
+      "bingx": 0
+    },
+    "simClosedFeesPerExchange": {
+      "binance": 0,
+      "bybit": 0,
+      "okx": 0,
+      "bitget": 0,
+      "gate": 0,
+      "bingx": 0
+    },
+    "fundingHistory": [],
+    "updatedAt": 1776041612479
+  },
+  "simSchedulerState": {
+    "active": true,
+    "config": {
+      "minSpreadPercent": 0.01,
+      "investmentUSDT": 500,
+      "leverage": 5,
+      "enabledExchanges": [
+        "binance",
+        "bybit"
+      ],
+      "timingConfig": {
+        "entryLeadMs": 3500,
+        "closeDelayMs": 1000,
+        "fundingVerifyRetryMs": 5000,
+        "fundingVerifyAttempts": 3
+      },
+      "compoundInvesting": true
+    },
+    "startedAt": 1774961442837,
+    "scheduledEntries": [
+      {
+        "opportunityId": "ID:binance:bybit:8h",
+        "probeId": "ID:binance:bybit:8h@1776067193000",
+        "asset": "ID",
+        "opportunity": {
+          "id": "ID:binance:bybit:8h",
+          "baseAsset": "ID",
+          "shortExchange": "binance",
+          "shortSymbol": "ID/USDT:USDT",
+          "shortRate": -0.00399434,
+          "shortRatePercent": -0.399434,
+          "shortMarkPrice": 0.03259887,
+          "longExchange": "bybit",
+          "longSymbol": "ID/USDT:USDT",
+          "longRate": -0.01407423,
+          "longRatePercent": -1.407423,
+          "longMarkPrice": 0.03265,
+          "spread": 0.010079890000000001,
+          "spreadPercent": 1.007989,
+          "annualReturnPercent": 958.5509549999999,
+          "nextFundingTime": 1776067200000,
+          "minutesToFunding": 426,
+          "fundingIntervalMs": 28800000,
+          "netProfit": 21.884725
+        },
+        "targetTime": 1776067193000,
+        "investmentUSDT": 500
+      },
+      {
+        "opportunityId": "RAVE:binance:bybit:8h",
+        "probeId": "RAVE:binance:bybit:8h@1776041993000",
+        "asset": "RAVE",
+        "opportunity": {
+          "id": "RAVE:binance:bybit:8h",
+          "baseAsset": "RAVE",
+          "shortExchange": "binance",
+          "shortSymbol": "RAVE/USDT:USDT",
+          "shortRate": -0.00669686,
+          "shortRatePercent": -0.669686,
+          "shortMarkPrice": 5.92202,
+          "longExchange": "bybit",
+          "longSymbol": "RAVE/USDT:USDT",
+          "longRate": -0.00993852,
+          "longRatePercent": -0.993852,
+          "longMarkPrice": 6.25468,
+          "spread": 0.0032416599999999995,
+          "spreadPercent": 0.32416599999999995,
+          "annualReturnPercent": 209.76476999999997,
+          "nextFundingTime": 1776042000000,
+          "minutesToFunding": 9,
+          "fundingIntervalMs": 28800000,
+          "netProfit": 4.789149999999999
+        },
+        "targetTime": 1776041993000,
+        "investmentUSDT": 300
+      }
+    ],
+    "scheduleProbeStates": [
+      {
+        "probeId": "RAVE:binance:bybit:8h@1776034793000",
+        "opportunityId": "RAVE:binance:bybit:8h",
+        "asset": "RAVE",
+        "shortExchange": "binance",
+        "longExchange": "bybit",
+        "shortSymbol": "RAVE/USDT:USDT",
+        "longSymbol": "RAVE/USDT:USDT",
+        "targetTime": 1776034793000,
+        "investmentUSDT": 500,
+        "createdAt": 1776031782750,
+        "preMilestones": [
+          "pre_30m",
+          "pre_10m",
+          "pre_5m",
+          "pre_3m",
+          "pre_1m"
+        ],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": true,
+        "executeResultCaptured": true,
+        "status": "failed",
+        "lastShortSlippagePercent": 0.04245805263840389,
+        "lastLongSlippagePercent": 0.5976092668995636,
+        "finalizedAt": 1776034793774,
+        "lastReason": "funding_window_shifted"
+      },
+      {
+        "probeId": "RAVE:bybit:binance:8h@1776038393000",
+        "opportunityId": "RAVE:bybit:binance:8h",
+        "asset": "RAVE",
+        "shortExchange": "bybit",
+        "longExchange": "binance",
+        "shortSymbol": "RAVE/USDT:USDT",
+        "longSymbol": "RAVE/USDT:USDT",
+        "targetTime": 1776038393000,
+        "investmentUSDT": 358.61613115801663,
+        "createdAt": 1776034799842,
+        "preMilestones": [],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": false,
+        "executeResultCaptured": false,
+        "status": "canceled",
+        "lastShortSlippagePercent": 0.7505681198163545,
+        "lastLongSlippagePercent": 0.021945654768611537,
+        "finalizedAt": 1776034860808,
+        "lastReason": "schedule_replanned"
+      },
+      {
+        "probeId": "CL:binance:bybit:8h@1776038393000",
+        "opportunityId": "CL:binance:bybit:8h",
+        "asset": "CL",
+        "shortExchange": "binance",
+        "longExchange": "bybit",
+        "shortSymbol": "CL/USDT:USDT",
+        "longSymbol": "CL/USDT:USDT",
+        "targetTime": 1776038393000,
+        "investmentUSDT": 400,
+        "createdAt": 1776034799842,
+        "preMilestones": [
+          "pre_30m",
+          "pre_10m",
+          "pre_5m",
+          "pre_3m",
+          "pre_1m"
+        ],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": true,
+        "executeResultCaptured": true,
+        "status": "failed",
+        "lastShortSlippagePercent": 0.005062522148529795,
+        "lastLongSlippagePercent": 0.3438713512937164,
+        "finalizedAt": 1776038393173,
+        "lastReason": "funding_window_shifted"
+      },
+      {
+        "probeId": "RAVE:binance:bybit:8h@1776038393000",
+        "opportunityId": "RAVE:binance:bybit:8h",
+        "asset": "RAVE",
+        "shortExchange": "binance",
+        "longExchange": "bybit",
+        "shortSymbol": "RAVE/USDT:USDT",
+        "longSymbol": "RAVE/USDT:USDT",
+        "targetTime": 1776038393000,
+        "investmentUSDT": 300,
+        "createdAt": 1776035102792,
+        "preMilestones": [
+          "pre_30m",
+          "pre_10m",
+          "pre_5m",
+          "pre_3m",
+          "pre_1m"
+        ],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": true,
+        "executeResultCaptured": true,
+        "status": "failed",
+        "lastShortSlippagePercent": 0.06482679923298797,
+        "lastLongSlippagePercent": 2.0882452399547584,
+        "finalizedAt": 1776038393177,
+        "lastReason": "funding_window_shifted"
+      },
+      {
+        "probeId": "RAVE:bybit:binance:8h@1776041993000",
+        "opportunityId": "RAVE:bybit:binance:8h",
+        "asset": "RAVE",
+        "shortExchange": "bybit",
+        "longExchange": "binance",
+        "shortSymbol": "RAVE/USDT:USDT",
+        "longSymbol": "RAVE/USDT:USDT",
+        "targetTime": 1776041993000,
+        "investmentUSDT": 500,
+        "createdAt": 1776038429774,
+        "preMilestones": [],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": false,
+        "executeResultCaptured": false,
+        "status": "canceled",
+        "lastShortSlippagePercent": 1.7934898110295694,
+        "lastLongSlippagePercent": 0.025383660409774498,
+        "finalizedAt": 1776038460307,
+        "lastReason": "schedule_replanned"
+      },
+      {
+        "probeId": "RAVE:binance:bybit:8h@1776041993000",
+        "opportunityId": "RAVE:binance:bybit:8h",
+        "asset": "RAVE",
+        "shortExchange": "binance",
+        "longExchange": "bybit",
+        "shortSymbol": "RAVE/USDT:USDT",
+        "longSymbol": "RAVE/USDT:USDT",
+        "targetTime": 1776041993000,
+        "investmentUSDT": 300,
+        "createdAt": 1776038576742,
+        "preMilestones": [
+          "pre_30m",
+          "pre_10m"
+        ],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": false,
+        "executeResultCaptured": false,
+        "status": "scheduled",
+        "lastShortSlippagePercent": 0.011857595138502205,
+        "lastLongSlippagePercent": 0.025021378915344478
+      },
+      {
+        "probeId": "ACT:binance:bybit:8h@1776052793000",
+        "opportunityId": "ACT:binance:bybit:8h",
+        "asset": "ACT",
+        "shortExchange": "binance",
+        "longExchange": "bybit",
+        "shortSymbol": "ACT/USDT:USDT",
+        "longSymbol": "ACT/USDT:USDT",
+        "targetTime": 1776052793000,
+        "investmentUSDT": 200,
+        "createdAt": 1776038729938,
+        "preMilestones": [],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": false,
+        "executeResultCaptured": false,
+        "status": "canceled",
+        "lastShortSlippagePercent": 0.0702682234332224,
+        "lastLongSlippagePercent": 0.13794770038171306,
+        "finalizedAt": 1776038767162,
+        "lastReason": "schedule_replanned"
+      },
+      {
+        "probeId": "XCN:binance:bybit:8h@1776052793000",
+        "opportunityId": "XCN:binance:bybit:8h",
+        "asset": "XCN",
+        "shortExchange": "binance",
+        "longExchange": "bybit",
+        "shortSymbol": "XCN/USDT:USDT",
+        "longSymbol": "XCN/USDT:USDT",
+        "targetTime": 1776052793000,
+        "investmentUSDT": 300,
+        "createdAt": 1776038758155,
+        "preMilestones": [],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": false,
+        "executeResultCaptured": false,
+        "status": "canceled",
+        "finalizedAt": 1776039298689,
+        "lastReason": "schedule_replanned"
+      },
+      {
+        "probeId": "ID:binance:bybit:8h@1776067193000",
+        "opportunityId": "ID:binance:bybit:8h",
+        "asset": "ID",
+        "shortExchange": "binance",
+        "longExchange": "bybit",
+        "shortSymbol": "ID/USDT:USDT",
+        "longSymbol": "ID/USDT:USDT",
+        "targetTime": 1776067193000,
+        "investmentUSDT": 500,
+        "createdAt": 1776039357742,
+        "preMilestones": [],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": false,
+        "executeResultCaptured": false,
+        "status": "scheduled",
+        "lastShortSlippagePercent": 0.06146298298924445,
+        "lastLongSlippagePercent": 0.1384274061178556
+      },
+      {
+        "probeId": "ONG:binance:bybit:8h@1776052793000",
+        "opportunityId": "ONG:binance:bybit:8h",
+        "asset": "ONG",
+        "shortExchange": "binance",
+        "longExchange": "bybit",
+        "shortSymbol": "ONG/USDT:USDT",
+        "longSymbol": "ONG/USDT:USDT",
+        "targetTime": 1776052793000,
+        "investmentUSDT": 200,
+        "createdAt": 1776040077810,
+        "preMilestones": [],
+        "postMilestones": [],
+        "postFundingMilestones": [],
+        "executeCaptured": false,
+        "executeResultCaptured": false,
+        "status": "canceled",
+        "lastShortSlippagePercent": 0.04546169624859469,
+        "lastLongSlippagePercent": 0.09591464704551105,
+        "finalizedAt": 1776040497356,
+        "lastReason": "schedule_replanned"
+      }
+    ],
+    "pendingAutoCloses": {},
+    "lastRatesUpdate": 1776041611481
+  },
+  "normalizedEventTypes": {
+    "schedule_probe": "schedule_probe",
+    "guard_block": "guard_block"
+  }
+}

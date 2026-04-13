@@ -12,7 +12,8 @@
     "pm2:save": "pm2 save",
     "lint": "next lint",
     "typecheck": "tsc -p tsconfig.check.json --noEmit",
-    "evaluate:exchanges": "npx tsx scripts/evaluate-exchanges.ts"
+    "evaluate:exchanges": "npx tsx scripts/evaluate-exchanges.ts",
+    "report:trade-audit": "npx tsx scripts/generate-trade-audit-report.ts"
   },
   "dependencies": {
     "next": "15.1.6",

@@ -31,6 +31,10 @@ function getLoggerDataDir(): string {
   return cachedDataDir;
 }
 
+export function getActiveLoggerDataDir(): string {
+  return getLoggerDataDir();
+}
+
 function getLogsDir(): string {
   return path.join(getLoggerDataDir(), 'logs');
 }
