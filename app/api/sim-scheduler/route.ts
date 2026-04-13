@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSimScheduler, type ServerSimSchedulerConfig } from '@/lib/serverSimScheduler';
-import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, hasValidPaybackOverrides, hasValidTimingConfig, type ExchangeId } from '@/lib/types';
+import {
+  hasValidFeeOverrides,
+  hasValidPaybackOverrides,
+  hasValidTimingConfig,
+  isExchangeOperable,
+  sanitizeEnabledExchanges,
+} from '@/lib/types';
 
 function validateConfig(config: ServerSimSchedulerConfig) {
   if (typeof config.investmentUSDT !== 'number' || config.investmentUSDT <= 0) {
@@ -19,7 +25,7 @@ function validateConfig(config: ServerSimSchedulerConfig) {
     return 'enabledExchanges required';
   }
   for (const exchange of config.enabledExchanges) {
-    if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) {
+    if (!isExchangeOperable(exchange)) {
       return `Unsupported exchange: ${exchange}`;
     }
   }
@@ -72,14 +78,18 @@ export async function POST(req: NextRequest) {
       if (!body.config) {
         return NextResponse.json({ success: false, error: 'config required' }, { status: 400 });
       }
-      const error = validateConfig(body.config);
+      const normalizedConfig: ServerSimSchedulerConfig = {
+        ...body.config,
+        enabledExchanges: sanitizeEnabledExchanges(body.config.enabledExchanges),
+      };
+      const error = validateConfig(normalizedConfig);
       if (error) {
         return NextResponse.json({ success: false, error }, { status: 400 });
       }
 
       const status = body.action === 'start'
-        ? await scheduler.start(body.config)
-        : await scheduler.updateConfig(body.config);
+        ? await scheduler.start(normalizedConfig)
+        : await scheduler.updateConfig(normalizedConfig);
       return NextResponse.json({ success: true, status });
     }
 

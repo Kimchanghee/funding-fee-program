@@ -34,6 +34,7 @@ import {
   HEDGE_RATIO_MIN,
   HEDGE_RATIO_MAX,
   getResolvedTimingConfig,
+  sanitizeEnabledExchanges,
   sanitizeFeeOverrides,
   sanitizePaybackOverrides,
   sanitizeTimingConfig,
@@ -636,6 +637,7 @@ class ServerSimScheduler {
   private normalizeConfig(config: ServerSimSchedulerConfig): ServerSimSchedulerConfig {
     return {
       ...config,
+      enabledExchanges: sanitizeEnabledExchanges(config.enabledExchanges),
       feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
       paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
       timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
@@ -817,7 +819,8 @@ class ServerSimScheduler {
 
   resetState(enabledExchanges: ExchangeId[], investmentUSDT: number) {
     return this.enqueue(async () => {
-      const nextState = resetServerSimState(enabledExchanges, investmentUSDT);
+      const sanitizedEnabledExchanges = sanitizeEnabledExchanges(enabledExchanges);
+      const nextState = resetServerSimState(sanitizedEnabledExchanges, investmentUSDT);
       this.scheduledEntries.clear();
       this.scheduleProbeStates.clear();
       this.pendingAutoCloses.clear();
@@ -831,7 +834,8 @@ class ServerSimScheduler {
 
   reconfigureState(enabledExchanges: ExchangeId[], investmentUSDT: number) {
     return this.enqueue(async () => {
-      const current = loadServerSimState() ?? createDefaultSimState(enabledExchanges, investmentUSDT);
+      const sanitizedEnabledExchanges = sanitizeEnabledExchanges(enabledExchanges);
+      const current = loadServerSimState() ?? createDefaultSimState(sanitizedEnabledExchanges, investmentUSDT);
       if (current.simPositions.length > 0) {
         return current;
       }
@@ -840,10 +844,10 @@ class ServerSimScheduler {
       const simBalances = { ...current.simBalances };
       const simInitialBalances = { ...current.simInitialBalances };
       for (const exchange of Object.keys(simBalances) as ExchangeId[]) {
-        simBalances[exchange] = enabledExchanges.includes(exchange) ? perExchange : 0;
-        simInitialBalances[exchange] = enabledExchanges.includes(exchange) ? perExchange : 0;
+        simBalances[exchange] = sanitizedEnabledExchanges.includes(exchange) ? perExchange : 0;
+        simInitialBalances[exchange] = sanitizedEnabledExchanges.includes(exchange) ? perExchange : 0;
       }
-      for (const exchange of enabledExchanges) {
+      for (const exchange of sanitizedEnabledExchanges) {
         simBalances[exchange] = perExchange;
         simInitialBalances[exchange] = perExchange;
       }

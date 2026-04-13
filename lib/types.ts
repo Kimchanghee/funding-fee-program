@@ -1,4 +1,5 @@
 export type ExchangeId = 'binance' | 'bybit' | 'okx' | 'bitget' | 'gate' | 'bingx';
+export type OperableExchangeId = Exclude<ExchangeId, 'okx' | 'bitget'>;
 
 export const EXCHANGE_NAMES: Record<ExchangeId, string> = {
   binance: 'BINANCE',
@@ -177,6 +178,33 @@ export interface SnipeStateSnapshot {
 }
 
 export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx'];
+export const DISABLED_EXCHANGES = ['okx', 'bitget'] as const satisfies readonly ExchangeId[];
+const DISABLED_EXCHANGE_SET = new Set<ExchangeId>(DISABLED_EXCHANGES);
+export const OPERABLE_EXCHANGES: OperableExchangeId[] = SUPPORTED_EXCHANGES.filter(
+  (exchange): exchange is OperableExchangeId => !DISABLED_EXCHANGE_SET.has(exchange),
+);
+const OPERABLE_EXCHANGE_SET = new Set<OperableExchangeId>(OPERABLE_EXCHANGES);
+
+export function isSupportedExchange(exchange: unknown): exchange is ExchangeId {
+  return typeof exchange === 'string' && SUPPORTED_EXCHANGES.includes(exchange as ExchangeId);
+}
+
+export function isExchangeOperable(exchange: unknown): exchange is OperableExchangeId {
+  return isSupportedExchange(exchange) && !DISABLED_EXCHANGE_SET.has(exchange as ExchangeId);
+}
+
+export function sanitizeEnabledExchanges(
+  exchanges: unknown,
+  fallback: ExchangeId[] = OPERABLE_EXCHANGES,
+): ExchangeId[] {
+  const source = Array.isArray(exchanges) ? exchanges : [];
+  const normalized = source.filter((exchange): exchange is OperableExchangeId => isExchangeOperable(exchange));
+  const deduped = [...new Set<ExchangeId>(normalized)];
+  if (deduped.length > 0) return deduped;
+
+  const fallbackOperable = [...new Set<ExchangeId>(fallback.filter((exchange): exchange is OperableExchangeId => isExchangeOperable(exchange)))];
+  return fallbackOperable.length > 0 ? fallbackOperable : [...OPERABLE_EXCHANGES];
+}
 
 // Per-exchange fee matrix used by all profit/guard calculations.
 // Baseline is the referral max-discount preset.

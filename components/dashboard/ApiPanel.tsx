@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { X, Eye, EyeOff, CheckCircle, Loader, Key } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_NAMES, EXCHANGE_COLORS, SUPPORTED_EXCHANGES, type ExchangeId } from '@/lib/types';
+import { EXCHANGE_NAMES, EXCHANGE_COLORS, OPERABLE_EXCHANGES, type ExchangeId } from '@/lib/types';
 import { hasRequiredApiCredentials, requiresPassphrase } from '@/lib/apiCredentials';
 
 export default function ApiPanel() {
@@ -87,7 +87,7 @@ export default function ApiPanel() {
 
         {/* Tabs */}
         <div style={{ display: 'flex', borderBottom: '1px solid var(--color-border)', overflowX: 'auto' }}>
-          {SUPPORTED_EXCHANGES.map(ex => {
+          {OPERABLE_EXCHANGES.map(ex => {
             const c = EXCHANGE_COLORS[ex];
             const connected = !!apiConfigs[ex];
             const active = activeTab === ex;

@@ -43,6 +43,12 @@ function getTradesDir(): string {
   return path.join(getLoggerDataDir(), 'trades');
 }
 
+type ExecutedTradeScope = 'sim' | 'real';
+
+function getExecutedTradesDir(scope: ExecutedTradeScope): string {
+  return path.join(getLoggerDataDir(), 'trades-executed', scope);
+}
+
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -160,6 +166,37 @@ export interface TradeEvent {
   probeBasisMoveBps?: number;
   analysis?: Record<string, unknown>;
   detail?: string;
+  executionLabel?: '[SIM]실체결' | '[REAL]실체결';
+  executionScope?: ExecutedTradeScope;
+}
+
+const EXECUTED_EVENT_TYPES = new Set<TradeEvent['type']>([
+  'entry',
+  'snipe_entry',
+  'exit',
+  'snipe_exit',
+  'auto_exit',
+  'funding',
+  'snipe_complete',
+]);
+
+function normalizeTradeEvent(event: TradeEvent): TradeEvent {
+  if (!EXECUTED_EVENT_TYPES.has(event.type)) {
+    return event;
+  }
+  return {
+    ...event,
+    executionLabel: event.simulation ? '[SIM]실체결' : '[REAL]실체결',
+    executionScope: event.simulation ? 'sim' : 'real',
+  };
+}
+
+function appendEventsToDailyFile(events: TradeEvent[], dir: string, dateStr: string): void {
+  if (events.length === 0) return;
+  ensureDir(dir);
+  const filePath = path.join(dir, `${dateStr}.jsonl`);
+  const lines = events.map((event) => JSON.stringify(event)).join('\n') + '\n';
+  fs.appendFileSync(filePath, lines, 'utf-8');
 }
 
 let lastPruneDate = '';
@@ -189,15 +226,27 @@ export function appendTrades(events: TradeEvent[]): void {
   try {
     const logsDir = getLogsDir();
     const tradesDir = getTradesDir();
-    ensureDir(tradesDir);
     const dateStr = getDateStr();
-    const filePath = path.join(tradesDir, `${dateStr}.jsonl`);
-    const lines = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
-    fs.appendFileSync(filePath, lines, 'utf-8');
+    const normalizedEvents = events.map(normalizeTradeEvent);
+
+    appendEventsToDailyFile(normalizedEvents, tradesDir, dateStr);
+    appendEventsToDailyFile(
+      normalizedEvents.filter((event) => event.executionScope === 'sim'),
+      getExecutedTradesDir('sim'),
+      dateStr,
+    );
+    appendEventsToDailyFile(
+      normalizedEvents.filter((event) => event.executionScope === 'real'),
+      getExecutedTradesDir('real'),
+      dateStr,
+    );
+
     if (dateStr !== lastPruneDate) {
       lastPruneDate = dateStr;
       pruneOldFiles(logsDir);
       pruneOldFiles(tradesDir);
+      pruneOldFiles(getExecutedTradesDir('sim'));
+      pruneOldFiles(getExecutedTradesDir('real'));
     }
   } catch (err) {
     console.error('[fileLogger] appendTrades failed:', err);
@@ -240,6 +289,24 @@ export function readTrades(dateStr?: string): TradeEvent[] {
   }
 }
 
+export function readExecutedTrades(scope: ExecutedTradeScope, dateStr?: string): TradeEvent[] {
+  try {
+    const tradesDir = getExecutedTradesDir(scope);
+    ensureDir(tradesDir);
+    const target = dateStr || getDateStr();
+    const filePath = path.join(tradesDir, `${target}.jsonl`);
+    if (!fs.existsSync(filePath)) return [];
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return content
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as TradeEvent)
+      .sort((a, b) => b.timestamp - a.timestamp);
+  } catch {
+    return [];
+  }
+}
+
 export function clearData(type: 'logs' | 'trades'): number {
   try {
     const dir = type === 'logs' ? getLogsDir() : getTradesDir();
@@ -248,7 +315,21 @@ export function clearData(type: 'logs' | 'trades'): number {
     for (const f of files) {
       fs.unlinkSync(path.join(dir, f));
     }
-    return files.length;
+    let deleted = files.length;
+
+    if (type === 'trades') {
+      for (const scope of ['sim', 'real'] as const) {
+        const executedDir = getExecutedTradesDir(scope);
+        ensureDir(executedDir);
+        const executedFiles = fs.readdirSync(executedDir).filter((f) => f.endsWith('.jsonl'));
+        for (const file of executedFiles) {
+          fs.unlinkSync(path.join(executedDir, file));
+        }
+        deleted += executedFiles.length;
+      }
+    }
+
+    return deleted;
   } catch (err) {
     console.error(`[fileLogger] clearData(${type}) failed:`, err);
     return 0;
@@ -258,6 +339,20 @@ export function clearData(type: 'logs' | 'trades'): number {
 export function listDates(type: 'logs' | 'trades'): string[] {
   try {
     const dir = type === 'logs' ? getLogsDir() : getTradesDir();
+    ensureDir(dir);
+    return fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => f.replace('.jsonl', ''))
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+}
+
+export function listExecutedTradeDates(scope: ExecutedTradeScope): string[] {
+  try {
+    const dir = getExecutedTradesDir(scope);
     ensureDir(dir);
     return fs.readdirSync(dir)
       .filter((f) => f.endsWith('.jsonl'))

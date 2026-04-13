@@ -11,7 +11,7 @@ import {
   EXCHANGE_COLORS,
   EXCHANGE_NAMES,
   MAX_ROUND_TRIP_IMPACT_BPS,
-  SUPPORTED_EXCHANGES,
+  OPERABLE_EXCHANGES,
   type ExchangeId,
   type Position,
   type SimPosition,
@@ -528,9 +528,9 @@ export default function OpportunityCard() {
 
   const totalBalanceSummary = useMemo(() => {
     if (simulationMode) {
-      const currentTotal = SUPPORTED_EXCHANGES
+      const currentTotal = OPERABLE_EXCHANGES
         .reduce((sum, exchange) => sum + (simBalances[exchange] ?? 0), 0);
-      const initialTotal = SUPPORTED_EXCHANGES
+      const initialTotal = OPERABLE_EXCHANGES
         .reduce((sum, exchange) => sum + (simInitialBalances[exchange] ?? 0), 0);
       const pnl = currentTotal - initialTotal;
       const roiPercent = initialTotal > 0 ? (pnl / initialTotal) * 100 : 0;
@@ -545,13 +545,13 @@ export default function OpportunityCard() {
       };
     }
 
-    const currentTotal = SUPPORTED_EXCHANGES
+    const currentTotal = OPERABLE_EXCHANGES
       .reduce((sum, exchange) => sum + (balances[exchange]?.totalUSDT ?? 0), 0);
-    const availableTotal = SUPPORTED_EXCHANGES
+    const availableTotal = OPERABLE_EXCHANGES
       .reduce((sum, exchange) => sum + (balances[exchange]?.availableUSDT ?? 0), 0);
-    const usedTotal = SUPPORTED_EXCHANGES
+    const usedTotal = OPERABLE_EXCHANGES
       .reduce((sum, exchange) => sum + (balances[exchange]?.usedUSDT ?? 0), 0);
-    const unrealizedTotal = SUPPORTED_EXCHANGES
+    const unrealizedTotal = OPERABLE_EXCHANGES
       .reduce((sum, exchange) => sum + (balances[exchange]?.unrealizedPnl ?? 0), 0);
 
     return {

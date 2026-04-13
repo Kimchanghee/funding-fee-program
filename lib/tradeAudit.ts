@@ -1,4 +1,4 @@
-import { listDates, readTrades, type TradeEvent } from './fileLogger';
+import { listDates, listExecutedTradeDates, readExecutedTrades, readTrades, type TradeEvent } from './fileLogger';
 
 export type TradeAuditBucket =
   | 'entry'
@@ -48,6 +48,8 @@ export interface TradeAuditSummary {
     fundingUSD: number;
   }>;
 }
+
+export type TradeAuditScope = 'all' | 'sim_executed' | 'real_executed';
 
 export function normalizeTradeBucket(type: TradeEvent['type']): TradeAuditBucket {
   switch (type) {
@@ -213,15 +215,28 @@ export function loadTradeEventsForAudit(options?: {
   to?: number | null;
   simulation?: boolean | null;
   limitDates?: number | null;
+  scope?: TradeAuditScope;
 }): { scannedDates: string[]; coveredDates: string[]; events: TradeEvent[] } {
-  const allDates = listDates('trades');
+  const scope = options?.scope ?? 'all';
+  const allDates = scope === 'sim_executed'
+    ? listExecutedTradeDates('sim')
+    : scope === 'real_executed'
+      ? listExecutedTradeDates('real')
+      : listDates('trades');
+  const readByDate = (date: string) => (
+    scope === 'sim_executed'
+      ? readExecutedTrades('sim', date)
+      : scope === 'real_executed'
+        ? readExecutedTrades('real', date)
+        : readTrades(date)
+  );
   const scannedDates = options?.limitDates != null
     ? allDates.slice(0, Math.max(0, options.limitDates))
     : allDates;
   const coveredDates: string[] = [];
   const events = scannedDates
     .flatMap((date) => {
-      const filteredForDate = filterTradeEvents(readTrades(date), {
+      const filteredForDate = filterTradeEvents(readByDate(date), {
         from: options?.from,
         to: options?.to,
         simulation: options?.simulation,

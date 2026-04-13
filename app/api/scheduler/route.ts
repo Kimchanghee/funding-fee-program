@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerScheduler, type SchedulerConfig } from '@/lib/serverScheduler';
-import type { ExchangeId } from '@/lib/types';
-import { SUPPORTED_EXCHANGES, hasValidFeeOverrides, hasValidPaybackOverrides, hasValidTimingConfig } from '@/lib/types';
+import {
+  hasValidFeeOverrides,
+  hasValidPaybackOverrides,
+  hasValidTimingConfig,
+  isExchangeOperable,
+  sanitizeEnabledExchanges,
+} from '@/lib/types';
 
 export async function GET() {
   const scheduler = getServerScheduler();
@@ -27,7 +32,7 @@ export async function POST(req: NextRequest) {
         return 'enabledExchanges required';
       }
       for (const ex of config.enabledExchanges) {
-        if (!SUPPORTED_EXCHANGES.includes(ex as ExchangeId)) {
+        if (!isExchangeOperable(ex)) {
           return `Unsupported exchange: ${ex}`;
         }
       }
@@ -68,7 +73,10 @@ export async function POST(req: NextRequest) {
       if (!body.config) {
         return NextResponse.json({ success: false, error: 'config required' }, { status: 400 });
       }
-      const { config } = body;
+      const config: SchedulerConfig = {
+        ...body.config,
+        enabledExchanges: sanitizeEnabledExchanges(body.config.enabledExchanges),
+      };
       const error = validateConfig(config);
       if (error) {
         return NextResponse.json({ success: false, error }, { status: 400 });

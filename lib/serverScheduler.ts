@@ -56,6 +56,7 @@ import {
 import { sendTelegramMessage } from './telegram';
 import {
   getResolvedTimingConfig,
+  sanitizeEnabledExchanges,
   sanitizeFeeOverrides,
   sanitizePaybackOverrides,
   sanitizeTimingConfig,
@@ -296,6 +297,7 @@ class ServerScheduler {
   private normalizeConfig(config: SchedulerConfig): SchedulerConfig {
     return {
       ...config,
+      enabledExchanges: sanitizeEnabledExchanges(config.enabledExchanges),
       compoundInvesting: config.compoundInvesting ?? true,
       feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
       paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),

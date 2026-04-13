@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getOrderbookFillSnapshot } from '@/lib/publicMarketDataCache';
-import type { ExchangeId } from '@/lib/types';
+import { isExchangeOperable, type ExchangeId } from '@/lib/types';
 
 export async function GET(
   req: NextRequest,
@@ -11,6 +11,10 @@ export async function GET(
   const symbol = url.searchParams.get('symbol');
   const side = url.searchParams.get('side') as 'buy' | 'sell';
   const notional = parseFloat(url.searchParams.get('notional') || '0');
+
+  if (!isExchangeOperable(exchange)) {
+    return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
+  }
 
   if (!symbol || !side || !notional) {
     return NextResponse.json(

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig } from '@/lib/types';
-import { SUPPORTED_EXCHANGES } from '@/lib/types';
+import { isExchangeOperable, isSupportedExchange } from '@/lib/types';
 import { saveServerApiConfig, removeServerApiConfig, listConfiguredExchanges } from '@/lib/serverKeyStore';
 import { getMissingApiCredentialFields } from '@/lib/apiCredentials';
 
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
     const { exchange, config } = body;
     const exchangeId = exchange as ExchangeId;
 
-    if (!SUPPORTED_EXCHANGES.includes(exchangeId)) {
+    if (!isExchangeOperable(exchangeId)) {
       return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
     }
     const missingFields = getMissingApiCredentialFields(exchangeId, config);
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const { exchange } = await req.json() as { exchange: string };
-    if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) {
+    if (!isSupportedExchange(exchange)) {
       return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
     }
     removeServerApiConfig(exchange as ExchangeId);

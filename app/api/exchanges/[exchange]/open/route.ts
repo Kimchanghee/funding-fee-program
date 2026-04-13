@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, FeeOverrides, PaybackOverrides } from '@/lib/types';
 import {
-  SUPPORTED_EXCHANGES,
   hasValidFeeOverrides,
   hasValidPaybackOverrides,
+  isExchangeOperable,
   sanitizeFeeOverrides,
   sanitizePaybackOverrides,
 } from '@/lib/types';
@@ -17,7 +17,7 @@ export async function POST(
 ) {
   const { exchange } = await params;
 
-  if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) {
+  if (!isExchangeOperable(exchange)) {
     return NextResponse.json({ success: false, error: `Unsupported exchange: ${exchange}` }, { status: 400 });
   }
   const id = exchange as ExchangeId;

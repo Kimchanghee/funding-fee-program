@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, FundingRate } from '@/lib/types';
-import { SUPPORTED_EXCHANGES } from '@/lib/types';
+import { OPERABLE_EXCHANGES, isExchangeOperable } from '@/lib/types';
 import { getFundingExchangeSnapshot } from '@/lib/publicMarketDataCache';
 import { findOpportunities } from '@/lib/opportunities';
 import { saveSnapshotIfRankChanged } from '@/lib/snapshot';
@@ -12,9 +12,9 @@ export async function GET(req: NextRequest) {
   const exchangeParam = url.searchParams.get('exchanges');
   const exchanges = exchangeParam
     ? [...new Set(exchangeParam.split(','))].filter(
-      (exchange): exchange is ExchangeId => SUPPORTED_EXCHANGES.includes(exchange as ExchangeId),
+      (exchange): exchange is ExchangeId => isExchangeOperable(exchange),
     )
-    : SUPPORTED_EXCHANGES;
+    : OPERABLE_EXCHANGES;
 
   if (exchanges.length === 0) {
     return NextResponse.json(

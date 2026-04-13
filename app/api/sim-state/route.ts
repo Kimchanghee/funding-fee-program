@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSimScheduler } from '@/lib/serverSimScheduler';
-import { SUPPORTED_EXCHANGES, type ExchangeId, type SimStateSnapshot } from '@/lib/types';
+import { isExchangeOperable, sanitizeEnabledExchanges, type ExchangeId, type SimStateSnapshot } from '@/lib/types';
 
 function validateEnabledExchanges(enabledExchanges: unknown): enabledExchanges is ExchangeId[] {
   return Array.isArray(enabledExchanges)
     && enabledExchanges.length > 0
-    && enabledExchanges.every((exchange) => SUPPORTED_EXCHANGES.includes(exchange as ExchangeId));
+    && enabledExchanges.every((exchange) => isExchangeOperable(exchange));
 }
 
 export async function GET() {
@@ -48,9 +48,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid investmentUSDT' }, { status: 400 });
     }
 
+    const enabledExchanges = sanitizeEnabledExchanges(body.enabledExchanges);
     const data = body.action === 'reset'
-      ? await scheduler.resetState(body.enabledExchanges, body.investmentUSDT)
-      : await scheduler.reconfigureState(body.enabledExchanges, body.investmentUSDT);
+      ? await scheduler.resetState(enabledExchanges, body.investmentUSDT)
+      : await scheduler.reconfigureState(enabledExchanges, body.investmentUSDT);
 
     return NextResponse.json({ success: true, data });
   } catch (error) {
@@ -71,7 +72,8 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid investmentUSDT' }, { status: 400 });
     }
 
-    const data = await getServerSimScheduler().resetState(body.enabledExchanges, body.investmentUSDT);
+    const enabledExchanges = sanitizeEnabledExchanges(body.enabledExchanges);
+    const data = await getServerSimScheduler().resetState(enabledExchanges, body.investmentUSDT);
     return NextResponse.json({ success: true, data });
   } catch (error) {
     return NextResponse.json(

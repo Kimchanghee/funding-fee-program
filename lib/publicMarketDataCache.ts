@@ -1,5 +1,5 @@
 import { fetchFundingRates, fetchMarketFillPrice } from './exchanges';
-import { SUPPORTED_EXCHANGES, type ExchangeId, type FundingRate } from './types';
+import { OPERABLE_EXCHANGES, type ExchangeId, type FundingRate } from './types';
 
 export interface FundingExchangeSnapshot {
   rates: FundingRate[];
@@ -312,7 +312,7 @@ export function getFundingCacheHealth(): Record<string, FundingCacheHealth> {
   const now = Date.now();
   const result: Record<string, FundingCacheHealth> = {};
 
-  for (const exchange of SUPPORTED_EXCHANGES) {
+  for (const exchange of OPERABLE_EXCHANGES) {
     const cached = fundingCache.get(exchange);
     const inFlight = fundingInFlight.has(exchange);
     const hasFresh = !!cached && cached.rates.length > 0 && (now - cached.timestamp) < FUNDING_FRESH_TTL_MS;

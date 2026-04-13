@@ -3,7 +3,7 @@
 import { useMemo, type CSSProperties } from 'react';
 import { useFundingStore } from '@/store/fundingStore';
 import {
-  SUPPORTED_EXCHANGES,
+  OPERABLE_EXCHANGES,
   EXCHANGE_NAMES,
   EXCHANGE_COLORS,
   getRawExchangeFee,
@@ -24,7 +24,7 @@ export default function FeePaybackSummary() {
   const { strategyConfig } = useFundingStore();
 
   const rows = useMemo(() => {
-    return SUPPORTED_EXCHANGES.map((exchange) => {
+    return OPERABLE_EXCHANGES.map((exchange) => {
       const rawTaker = getRawExchangeFee(exchange, 'taker', strategyConfig.feeOverrides);
       const rawMaker = getRawExchangeFee(exchange, 'maker', strategyConfig.feeOverrides);
       const payback = getEffectivePaybackRates(exchange, strategyConfig.paybackOverrides);

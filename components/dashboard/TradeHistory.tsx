@@ -241,7 +241,7 @@ function PairRow({ pair }: { pair: HedgePair }) {
             background: pair.simulation ? 'rgba(139,92,246,0.2)' : 'rgba(239,68,68,0.2)',
             color: pair.simulation ? '#a78bfa' : '#ef4444',
           }}>
-            {pair.simulation ? 'SIM' : 'REAL'}
+            {pair.simulation ? '[SIM]실체결' : '[REAL]실체결'}
           </span>
         </span>
         <span style={{ color: '#94a3b8', fontSize: 11 }}>

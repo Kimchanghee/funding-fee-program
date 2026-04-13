@@ -7,7 +7,8 @@ import { useFundingStore } from '@/store/fundingStore';
 import {
   EXCHANGE_NAMES,
   EXCHANGE_COLORS,
-  SUPPORTED_EXCHANGES,
+  OPERABLE_EXCHANGES,
+  isExchangeOperable,
   EXCHANGE_FEES,
   EXCHANGE_PAYBACKS,
   DEFAULT_TIMING_CONFIG,
@@ -97,6 +98,7 @@ export default function SettingsPage() {
   }, []);
 
   const bestOpp = opportunities[0];
+  const connectedOperableCount = connectedExchanges.filter((exchange) => isExchangeOperable(exchange)).length;
   const timingConfig = strategyConfig.timingConfig ?? DEFAULT_TIMING_CONFIG;
   const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
   const appBuildDateRaw = process.env.NEXT_PUBLIC_APP_BUILD_DATE;
@@ -375,7 +377,7 @@ export default function SettingsPage() {
               {EXCHANGE_FEE_PRESET_NOTE} Leave blank to use this preset value, or enter your custom fee.
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-              {SUPPORTED_EXCHANGES.map(ex => {
+              {OPERABLE_EXCHANGES.map(ex => {
                 const defaults = EXCHANGE_FEES[ex];
                 const override = strategyConfig.feeOverrides?.[ex];
                 const color = EXCHANGE_COLORS[ex];
@@ -445,7 +447,7 @@ export default function SettingsPage() {
               {EXCHANGE_PAYBACK_PRESET_NOTE} Leave blank to use preset, or enter custom payback % for each account.
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-              {SUPPORTED_EXCHANGES.map(ex => {
+              {OPERABLE_EXCHANGES.map(ex => {
                 const defaults = EXCHANGE_PAYBACKS[ex];
                 const override = strategyConfig.paybackOverrides?.[ex];
                 const color = EXCHANGE_COLORS[ex];
@@ -539,7 +541,7 @@ export default function SettingsPage() {
               </button>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {SUPPORTED_EXCHANGES.map(ex => {
+              {OPERABLE_EXCHANGES.map(ex => {
                 const color = EXCHANGE_COLORS[ex];
                 const connected = connectedExchanges.includes(ex);
                 return (
@@ -587,7 +589,7 @@ export default function SettingsPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
                 <span style={{ color: 'var(--color-text-muted)' }}>연결된 거래소</span>
-                <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{connectedExchanges.length} / {SUPPORTED_EXCHANGES.length}</span>
+                <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{connectedOperableCount} / {OPERABLE_EXCHANGES.length}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
                 <span style={{ color: 'var(--color-text-muted)' }}>발견된 기회</span>

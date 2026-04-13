@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkS
 import { join } from 'path';
 import {
   SUPPORTED_EXCHANGES,
+  sanitizeEnabledExchanges,
   type ExchangeId,
   type FundingPayment,
   type SimPosition,
@@ -101,12 +102,13 @@ export function createDefaultSimState(
   enabledExchanges: ExchangeId[],
   investmentUSDT: number,
 ): SimStateSnapshot {
+  const sanitizedEnabledExchanges = sanitizeEnabledExchanges(enabledExchanges);
   const perExchange = Math.max(0, investmentUSDT * 2);
   const simBalances = {} as Record<ExchangeId, number>;
   const simInitialBalances = {} as Record<ExchangeId, number>;
 
   for (const exchange of SUPPORTED_EXCHANGES) {
-    const balance = enabledExchanges.includes(exchange) ? perExchange : 0;
+    const balance = sanitizedEnabledExchanges.includes(exchange) ? perExchange : 0;
     simBalances[exchange] = balance;
     simInitialBalances[exchange] = balance;
   }
@@ -169,11 +171,12 @@ function shouldReinitializeBalances(
   enabledExchanges: ExchangeId[],
   investmentUSDT: number,
 ): boolean {
-  if (enabledExchanges.length === 0 || investmentUSDT <= 0) return false;
+  const sanitizedEnabledExchanges = sanitizeEnabledExchanges(enabledExchanges);
+  if (sanitizedEnabledExchanges.length === 0 || investmentUSDT <= 0) return false;
   if (hasRealData(state)) return false;
 
   // Recover only pristine-but-empty state. Do not overwrite live/historical sessions.
-  return enabledExchanges.every((exchange) => (
+  return sanitizedEnabledExchanges.every((exchange) => (
     (state.simBalances[exchange] ?? 0) <= 0
     && (state.simInitialBalances[exchange] ?? 0) <= 0
   ));

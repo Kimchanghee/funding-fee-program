@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId, ApiConfig, ArbitrageOpportunity, FeeOverrides, PaybackOverrides, ConfirmedSnipeConfig } from '@/lib/types';
 import {
-  SUPPORTED_EXCHANGES,
   hasValidFeeOverrides,
   hasValidPaybackOverrides,
   sanitizeFeeOverrides,
   sanitizePaybackOverrides,
+  isExchangeOperable,
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_ROUND_TRIP_IMPACT_BPS,
   MIN_FREE_MARGIN_PCT,
@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
     if (!opportunity?.shortExchange || !opportunity?.longExchange || !opportunity?.shortSymbol || !opportunity?.longSymbol) {
       return NextResponse.json({ success: false, error: 'Invalid opportunity data' }, { status: 400 });
     }
-    if (!SUPPORTED_EXCHANGES.includes(opportunity.shortExchange) || !SUPPORTED_EXCHANGES.includes(opportunity.longExchange)) {
+    if (!isExchangeOperable(opportunity.shortExchange) || !isExchangeOperable(opportunity.longExchange)) {
       return NextResponse.json({ success: false, error: 'Unsupported exchange in opportunity' }, { status: 400 });
     }
     if (typeof investmentUSDT !== 'number' || investmentUSDT <= 0) {

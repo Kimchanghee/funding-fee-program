@@ -17,7 +17,7 @@ import type {
   SimStateSnapshot,
   SnipeStateSnapshot,
 } from '@/lib/types';
-import { SUPPORTED_EXCHANGES } from '@/lib/types';
+import { OPERABLE_EXCHANGES, SUPPORTED_EXCHANGES, isExchangeOperable, sanitizeEnabledExchanges } from '@/lib/types';
 import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta } from '@/lib/keyStore';
 import {
   estimateProfit,
@@ -190,7 +190,7 @@ export function buildSchedulerConfig(
     leverage: strategyConfig.leverage,
     minSpreadPercent: strategyConfig.minSpreadPercent,
     compoundInvesting: strategyConfig.compoundInvesting,
-    enabledExchanges,
+    enabledExchanges: sanitizeEnabledExchanges(enabledExchanges),
     maxConcurrentPairs: 5,
     feeOverrides: strategyConfig.feeOverrides,
     paybackOverrides: strategyConfig.paybackOverrides,
@@ -239,7 +239,7 @@ export function buildServerSimSchedulerConfig(
     leverage: strategyConfig.leverage,
     minSpreadPercent: strategyConfig.minSpreadPercent,
     compoundInvesting: strategyConfig.compoundInvesting,
-    enabledExchanges,
+    enabledExchanges: sanitizeEnabledExchanges(enabledExchanges),
     feeOverrides: strategyConfig.feeOverrides,
     paybackOverrides: strategyConfig.paybackOverrides,
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
@@ -298,6 +298,18 @@ function buildEmptySimState(): SimStateSnapshot {
     fundingHistory: [],
     updatedAt: Date.now(),
   };
+}
+
+function buildExchangeAllocationMap(
+  perExchange: number,
+  enabledExchanges: ExchangeId[],
+): Record<ExchangeId, number> {
+  const normalizedEnabled = new Set(sanitizeEnabledExchanges(enabledExchanges));
+  const balances = {} as Record<ExchangeId, number>;
+  for (const exchange of SUPPORTED_EXCHANGES) {
+    balances[exchange] = normalizedEnabled.has(exchange) ? perExchange : 0;
+  }
+  return balances;
 }
 
 /** server state snapshot has real data (not defaults) */
@@ -1130,8 +1142,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   fundingHistory: [],
   simulationMode: true,
   realPositionMeta: {},
-  simBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
-  simInitialBalances: { binance: 2000, bybit: 2000, okx: 2000, bitget: 2000, gate: 2000, bingx: 2000 },
+  simBalances: buildExchangeAllocationMap(2000, OPERABLE_EXCHANGES),
+  simInitialBalances: buildExchangeAllocationMap(2000, OPERABLE_EXCHANGES),
   simPositions: [],
   simTotalFundingEarned: 0,
   simTotalTopUps: 0,
@@ -1158,7 +1170,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   ratesStatus: 'idle',
   ratesError: null,
   consecutiveAllFailCount: 0,
-  enabledExchanges: [...SUPPORTED_EXCHANGES],
+  enabledExchanges: [...OPERABLE_EXCHANGES],
   exchangeFetchStatus: {},
   exchangeFetchErrors: {},
   showApiPanel: false,
@@ -1228,7 +1240,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       const saved = loadApiConfigs();
       set({ apiConfigs: saved });
-      const connected = Object.keys(saved) as ExchangeId[];
+      const connected = (Object.keys(saved) as ExchangeId[]).filter((exchange) => isExchangeOperable(exchange));
       set({ connectedExchanges: connected });
 
       // 저장된 전략 설정 로드
@@ -1249,9 +1261,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // 저장된 거래소 ON/OFF 설정 로드
       const savedEnabled = loadEnabledExchanges();
       if (savedEnabled && savedEnabled.length > 0) {
-        const valid = savedEnabled.filter(e => SUPPORTED_EXCHANGES.includes(e as ExchangeId)) as ExchangeId[];
+        const valid = savedEnabled.filter((exchange): exchange is ExchangeId => isExchangeOperable(exchange));
         if (valid.length >= 2) {
-          set({ enabledExchanges: valid });
+          set({ enabledExchanges: sanitizeEnabledExchanges(valid) });
         }
       }
 
@@ -1332,10 +1344,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         // 최초 실행: 활성 거래소 기준으로 초기 잔고 설정 (거래소당 투자금×2 — 숏/롱 양쪽 참여 가능)
         const enabled = get().enabledExchanges;
         const perExchange = get().strategyConfig.investmentUSDT * 2;
-        const newBal = {} as Record<ExchangeId, number>;
-        for (const ex of SUPPORTED_EXCHANGES) {
-          newBal[ex] = enabled.includes(ex) ? perExchange : 0;
-        }
+        const newBal = buildExchangeAllocationMap(perExchange, enabled);
         set({ simBalances: newBal, simInitialBalances: { ...newBal } });
       }
 
@@ -1404,6 +1413,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── API config ────────────────────────────────
   setApiConfig(exchange, config) {
+    if (!isExchangeOperable(exchange)) {
+      get().addLog('warning', `${exchange.toUpperCase()} currently disabled`, exchange);
+      return;
+    }
     const prev = get().apiConfigs;
     const next = { ...prev, [exchange]: config };
     set({ apiConfigs: next });
@@ -1414,7 +1427,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ exchange, config }),
     }).catch(() => {});
-    const connected = Object.keys(next) as ExchangeId[];
+    const connected = (Object.keys(next) as ExchangeId[]).filter((ex) => isExchangeOperable(ex));
     set({ connectedExchanges: connected });
     get().addLog('success', `${exchange.toUpperCase()} API 키 저장됨 (서버 암호화)`, exchange);
   },
@@ -1431,7 +1444,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ exchange }),
     }).catch(() => {});
-    const connected = Object.keys(next) as ExchangeId[];
+    const connected = (Object.keys(next) as ExchangeId[]).filter((ex) => isExchangeOperable(ex));
     set({ connectedExchanges: connected });
     get().addLog('warning', `${exchange.toUpperCase()} API 키 삭제됨`, exchange);
   },
@@ -1498,10 +1511,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       // investmentUSDT 변경 시 시뮬 잔고 동기화 (포지션 없을 때만)
       if (investmentChanged && s.simPositions.length === 0) {
-        const newBal = {} as Record<ExchangeId, number>;
-        for (const ex of SUPPORTED_EXCHANGES) {
-          newBal[ex] = s.enabledExchanges.includes(ex) ? next.investmentUSDT * 2 : 0;
-        }
+        const newBal = buildExchangeAllocationMap(next.investmentUSDT * 2, s.enabledExchanges);
         return {
           strategyConfig: next,
           opportunities,
@@ -1814,7 +1824,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const configs = get().apiConfigs;
     const enabled = get().enabledExchanges;
     const activeConfigs = (Object.entries(configs) as [ExchangeId, ApiConfig][])
-      .filter(([exchange]) => enabled.includes(exchange));
+      .filter(([exchange]) => enabled.includes(exchange) && isExchangeOperable(exchange));
     if (activeConfigs.length === 0) return;
     set({ isLoadingPositions: true });
 
@@ -1892,7 +1902,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const configs = get().apiConfigs;
     const enabled = get().enabledExchanges;
     const activeConfigs = (Object.entries(configs) as [ExchangeId, ApiConfig][])
-      .filter(([exchange]) => enabled.includes(exchange));
+      .filter(([exchange]) => enabled.includes(exchange) && isExchangeOperable(exchange));
     if (activeConfigs.length === 0) return;
 
     const previous = get().balances;
@@ -2919,10 +2929,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   resetSimulation() {
     const perExchange = get().strategyConfig.investmentUSDT * 2; // 거래소당 투자금×2 (숏/롱 양쪽)
     const enabled = get().enabledExchanges;
-    const newBal = {} as Record<ExchangeId, number>;
-    for (const ex of SUPPORTED_EXCHANGES) {
-      newBal[ex] = enabled.includes(ex) ? perExchange : 0;
-    }
+    const newBal = buildExchangeAllocationMap(perExchange, enabled);
     set({
       simPositions: [],
       simBalances: newBal,
@@ -3275,6 +3282,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Exchange Toggle ─────────────────────────
   toggleExchange(exchange) {
     const { enabledExchanges, simPositions } = get();
+    if (!isExchangeOperable(exchange)) {
+      get().addLog('warning', `${exchange.toUpperCase()} currently disabled`, exchange);
+      return;
+    }
 
     // 해당 거래소에 열린 포지션이 있으면 OFF 불가 (시뮬 + 실거래 모두 체크)
     if (enabledExchanges.includes(exchange)) {
@@ -3302,6 +3313,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // ON
       next = [...enabledExchanges, exchange];
     }
+    next = sanitizeEnabledExchanges(next, enabledExchanges);
 
     // Smart sim balance redistribution — preserve position margins
     const lockedPerExchangeHedge: Partial<Record<ExchangeId, number>> = {};
@@ -4330,7 +4342,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const targetExchanges = Array.from(new Set<ExchangeId>([
       ...enabledExchanges,
       ...(Object.keys(apiConfigs) as ExchangeId[]),
-    ]));
+    ].filter((exchange) => isExchangeOperable(exchange))));
 
     const apiHistory: FundingPayment[] = [];
     const failures: string[] = [];

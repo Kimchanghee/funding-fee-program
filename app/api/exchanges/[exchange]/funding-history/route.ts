@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId } from '@/lib/types';
-import { SUPPORTED_EXCHANGES } from '@/lib/types';
+import { isExchangeOperable } from '@/lib/types';
 import { fetchFundingHistory } from '@/lib/exchanges';
 import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
 import { hasRequiredApiCredentials } from '@/lib/apiCredentials';
@@ -10,7 +10,7 @@ export async function GET(
   { params }: { params: Promise<{ exchange: string }> },
 ) {
   const { exchange } = await params;
-  if (!SUPPORTED_EXCHANGES.includes(exchange as ExchangeId)) {
+  if (!isExchangeOperable(exchange)) {
     return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
   }
   const id = exchange as ExchangeId;

@@ -6,7 +6,7 @@ import { useFundingStore } from '@/store/fundingStore';
 import {
   EXCHANGE_NAMES,
   EXCHANGE_COLORS,
-  SUPPORTED_EXCHANGES,
+  OPERABLE_EXCHANGES,
   EXCHANGE_FEE_PRESET_LABEL,
   EXCHANGE_FEE_PRESET_NOTE,
   EXCHANGE_PAYBACK_PRESET_LABEL,
@@ -173,7 +173,7 @@ export default function Header() {
 
       {/* Exchange ON/OFF toggles */}
       <div className="header-exchanges" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-        {SUPPORTED_EXCHANGES.map((ex) => {
+        {OPERABLE_EXCHANGES.map((ex) => {
           const enabled = enabledExchanges.includes(ex);
           const color = EXCHANGE_COLORS[ex];
           return (
@@ -206,7 +206,7 @@ export default function Header() {
           );
         })}
         <span style={{ fontSize: 10, color: 'var(--color-text-muted)', marginLeft: 2 }}>
-          {enabledExchanges.length}/{SUPPORTED_EXCHANGES.length}
+          {enabledExchanges.length}/{OPERABLE_EXCHANGES.length}
         </span>
       </div>
 
