@@ -32,7 +32,7 @@ if (!fs.existsSync(serverEntry)) {
   process.chdir(rootDir);
   process.argv = [process.argv[0], nextStartEntry, 'start', ...process.argv.slice(2)];
   require(nextStartEntry);
-  process.exit(0);
+  return;
 }
 
 if (!fs.existsSync(resolvedDataDir)) {
