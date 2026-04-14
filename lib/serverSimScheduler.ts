@@ -24,6 +24,7 @@ import {
   calcConservativeEV,
   calcDriftBuffer,
 } from './opportunities';
+import { saveOpportunityHourlySnapshot } from './analysisLogger';
 import {
   calcNetSpreadPercent,
   calcHedgedNetSpreadPercent,
@@ -1995,6 +1996,17 @@ class ServerSimScheduler {
       this.config.paybackOverrides,
       this.config.minVolume24hUSD,
     );
+    try {
+      saveOpportunityHourlySnapshot({
+        source: 'server_sim_scheduler',
+        exchanges: this.config.enabledExchanges,
+        rates: allRates,
+        opportunities: this.opportunities,
+        capturedAt: now,
+      });
+    } catch {
+      // Ignore snapshot persistence failures.
+    }
     this.lastRatesUpdate = Date.now();
 
     const markedState = this.updatePositionMarks(this.getState());

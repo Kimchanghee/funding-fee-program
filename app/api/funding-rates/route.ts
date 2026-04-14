@@ -4,6 +4,7 @@ import { OPERABLE_EXCHANGES, isExchangeOperable } from '@/lib/types';
 import { getFundingExchangeSnapshot } from '@/lib/publicMarketDataCache';
 import { findOpportunities } from '@/lib/opportunities';
 import { saveSnapshotIfRankChanged } from '@/lib/snapshot';
+import { saveOpportunityHourlySnapshot } from '@/lib/analysisLogger';
 
 export const maxDuration = 120;
 
@@ -70,6 +71,16 @@ export async function GET(req: NextRequest) {
 
   const opportunities = findOpportunities(allRates);
   saveSnapshotIfRankChanged(allRates, opportunities).catch(() => {});
+  try {
+    saveOpportunityHourlySnapshot({
+      source: 'api_funding_rates',
+      exchanges,
+      rates: allRates,
+      opportunities,
+    });
+  } catch {
+    // Ignore snapshot persistence failures.
+  }
 
   return NextResponse.json({
     success: true,

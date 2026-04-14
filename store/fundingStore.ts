@@ -2956,11 +2956,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         applyServerSimStateSnapshot(set, res.data, { force: true });
       }
     }).catch(() => {});
-    // 서버 측 거래내역 + 로그도 초기화
-    fetch('/api/trades/clear', { method: 'DELETE' })
-      .then(() => set({ tradesClearedAt: Date.now() }))
-      .catch(() => set({ tradesClearedAt: Date.now() }));
-    fetch('/api/logs/clear', { method: 'DELETE' }).catch(() => {});
+    // Keep persisted trade/log archives intact on SIM reset.
+    set({ tradesClearedAt: Date.now() });
     get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${perExchange} 리셋`);
   },
 

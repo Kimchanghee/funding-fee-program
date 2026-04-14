@@ -41,6 +41,7 @@ import {
   calcConservativeEV,
   calcDriftBuffer,
 } from './opportunities';
+import { saveOpportunityHourlySnapshot } from './analysisLogger';
 import {
   createExecutionState,
   transitionPhase,
@@ -745,6 +746,17 @@ class ServerScheduler {
         this.config.paybackOverrides,
         this.config.minVolume24hUSD,
       );
+      try {
+        saveOpportunityHourlySnapshot({
+          source: 'server_scheduler',
+          exchanges: this.config.enabledExchanges,
+          rates,
+          opportunities,
+          capturedAt: this.lastPollTime,
+        });
+      } catch {
+        // Ignore snapshot persistence failures.
+      }
       const minVolume24hUSD = this.config.minVolume24hUSD ?? 0;
       const volumeByExchangeAsset = new Map<string, number>();
       for (const rate of rates) {

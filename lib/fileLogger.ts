@@ -43,10 +43,14 @@ function getTradesDir(): string {
   return path.join(getLoggerDataDir(), 'trades');
 }
 
-type ExecutedTradeScope = 'sim' | 'real';
+export type ExecutedTradeScope = 'sim' | 'real';
 
 function getExecutedTradesDir(scope: ExecutedTradeScope): string {
   return path.join(getLoggerDataDir(), 'trades-executed', scope);
+}
+
+function getFundingReceiptsDir(scope: ExecutedTradeScope): string {
+  return path.join(getLoggerDataDir(), 'funding-receipts', scope);
 }
 
 function ensureDir(dir: string) {
@@ -179,6 +183,7 @@ const EXECUTED_EVENT_TYPES = new Set<TradeEvent['type']>([
   'funding',
   'snipe_complete',
 ]);
+const FUNDING_RECEIPT_EVENT_TYPES = new Set<TradeEvent['type']>(['funding']);
 
 function normalizeTradeEvent(event: TradeEvent): TradeEvent {
   if (!EXECUTED_EVENT_TYPES.has(event.type)) {
@@ -240,6 +245,20 @@ export function appendTrades(events: TradeEvent[]): void {
       getExecutedTradesDir('real'),
       dateStr,
     );
+    appendEventsToDailyFile(
+      normalizedEvents.filter(
+        (event) => event.executionScope === 'sim' && FUNDING_RECEIPT_EVENT_TYPES.has(event.type),
+      ),
+      getFundingReceiptsDir('sim'),
+      dateStr,
+    );
+    appendEventsToDailyFile(
+      normalizedEvents.filter(
+        (event) => event.executionScope === 'real' && FUNDING_RECEIPT_EVENT_TYPES.has(event.type),
+      ),
+      getFundingReceiptsDir('real'),
+      dateStr,
+    );
 
     if (dateStr !== lastPruneDate) {
       lastPruneDate = dateStr;
@@ -247,6 +266,8 @@ export function appendTrades(events: TradeEvent[]): void {
       pruneOldFiles(tradesDir);
       pruneOldFiles(getExecutedTradesDir('sim'));
       pruneOldFiles(getExecutedTradesDir('real'));
+      pruneOldFiles(getFundingReceiptsDir('sim'));
+      pruneOldFiles(getFundingReceiptsDir('real'));
     }
   } catch (err) {
     console.error('[fileLogger] appendTrades failed:', err);
@@ -307,7 +328,31 @@ export function readExecutedTrades(scope: ExecutedTradeScope, dateStr?: string):
   }
 }
 
-export function clearData(type: 'logs' | 'trades'): number {
+export function readFundingReceipts(scope: ExecutedTradeScope, dateStr?: string): TradeEvent[] {
+  try {
+    const receiptsDir = getFundingReceiptsDir(scope);
+    ensureDir(receiptsDir);
+    const target = dateStr || getDateStr();
+    const filePath = path.join(receiptsDir, `${target}.jsonl`);
+    if (!fs.existsSync(filePath)) return [];
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return content
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as TradeEvent)
+      .sort((a, b) => b.timestamp - a.timestamp);
+  } catch {
+    return [];
+  }
+}
+
+export function clearData(
+  type: 'logs' | 'trades',
+  options?: {
+    includeExecutedTrades?: boolean;
+    includeFundingReceipts?: boolean;
+  },
+): number {
   try {
     const dir = type === 'logs' ? getLogsDir() : getTradesDir();
     ensureDir(dir);
@@ -317,7 +362,7 @@ export function clearData(type: 'logs' | 'trades'): number {
     }
     let deleted = files.length;
 
-    if (type === 'trades') {
+    if (type === 'trades' && options?.includeExecutedTrades) {
       for (const scope of ['sim', 'real'] as const) {
         const executedDir = getExecutedTradesDir(scope);
         ensureDir(executedDir);
@@ -326,6 +371,17 @@ export function clearData(type: 'logs' | 'trades'): number {
           fs.unlinkSync(path.join(executedDir, file));
         }
         deleted += executedFiles.length;
+      }
+    }
+    if (type === 'trades' && options?.includeFundingReceipts) {
+      for (const scope of ['sim', 'real'] as const) {
+        const receiptsDir = getFundingReceiptsDir(scope);
+        ensureDir(receiptsDir);
+        const receiptFiles = fs.readdirSync(receiptsDir).filter((f) => f.endsWith('.jsonl'));
+        for (const file of receiptFiles) {
+          fs.unlinkSync(path.join(receiptsDir, file));
+        }
+        deleted += receiptFiles.length;
       }
     }
 
@@ -353,6 +409,20 @@ export function listDates(type: 'logs' | 'trades'): string[] {
 export function listExecutedTradeDates(scope: ExecutedTradeScope): string[] {
   try {
     const dir = getExecutedTradesDir(scope);
+    ensureDir(dir);
+    return fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => f.replace('.jsonl', ''))
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+}
+
+export function listFundingReceiptDates(scope: ExecutedTradeScope): string[] {
+  try {
+    const dir = getFundingReceiptsDir(scope);
     ensureDir(dir);
     return fs.readdirSync(dir)
       .filter((f) => f.endsWith('.jsonl'))
