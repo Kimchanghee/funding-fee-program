@@ -84,7 +84,7 @@ function ReceiptRow({ event }: { event: FundingReceiptEvent }) {
 }
 
 export default function FundingHistory() {
-  const { simulationMode, strategyConfig } = useFundingStore();
+  const { simulationMode, strategyConfig, tradesClearedAt } = useFundingStore();
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [events, setEvents] = useState<FundingReceiptEvent[]>([]);
@@ -106,6 +106,9 @@ export default function FundingHistory() {
         page: String(targetPage),
         pageSize: String(PAGE_SIZE),
       });
+      if (scope === 'sim' && tradesClearedAt > 0) {
+        query.set('from', String(tradesClearedAt));
+      }
       const res = await fetch(`/api/analysis/funding-receipts?${query.toString()}`);
       const json = await res.json() as FundingReceiptResponse;
 
@@ -136,7 +139,7 @@ export default function FundingHistory() {
     } finally {
       setLoading(false);
     }
-  }, [scope]);
+  }, [scope, tradesClearedAt]);
 
   useEffect(() => {
     setPage(1);

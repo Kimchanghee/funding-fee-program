@@ -265,7 +265,8 @@ export default function TradeHistory() {
     try {
       const typeQuery = 'type=snipe_entry,snipe_exit,entry,exit,auto_exit,snipe_complete';
       const scope = simulationMode ? 'sim_executed' : 'real_executed';
-      const res = await fetch(`/api/trades/list?all=true&scope=${scope}&${typeQuery}`);
+      const fromQuery = simulationMode && tradesClearedAt > 0 ? `&from=${tradesClearedAt}` : '';
+      const res = await fetch(`/api/trades/list?all=true&scope=${scope}&${typeQuery}${fromQuery}`);
       const json = await res.json() as { success?: boolean; events?: TradeEvent[] };
       if (!json.success || !Array.isArray(json.events)) {
         setEvents([]);
@@ -277,7 +278,7 @@ export default function TradeHistory() {
     } finally {
       setLoading(false);
     }
-  }, [simulationMode]);
+  }, [simulationMode, tradesClearedAt]);
 
   useEffect(() => {
     void fetchTrades();
@@ -291,6 +292,7 @@ export default function TradeHistory() {
   const pagedPairs = pairs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const fromIndex = pairs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIndex = pairs.length === 0 ? 0 : Math.min(page * PAGE_SIZE, pairs.length);
+  const panelTitle = simulationMode ? '[SIM] 거래 내역' : '[REAL] 거래 내역';
 
   useEffect(() => {
     setPage(1);
@@ -312,7 +314,7 @@ export default function TradeHistory() {
         }}
       >
         <History size={16} color="#f59e0b" />
-        <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>거래 내역</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>{panelTitle}</span>
         <span style={{ fontSize: 11, color: '#64748b' }}>{closedPairs.length}건 완료</span>
         <span style={{ fontSize: 10, color: '#64748b' }}>{fromIndex}-{toIndex} / {pairs.length}</span>
         {closedPairs.length > 0 && (

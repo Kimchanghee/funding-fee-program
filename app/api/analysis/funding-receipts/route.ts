@@ -81,13 +81,20 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const filtered = events
-    .filter((event) => {
-      if (from != null && event.timestamp < from) return false;
-      if (to != null && event.timestamp > to) return false;
-      return true;
-    })
-    .sort((a, b) => b.timestamp - a.timestamp);
+  const filtered: TradeEvent[] = [];
+  for (const event of events) {
+    const rawTimestamp = (event as { timestamp?: unknown }).timestamp;
+    const timestamp = typeof rawTimestamp === 'number'
+      ? (Number.isFinite(rawTimestamp) ? rawTimestamp : null)
+      : typeof rawTimestamp === 'string'
+        ? parseTimestamp(rawTimestamp)
+        : null;
+    if (timestamp === null) continue;
+    if (from != null && timestamp < from) continue;
+    if (to != null && timestamp > to) continue;
+    filtered.push({ ...event, timestamp });
+  }
+  filtered.sort((a, b) => b.timestamp - a.timestamp);
 
   const total = filtered.length;
   const totalFundingAmount = filtered.reduce((sum, event) => sum + (event.fundingAmount ?? 0), 0);

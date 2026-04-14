@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listDates, listExecutedTradeDates, readExecutedTrades, readTrades } from '@/lib/fileLogger';
+import {
+  listDates,
+  listExecutedTradeDates,
+  readExecutedTrades,
+  readTrades,
+  type TradeEvent,
+} from '@/lib/fileLogger';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
 function parseTimestamp(value: string | null): number | null {
@@ -91,13 +97,23 @@ export async function GET(req: NextRequest) {
         ? false
         : null;
 
-  let events = allEvents.filter((event) => {
-    if (typeSet && !typeSet.has(event.type)) return false;
-    if (simulationValue !== null && event.simulation !== simulationValue) return false;
-    if (from !== null && event.timestamp < from) return false;
-    if (to !== null && event.timestamp > to) return false;
-    return true;
-  });
+  const normalized: TradeEvent[] = [];
+  for (const event of allEvents) {
+    const rawTimestamp = (event as { timestamp?: unknown }).timestamp;
+    const timestamp = typeof rawTimestamp === 'number'
+      ? (Number.isFinite(rawTimestamp) ? rawTimestamp : null)
+      : typeof rawTimestamp === 'string'
+        ? parseTimestamp(rawTimestamp)
+        : null;
+    if (timestamp === null) continue;
+    if (typeSet && !typeSet.has(event.type)) continue;
+    if (simulationValue !== null && event.simulation !== simulationValue) continue;
+    if (from !== null && timestamp < from) continue;
+    if (to !== null && timestamp > to) continue;
+    normalized.push({ ...event, timestamp });
+  }
+
+  let events = normalized.sort((a, b) => b.timestamp - a.timestamp);
 
   const filteredTotal = events.length;
   let resolvedPage: number | null = null;

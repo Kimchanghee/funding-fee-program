@@ -5,7 +5,7 @@ const STORAGE_KEY = 'funding_fee_api_configs_v2';
 const LEGACY_STORAGE_KEY = 'funding_fee_api_configs';
 
 // Simple obfuscation to prevent casual plaintext reading of API keys in localStorage.
-// NOTE: This is NOT encryption — client-side storage is inherently vulnerable to XSS.
+// NOTE: This is NOT encryption - client-side storage is inherently vulnerable to XSS.
 // For production use, consider server-side key storage with session-based access.
 const OBF_PREFIX = 'obf:';
 
@@ -83,7 +83,7 @@ export function clearApiConfigs(): void {
   localStorage.removeItem(LEGACY_STORAGE_KEY);
 }
 
-// ── Enabled Exchanges persistence ──────────────
+// Enabled exchanges persistence
 const ENABLED_EXCHANGES_KEY = 'funding_fee_enabled_exchanges';
 
 export function saveEnabledExchanges(exchanges: string[]): void {
@@ -102,7 +102,7 @@ export function loadEnabledExchanges(): string[] | null {
   }
 }
 
-// ── Strategy Config persistence ──────────────
+// Strategy config persistence
 const STRATEGY_CONFIG_KEY = 'funding_fee_strategy_config';
 
 export function saveStrategyConfig(config: StrategyConfig): void {
@@ -133,15 +133,14 @@ export function loadStrategyConfig(): StrategyConfig | null {
   }
 }
 
-// ── Logs persistence ──────────────
+// Logs persistence
 const LOGS_KEY = 'funding_fee_logs';
-const MAX_PERSISTED_LOGS = 200;
 
 export function saveLogs(logs: LogEntry[]): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(LOGS_KEY, JSON.stringify(logs.slice(0, MAX_PERSISTED_LOGS)));
-  } catch { /* quota exceeded — silent */ }
+    localStorage.setItem(LOGS_KEY, JSON.stringify(logs));
+  } catch { /* quota exceeded - silent */ }
 }
 
 export function loadLogs(): LogEntry[] {
@@ -155,30 +154,30 @@ export function loadLogs(): LogEntry[] {
   }
 }
 
-// ── Funding History persistence ──────────────
+// Funding history persistence
 const FUNDING_HISTORY_KEY = 'funding_fee_history';
-const MAX_PERSISTED_HISTORY = 500;
 
 export function saveFundingHistory(history: FundingPayment[]): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(FUNDING_HISTORY_KEY, JSON.stringify(history.slice(0, MAX_PERSISTED_HISTORY)));
-  } catch { /* quota exceeded — silent */ }
+    localStorage.setItem(FUNDING_HISTORY_KEY, JSON.stringify(history));
+  } catch { /* quota exceeded - silent */ }
 }
 
 export function loadFundingHistory(): FundingPayment[] | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = localStorage.getItem(FUNDING_HISTORY_KEY);
-    if (raw === null) return null; // 키 자체가 없음 → 서버에서 복원 가능
-    return JSON.parse(raw);        // 빈 배열이면 [] → 명시적으로 비운 것
+    if (raw === null) return null; // key missing -> server/file fallback can repopulate
+    return JSON.parse(raw);        // [] means intentionally cleared
   } catch {
     return null;
   }
 }
 
-// ── Sim State persistence (balances, positions, totalEarned) ──────────────
+// Sim state persistence (balances, positions, totalEarned)
 const SIM_STATE_KEY = 'funding_fee_sim_state';
+const SIM_HISTORY_RESET_AT_KEY = 'funding_fee_sim_history_reset_at';
 
 interface SimState {
   simBalances: Record<string, number>;
@@ -196,7 +195,7 @@ export function saveSimState(state: SimState): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(SIM_STATE_KEY, JSON.stringify(state));
-  } catch { /* quota exceeded — silent */ }
+  } catch { /* quota exceeded - silent */ }
 }
 
 export function loadSimState(): SimState | null {
@@ -215,7 +214,26 @@ export function clearSimState(): void {
   localStorage.removeItem(SIM_STATE_KEY);
 }
 
-// ── Simulation mode persistence ──
+export function saveSimHistoryResetAt(timestamp: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SIM_HISTORY_RESET_AT_KEY, JSON.stringify(timestamp));
+  } catch {}
+}
+
+export function loadSimHistoryResetAt(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const raw = localStorage.getItem(SIM_HISTORY_RESET_AT_KEY);
+    if (!raw) return 0;
+    const value = Number(JSON.parse(raw));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Simulation mode persistence
 const SIM_MODE_KEY = 'funding_fee_sim_mode';
 
 export function saveSimMode(mode: boolean): void {
@@ -232,7 +250,7 @@ export function loadSimMode(): boolean | null {
   } catch { return null; }
 }
 
-// ── Real position meta persistence ──
+// Real position meta persistence
 const REAL_META_KEY = 'funding_fee_real_position_meta';
 
 export function saveRealPositionMeta(meta: Record<string, unknown>): void {

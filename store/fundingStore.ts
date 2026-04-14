@@ -18,7 +18,7 @@ import type {
   SnipeStateSnapshot,
 } from '@/lib/types';
 import { OPERABLE_EXCHANGES, SUPPORTED_EXCHANGES, isExchangeOperable, sanitizeEnabledExchanges } from '@/lib/types';
-import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta } from '@/lib/keyStore';
+import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta, saveSimHistoryResetAt, loadSimHistoryResetAt } from '@/lib/keyStore';
 import {
   estimateProfit,
   findOpportunities,
@@ -1256,7 +1256,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // 저장된 로그 & 펀딩 히스토리 복원 (HMR/새로고침에서도 유지)
       const savedLogs = loadLogs();
       const savedHistory = loadFundingHistory();
+      const simHistoryResetAt = loadSimHistoryResetAt();
       if (savedLogs.length > 0) set({ logs: savedLogs });
+      if (simHistoryResetAt > 0) {
+        set({ tradesClearedAt: simHistoryResetAt });
+      }
       if (savedHistory !== null && savedHistory.length > 0) {
         set({ fundingHistory: savedHistory });
       } else if (savedHistory === null) {
@@ -2984,6 +2988,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const perExchange = get().strategyConfig.investmentUSDT * 2; // 거래소당 투자금×2 (숏/롱 양쪽)
     const enabled = get().enabledExchanges;
     const newBal = buildExchangeAllocationMap(perExchange, enabled);
+    const clearedAt = Date.now();
     set({
       simPositions: [],
       simBalances: newBal,
@@ -2995,9 +3000,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       simClosedPnlPerExchange: {},
       simClosedFeesPerExchange: {},
       fundingHistory: [],
+      tradesClearedAt: clearedAt,
     });
     clearSimState();
     saveFundingHistory([]);
+    saveSimHistoryResetAt(clearedAt);
     void fetch('/api/sim-state', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
@@ -3011,7 +3018,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
     }).catch(() => {});
     // Keep persisted trade/log archives intact on SIM reset.
-    set({ tradesClearedAt: Date.now() });
     get().addLog('info', `[SIM] 초기화 완료 — 각 거래소 $${perExchange} 리셋`);
   },
 
