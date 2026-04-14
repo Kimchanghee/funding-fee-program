@@ -1,10 +1,33 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { DollarSign, RefreshCw, RotateCcw } from 'lucide-react';
-import ConfirmDialog from '@/components/ui/ConfirmDialog';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { DollarSign, RefreshCw } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
-import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId, type FundingPayment } from '@/lib/types';
+import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
+import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
+
+const PAGE_SIZE = 15;
+
+interface FundingReceiptEvent {
+  timestamp: number;
+  timestampText?: string;
+  exchange?: string;
+  symbol?: string;
+  side?: 'long' | 'short';
+  fundingRate?: number;
+  fundingAmount?: number;
+  executionScope?: 'sim' | 'real';
+}
+
+interface FundingReceiptResponse {
+  success?: boolean;
+  total?: number;
+  totalPages?: number | null;
+  fromIndex?: number;
+  toIndex?: number;
+  totalFundingAmount?: number;
+  events?: FundingReceiptEvent[];
+}
 
 const thStyle: React.CSSProperties = {
   padding: '8px 10px',
@@ -18,89 +41,154 @@ const thStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-function FundingRow({ p, notional }: { p: FundingPayment; notional?: number }) {
-  const color = EXCHANGE_COLORS[p.exchange as ExchangeId] || '#94a3b8';
-  const isPositive = p.amount >= 0;
-  const yieldPercent = notional && notional > 0 ? (p.amount / notional) * 100 : null;
+function ReceiptRow({ event }: { event: FundingReceiptEvent }) {
+  const exchange = (event.exchange ?? '').toLowerCase() as ExchangeId;
+  const color = EXCHANGE_COLORS[exchange] ?? '#94a3b8';
+  const amount = event.fundingAmount ?? 0;
+  const rate = event.fundingRate ?? 0;
+
   return (
     <tr className="table-row-hover" style={{ borderBottom: '1px solid rgba(30,45,66,0.5)' }}>
       <td style={{ padding: '8px 10px' }}>
         <span className="mono" style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
-          {new Date(p.timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          {event.timestampText ?? formatTimestampYmdHmsMs(event.timestamp)}
         </span>
       </td>
       <td style={{ padding: '8px 10px' }}>
         <span style={{ fontSize: 10, fontWeight: 700, color, background: `${color}22`, padding: '1px 6px', borderRadius: 4 }}>
-          {EXCHANGE_NAMES[p.exchange as ExchangeId] || p.exchange.toUpperCase()}
+          {EXCHANGE_NAMES[exchange] ?? (event.exchange?.toUpperCase() ?? '-')}
         </span>
       </td>
       <td style={{ padding: '8px 10px' }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text)' }}>
-          {p.symbol.split('/')[0]}
+          {(event.symbol ?? '-').split('/')[0]}
         </span>
       </td>
       <td style={{ padding: '8px 10px' }}>
-        <span style={{ fontSize: 10, color: p.side === 'long' ? '#10b981' : '#ef4444', fontWeight: 600 }}>
-          {p.side === 'long' ? '롱' : '숏'}
+        <span style={{ fontSize: 10, color: event.side === 'long' ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+          {event.side === 'long' ? 'LONG' : 'SHORT'}
         </span>
       </td>
       <td style={{ padding: '8px 10px' }}>
-        <span className="mono" style={{ fontSize: 10, color: isPositive ? '#10b981' : '#ef4444' }}>
-          {p.rate >= 0 ? '+' : ''}{(p.rate * 100).toFixed(4)}%
+        <span className="mono" style={{ fontSize: 10, color: rate >= 0 ? '#10b981' : '#ef4444' }}>
+          {rate >= 0 ? '+' : ''}{(rate * 100).toFixed(4)}%
         </span>
       </td>
       <td style={{ padding: '8px 10px', textAlign: 'right' }}>
-        <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: isPositive ? '#10b981' : '#ef4444' }}>
-          {isPositive ? '+' : ''}${Math.abs(p.amount).toFixed(4)}
+        <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: amount >= 0 ? '#10b981' : '#ef4444' }}>
+          {amount >= 0 ? '+' : ''}${Math.abs(amount).toFixed(4)}
         </span>
-        {yieldPercent !== null && (
-          <div className="mono" style={{ fontSize: 9, color: 'var(--color-text-muted)', marginTop: 1 }}>
-            노셔널 대비 {yieldPercent >= 0 ? '+' : ''}{yieldPercent.toFixed(4)}%
-          </div>
-        )}
       </td>
     </tr>
   );
 }
 
-function ModePanel({ title, color, entries, total, emptyMsg, investmentUSDT, leverage, notional, compoundInvesting }: {
-  title: string; color: string; entries: FundingPayment[]; total: number; emptyMsg: string;
-  investmentUSDT?: number; leverage?: number; notional?: number; compoundInvesting?: boolean;
-}) {
+export default function FundingHistory() {
+  const { simulationMode, strategyConfig } = useFundingStore();
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [events, setEvents] = useState<FundingReceiptEvent[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [fromIndex, setFromIndex] = useState(0);
+  const [toIndex, setToIndex] = useState(0);
+  const [totalFundingAmount, setTotalFundingAmount] = useState(0);
+
+  const scope = simulationMode ? 'sim' : 'real';
+  const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+
+  const fetchPage = useCallback(async (targetPage: number) => {
+    setLoading(true);
+    try {
+      const query = new URLSearchParams({
+        all: 'true',
+        scope,
+        page: String(targetPage),
+        pageSize: String(PAGE_SIZE),
+      });
+      const res = await fetch(`/api/analysis/funding-receipts?${query.toString()}`);
+      const json = await res.json() as FundingReceiptResponse;
+
+      if (!json.success) {
+        setEvents([]);
+        setTotal(0);
+        setTotalPages(1);
+        setFromIndex(0);
+        setToIndex(0);
+        setTotalFundingAmount(0);
+        return;
+      }
+
+      const nextEvents = Array.isArray(json.events) ? json.events : [];
+      setEvents(nextEvents);
+      setTotal(json.total ?? 0);
+      setTotalPages(Math.max(1, json.totalPages ?? Math.ceil((json.total ?? 0) / PAGE_SIZE)));
+      setFromIndex(json.fromIndex ?? 0);
+      setToIndex(json.toIndex ?? 0);
+      setTotalFundingAmount(json.totalFundingAmount ?? nextEvents.reduce((sum, event) => sum + (event.fundingAmount ?? 0), 0));
+    } catch {
+      setEvents([]);
+      setTotal(0);
+      setTotalPages(1);
+      setFromIndex(0);
+      setToIndex(0);
+      setTotalFundingAmount(0);
+    } finally {
+      setLoading(false);
+    }
+  }, [scope]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [scope]);
+
+  useEffect(() => {
+    void fetchPage(page);
+  }, [page, fetchPage]);
+
+  const panelTitle = simulationMode ? '[SIM] 펀딩피 수령 내역' : '[REAL] 펀딩피 수령 내역';
+  const emptyMessage = loading ? '조회 중...' : '수령 내역이 없습니다';
+
+  const avgYieldPercent = useMemo(() => {
+    if (notional <= 0 || total === 0) return 0;
+    return (totalFundingAmount / notional) * 100;
+  }, [notional, total, totalFundingAmount]);
+
   return (
-    <div style={{ flex: 1, minWidth: 0 }}>
-      {/* Mode header */}
-      <div style={{
-        padding: '10px 14px',
-        display: 'flex', alignItems: 'center', gap: 8,
-        borderBottom: `2px solid ${color}44`,
-        background: `${color}08`,
-        flexWrap: 'wrap',
-      }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color }}>{title}</span>
-        {investmentUSDT !== undefined && (
-          <span style={{ fontSize: 10, color: 'var(--color-text-muted)', display: 'flex', gap: 6 }}>
-            <span>투자: <span className="mono" style={{ color: '#a78bfa', fontWeight: 600 }}>${(investmentUSDT * 2).toLocaleString()}</span></span>
-            <span>노셔널: <span className="mono" style={{ fontWeight: 600 }}>${notional?.toLocaleString()}</span></span>
-            <span>({leverage}x)</span>
-            <span style={{
-              padding: '0 4px', borderRadius: 3, fontSize: 9, fontWeight: 700,
-              background: compoundInvesting ? 'rgba(167,139,250,0.2)' : 'rgba(16,185,129,0.2)',
-              color: compoundInvesting ? '#a78bfa' : '#10b981',
-            }}>
-              {compoundInvesting ? '복리' : '단리'}
-            </span>
-          </span>
-        )}
-        <span className="mono" style={{
-          marginLeft: 'auto', fontSize: 13, fontWeight: 800,
-          color: total >= 0 ? '#10b981' : '#ef4444',
-        }}>
-          {total >= 0 ? '+' : ''}${total.toFixed(4)}
+    <div className="glass-card" style={{ overflow: 'hidden' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <DollarSign size={15} color="#10b981" />
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text)' }}>펀딩피 수령 내역</div>
+          <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{panelTitle}</div>
+        </div>
+        <div style={{ flex: 1 }} />
+        <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: totalFundingAmount >= 0 ? '#10b981' : '#ef4444' }}>
+          {totalFundingAmount >= 0 ? '+' : ''}${totalFundingAmount.toFixed(4)}
+        </div>
+        <button
+          className="btn btn-ghost"
+          style={{ padding: '5px 8px' }}
+          onClick={() => void fetchPage(page)}
+          disabled={loading}
+          title="새로고침"
+        >
+          <RefreshCw size={12} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
+        </button>
+      </div>
+
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
+          페이지: {fromIndex}-{toIndex} / {total}
+        </span>
+        <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
+          기준 노셔널: ${notional.toLocaleString()}
+        </span>
+        <span className="mono" style={{ fontSize: 10, color: avgYieldPercent >= 0 ? '#10b981' : '#ef4444' }}>
+          수익률: {avgYieldPercent >= 0 ? '+' : ''}{avgYieldPercent.toFixed(4)}%
         </span>
       </div>
 
-      {/* Table */}
       <div style={{ maxHeight: 240, overflowY: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
@@ -110,111 +198,41 @@ function ModePanel({ title, color, entries, total, emptyMsg, investmentUSDT, lev
               <th style={thStyle}>코인</th>
               <th style={thStyle}>방향</th>
               <th style={thStyle}>펀딩률</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>금액</th>
+              <th style={{ ...thStyle, textAlign: 'right' }}>수령금액</th>
             </tr>
           </thead>
           <tbody>
-            {entries.length === 0 ? (
+            {events.length === 0 ? (
               <tr>
                 <td colSpan={6} style={{ padding: '24px 14px', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 11 }}>
-                  {emptyMsg}
+                  {emptyMessage}
                 </td>
               </tr>
             ) : (
-              entries.map((p, i) => <FundingRow key={i} p={p} notional={notional} />)
+              events.map((event, index) => (
+                <ReceiptRow
+                  key={`${event.timestamp}-${event.exchange ?? 'na'}-${event.symbol ?? 'na'}-${index}`}
+                  event={event}
+                />
+              ))
             )}
           </tbody>
         </table>
       </div>
-    </div>
-  );
-}
 
-export default function FundingHistory() {
-  const { fundingHistory, fetchFundingHistory, apiConfigs, isLoadingHistory, simulationMode, clearSimFundingHistory, strategyConfig } = useFundingStore();
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
-
-  const apiConfigKeys = Object.keys(apiConfigs).join(',');
-  useEffect(() => {
-    if (!simulationMode) {
-      fetchFundingHistory();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiConfigKeys, simulationMode]);
-
-  const allEntries = fundingHistory;
-  const allTotal = allEntries.reduce((s, p) => s + p.amount, 0);
-
-  const emptyMsg = isLoadingHistory
-    ? '조회 중...'
-    : simulationMode
-      ? '아직 수령 내역 없음'
-      : Object.keys(apiConfigs).length === 0
-        ? 'API 키 미설정'
-        : '수령 내역 없음';
-
-  return (
-    <>
-      <div className="glass-card" style={{ overflow: 'hidden' }}>
-        {/* Header */}
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <DollarSign size={15} color="#10b981" />
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text)' }}>펀딩피 수령 내역</div>
-            <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
-              {simulationMode ? '[SIM] 시뮬레이션 기록' : '자동 수령 확인'}
-            </div>
-          </div>
-          <div style={{ flex: 1 }} />
-          {simulationMode && fundingHistory.length > 0 && (
-            <button
-              className="btn btn-ghost"
-              style={{ padding: '5px 8px', color: '#ef4444' }}
-              onClick={() => setShowClearConfirm(true)}
-            >
-              <RotateCcw size={12} />
-            </button>
-          )}
-          <button
-            className="btn btn-ghost"
-            style={{ padding: '5px 8px' }}
-            onClick={() => fetchFundingHistory()}
-            disabled={isLoadingHistory}
-          >
-            <RefreshCw size={12} style={{ animation: isLoadingHistory ? 'spin 1s linear infinite' : 'none' }} />
+      {totalPages > 1 && (
+        <div style={{ padding: '10px 12px', borderTop: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+          <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+            {page} / {totalPages}
+          </span>
+          <button className="btn btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} disabled={page <= 1 || loading} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>
+            이전
+          </button>
+          <button className="btn btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} disabled={page >= totalPages || loading} onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}>
+            다음
           </button>
         </div>
-
-        {/* All entries */}
-        <div style={{ display: 'flex', gap: 0 }}>
-          <ModePanel
-            title="헷징 (숏+롱)"
-            color="#3b82f6"
-            entries={allEntries}
-            total={allTotal}
-            emptyMsg={emptyMsg}
-            investmentUSDT={strategyConfig.investmentUSDT}
-            leverage={strategyConfig.leverage}
-            notional={notional}
-            compoundInvesting={strategyConfig.compoundInvesting}
-          />
-        </div>
-      </div>
-
-      <ConfirmDialog
-        open={showClearConfirm}
-        tone="warning"
-        title="펀딩 내역 초기화"
-        description="SIM 펀딩 수령 기록만 초기화합니다. 포지션과 잔고는 유지됩니다. 계속 진행할까요?"
-        confirmLabel="내역 초기화"
-        cancelLabel="취소"
-        onCancel={() => setShowClearConfirm(false)}
-        onConfirm={() => {
-          setShowClearConfirm(false);
-          clearSimFundingHistory();
-        }}
-      />
-    </>
+      )}
+    </div>
   );
 }

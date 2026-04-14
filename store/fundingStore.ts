@@ -1015,8 +1015,40 @@ let logBatch: PendingLog[] = [];
 let tradeBatch: PendingTrade[] = [];
 let logFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let tradeFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let tradePersistenceHooksInstalled = false;
+
+const CRITICAL_TRADE_EVENT_TYPES = new Set<string>([
+  'entry',
+  'snipe_entry',
+  'exit',
+  'snipe_exit',
+  'auto_exit',
+  'funding',
+  'snipe_complete',
+  'error',
+  'exit_failed',
+]);
+
+function installTradePersistenceHooks() {
+  if (tradePersistenceHooksInstalled || typeof window === 'undefined') return;
+  tradePersistenceHooksInstalled = true;
+
+  const flushWithBeacon = () => {
+    flushTrades({ preferBeacon: true });
+    flushLogs();
+  };
+
+  window.addEventListener('pagehide', flushWithBeacon);
+  window.addEventListener('beforeunload', flushWithBeacon);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushWithBeacon();
+    }
+  });
+}
 
 function queueLog(level: string, message: string, exchange?: string, detail?: string) {
+  installTradePersistenceHooks();
   logBatch.push({ timestamp: Date.now(), level, message, exchange, detail });
   if (!logFlushTimer) {
     logFlushTimer = setTimeout(flushLogs, 2000); // 2초마다 배치 전송
@@ -1024,7 +1056,12 @@ function queueLog(level: string, message: string, exchange?: string, detail?: st
 }
 
 function queueTrade(event: PendingTrade) {
+  installTradePersistenceHooks();
   tradeBatch.push(event);
+  if (CRITICAL_TRADE_EVENT_TYPES.has(event.type)) {
+    flushTrades();
+    return;
+  }
   if (!tradeFlushTimer) {
     tradeFlushTimer = setTimeout(flushTrades, 1000); // 거래는 1초마다 즉시 전송
   }
@@ -1042,16 +1079,33 @@ function flushLogs() {
   }).catch(() => { /* silent — don't break UI for log persistence */ });
 }
 
-function flushTrades() {
+function flushTrades(options?: { preferBeacon?: boolean }) {
   tradeFlushTimer = null;
   if (tradeBatch.length === 0) return;
   const events = [...tradeBatch];
   tradeBatch = [];
+  if (options?.preferBeacon && typeof navigator !== 'undefined') {
+    try {
+      const payload = JSON.stringify({ events });
+      const blob = new Blob([payload], { type: 'application/json' });
+      const sent = navigator.sendBeacon('/api/trades/save', blob);
+      if (sent) return;
+    } catch {
+      // Ignore beacon fallback errors and continue with fetch keepalive.
+    }
+  }
   fetch('/api/trades/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    keepalive: true,
     body: JSON.stringify({ events }),
-  }).catch(() => { /* silent */ });
+  }).catch(() => {
+    // Requeue on transient transport failures to avoid dropping executed trades.
+    tradeBatch = [...events, ...tradeBatch];
+    if (!tradeFlushTimer) {
+      tradeFlushTimer = setTimeout(flushTrades, 1500);
+    }
+  });
 }
 
 interface StoredTradeEventFundingShape {
