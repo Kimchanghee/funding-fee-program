@@ -3,7 +3,7 @@ function pickPart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPar
 }
 
 /**
- * Format timestamp as: YYYY-MM-DD-HH-mm-ss-SSS
+ * Format timestamp as: YYYY-MM-DD HH:mm:ss.SSS
  * Defaults to Asia/Seoul timezone.
  */
 export function formatTimestampYmdHmsMs(
@@ -34,5 +34,5 @@ export function formatTimestampYmdHmsMs(
   const second = pickPart(parts, 'second');
   const millisecond = String(date.getMilliseconds()).padStart(3, '0');
 
-  return `${year}-${month}-${day}-${hour}-${minute}-${second}-${millisecond}`;
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}.${millisecond}`;
 }

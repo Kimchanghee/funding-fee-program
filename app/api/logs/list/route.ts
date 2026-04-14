@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listDates, readLogs } from '@/lib/fileLogger';
+import { listDates, readLogs, type FileLogEntry } from '@/lib/fileLogger';
 import type { LogLevel } from '@/lib/types';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
@@ -41,14 +41,22 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, dates });
   }
 
-  const allEntries = (allDates ? dates.flatMap((targetDate) => readLogs(targetDate)) : readLogs(date))
-    .filter((entry) => {
-      if (level && entry.level !== level) return false;
-      if (from != null && entry.timestamp < from) return false;
-      if (to != null && entry.timestamp > to) return false;
-      return true;
-    })
-    .sort((a, b) => b.timestamp - a.timestamp);
+  const sourceEntries = allDates ? dates.flatMap((targetDate) => readLogs(targetDate)) : readLogs(date);
+  const allEntries: FileLogEntry[] = [];
+  for (const entry of sourceEntries) {
+    const rawTimestamp = (entry as { timestamp?: unknown }).timestamp;
+    const timestamp = typeof rawTimestamp === 'number'
+      ? (Number.isFinite(rawTimestamp) ? rawTimestamp : null)
+      : typeof rawTimestamp === 'string'
+        ? parseTimestamp(rawTimestamp)
+        : null;
+    if (timestamp == null) continue;
+    if (level && entry.level !== level) continue;
+    if (from != null && timestamp < from) continue;
+    if (to != null && timestamp > to) continue;
+    allEntries.push({ ...entry, timestamp });
+  }
+  allEntries.sort((a, b) => b.timestamp - a.timestamp);
 
   const total = allEntries.length;
   let entries = allEntries;
