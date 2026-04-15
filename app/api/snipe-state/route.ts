@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import type { SnipeStateSnapshot } from '@/lib/types';
 import { getDataDir } from '@/lib/dataDir';
+import { getServerScheduler } from '@/lib/serverScheduler';
+import { getServerSimScheduler } from '@/lib/serverSimScheduler';
 
 const STATE_FILE = path.join(getDataDir(), 'snipe-state.json');
 
@@ -29,16 +31,48 @@ function ensureDir() {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+function resolveSchedulerState() {
+  const simActive = !!getServerSimScheduler().getStatus().active;
+  const realActive = !!getServerScheduler().isActive();
+  return { simActive, realActive };
+}
+
+function reconcileWithRuntime(state: SnipeStateSnapshot) {
+  try {
+    const runtime = resolveSchedulerState();
+    if (state.simSnipeActive === runtime.simActive && state.realSnipeActive === runtime.realActive) {
+      return state;
+    }
+    return {
+      ...state,
+      simSnipeActive: runtime.simActive,
+      realSnipeActive: runtime.realActive,
+      updatedAt: Date.now(),
+    };
+  } catch {
+    return state;
+  }
+}
+
 export async function GET() {
   try {
-    if (!fs.existsSync(STATE_FILE)) {
-      return NextResponse.json({ success: true, data: buildDefaultState() });
+    let data = buildDefaultState();
+    if (fs.existsSync(STATE_FILE)) {
+      const raw = fs.readFileSync(STATE_FILE, 'utf-8');
+      data = normalizeState(JSON.parse(raw) as Partial<SnipeStateSnapshot>);
     }
-    const raw = fs.readFileSync(STATE_FILE, 'utf-8');
-    const data = normalizeState(JSON.parse(raw) as Partial<SnipeStateSnapshot>);
-    return NextResponse.json({ success: true, data });
+    const reconciled = reconcileWithRuntime(data);
+    if (reconciled.updatedAt !== data.updatedAt
+      || reconciled.simSnipeActive !== data.simSnipeActive
+      || reconciled.realSnipeActive !== data.realSnipeActive
+    ) {
+      ensureDir();
+      fs.writeFileSync(STATE_FILE, JSON.stringify(reconciled, null, 2));
+    }
+    return NextResponse.json({ success: true, data: reconciled });
   } catch {
-    return NextResponse.json({ success: true, data: buildDefaultState() });
+    const fallback = reconcileWithRuntime(buildDefaultState());
+    return NextResponse.json({ success: true, data: fallback });
   }
 }
 
