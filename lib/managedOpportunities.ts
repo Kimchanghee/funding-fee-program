@@ -206,8 +206,19 @@ export function buildManagedOpportunityItems(params: {
     return getEstimatedNetPerFunding(item) / intervalHours;
   };
 
+  const now = Date.now();
+
   return Array.from(items.values())
-    .filter((item) => item.status === 'active' || getEstimatedNetPerFunding(item) > 0)
+    .filter((item) => {
+      if (
+        item.status === 'opportunity'
+        && item.fundingTime > 0
+        && item.fundingTime < now - 120_000
+      ) {
+        return false;
+      }
+      return item.status === 'active' || getEstimatedNetPerFunding(item) > 0;
+    })
     .sort((a, b) => {
       const priority = { active: 0, scheduled: 1, opportunity: 2 };
       if (priority[a.status] !== priority[b.status]) {

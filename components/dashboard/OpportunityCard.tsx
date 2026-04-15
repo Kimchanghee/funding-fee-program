@@ -25,19 +25,22 @@ import { hasRequiredApiCredentials, getMissingApiCredentialFields } from '@/lib/
 
 /* ─── Tiny countdown hook ─── */
 function useCountdown(targetMs: number) {
-  const [remaining, setRemaining] = useState(() => Math.max(0, targetMs - Date.now()));
+  const [rawDiffMs, setRawDiffMs] = useState(() => targetMs - Date.now());
   useEffect(() => {
-    const tick = () => setRemaining(Math.max(0, targetMs - Date.now()));
+    const tick = () => setRawDiffMs(targetMs - Date.now());
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [targetMs]);
+  const remaining = Math.max(0, rawDiffMs);
   const totalSec = Math.floor(remaining / 1000);
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
   const pad = (n: number) => String(n).padStart(2, '0');
-  return { remaining, text: `${pad(h)}:${pad(m)}:${pad(s)}`, totalSec, expired: totalSec === 0 && targetMs > 0 };
+  const expired = targetMs > 0 && rawDiffMs <= 0;
+  const overdueSec = expired ? Math.floor(Math.abs(rawDiffMs) / 1000) : 0;
+  return { remaining, text: `${pad(h)}:${pad(m)}:${pad(s)}`, totalSec, expired, overdueSec };
 }
 
 /* ─── Mini exchange badge ─── */
@@ -60,10 +63,15 @@ function ExBadge({ ex, size = 'sm' }: { ex: ExchangeId; size?: 'sm' | 'xs' }) {
 
 /* ─── Inline countdown for each row ─── */
 function InlineCountdown({ targetMs }: { targetMs: number }) {
-  const { text, totalSec, expired } = useCountdown(targetMs);
+  const { text, totalSec, expired, overdueSec } = useCountdown(targetMs);
   const urgent = !expired && totalSec < 300;
   if (targetMs === 0) return <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>;
-  if (expired) return <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>정산 중...</span>;
+  if (expired && overdueSec <= 90) {
+    return <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>정산 중...</span>;
+  }
+  if (expired) {
+    return <span style={{ fontSize: 11, color: '#f97316', fontWeight: 600 }}>재평가 대기</span>;
+  }
   return (
     <span className="mono" style={{
       fontSize: 13, fontWeight: 700,
@@ -79,7 +87,7 @@ function InlineCountdown({ targetMs }: { targetMs: number }) {
 function NextTradeCountdown({ targetMs, asset, shortEx, longEx }: {
   targetMs: number; asset: string; shortEx: ExchangeId; longEx?: ExchangeId;
 }) {
-  const { text, totalSec, expired } = useCountdown(targetMs);
+  const { text, totalSec, expired, overdueSec } = useCountdown(targetMs);
   const urgent = !expired && totalSec < 300;
   return (
     <div style={{
@@ -98,7 +106,9 @@ function NextTradeCountdown({ targetMs, asset, shortEx, longEx }: {
         </span>
       </div>
       {expired ? (
-        <span style={{ fontSize: 28, fontWeight: 800, color: '#f59e0b' }}>정산 중...</span>
+        <span style={{ fontSize: 28, fontWeight: 800, color: '#f59e0b' }}>
+          {overdueSec <= 90 ? '정산 중...' : '재평가 대기'}
+        </span>
       ) : (
         <span className="mono" style={{
           fontSize: 36, fontWeight: 900, letterSpacing: '0.04em',
