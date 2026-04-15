@@ -106,7 +106,7 @@ export default function FundingHistory() {
         page: String(targetPage),
         pageSize: String(PAGE_SIZE),
       });
-      if (scope === 'sim' && tradesClearedAt > 0) {
+      if (tradesClearedAt > 0) {
         query.set('from', String(tradesClearedAt));
       }
       const res = await fetch(`/api/analysis/funding-receipts?${query.toString()}`);

@@ -178,6 +178,7 @@ export function loadFundingHistory(): FundingPayment[] | null {
 // Sim state persistence (balances, positions, totalEarned)
 const SIM_STATE_KEY = 'funding_fee_sim_state';
 const SIM_HISTORY_RESET_AT_KEY = 'funding_fee_sim_history_reset_at';
+const REAL_HISTORY_RESET_AT_KEY = 'funding_fee_real_history_reset_at';
 
 interface SimState {
   simBalances: Record<string, number>;
@@ -225,6 +226,25 @@ export function loadSimHistoryResetAt(): number {
   if (typeof window === 'undefined') return 0;
   try {
     const raw = localStorage.getItem(SIM_HISTORY_RESET_AT_KEY);
+    if (!raw) return 0;
+    const value = Number(JSON.parse(raw));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function saveRealHistoryResetAt(timestamp: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(REAL_HISTORY_RESET_AT_KEY, JSON.stringify(timestamp));
+  } catch {}
+}
+
+export function loadRealHistoryResetAt(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const raw = localStorage.getItem(REAL_HISTORY_RESET_AT_KEY);
     if (!raw) return 0;
     const value = Number(JSON.parse(raw));
     return Number.isFinite(value) && value > 0 ? value : 0;

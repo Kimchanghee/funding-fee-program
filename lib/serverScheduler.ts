@@ -22,7 +22,13 @@ import {
   pairSupportsConfirmedClose,
   pairUsesInstantaneousRate,
 } from './exchangeProfiles';
-import { appendTrades, readTrades, type TradeEvent } from './fileLogger';
+import {
+  appendLogs,
+  appendTrades,
+  readTrades,
+  type FileLogEntry,
+  type TradeEvent,
+} from './fileLogger';
 import { getEntryGapMetrics } from './entryGapGuard';
 import { rebalanceExecutedHedge } from './hedgeRebalance';
 import { getFundingExchangeSnapshot } from './publicMarketDataCache';
@@ -92,6 +98,7 @@ const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
 const FULL_FUNDING_SCAN_INTERVAL_MS = 5 * 60 * 1000;
 const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
 const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
+const MAX_ANALYSIS_CANDIDATES_PER_POLL = 120;
 const COMPOUND_BALANCE_USAGE_PCT = 0.9;
 const MIN_ENTRY_NOTIONAL_USDT = 100;
 const MAX_ADAPTIVE_NOTIONAL_ATTEMPTS = 4;
@@ -767,26 +774,63 @@ class ServerScheduler {
       }
 
       const occupiedLegs = this.getOccupiedLegs();
-
-      const filtered = opportunities.filter((opportunity) => {
+      const candidateEvaluations: Array<{
+        opportunity: ArbitrageOpportunity;
+        rejectReasons: string[];
+        score: number;
+        preEntryEv: ReturnType<typeof estimatePreEntryConservativeEV> | null;
+      }> = opportunities.map((opportunity) => {
+        const rejectReasons: string[] = [];
         const opportunityId = getOpportunityId(opportunity);
-        if (this.scheduledEntries.has(opportunityId) || this.activePositions.has(opportunityId)) return false;
         const routeFailureKey = makeRouteFailureKey(
           opportunity.baseAsset,
           opportunity.shortExchange,
           opportunity.longExchange,
         );
-        if (this.routeFailureMemory.isBlocked(routeFailureKey, this.lastPollTime)) return false;
-        if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) return false;
-        if (!this.config.enabledExchanges.includes(opportunity.shortExchange)) return false;
-        if (!this.config.enabledExchanges.includes(opportunity.longExchange)) return false;
+
+        if (this.scheduledEntries.has(opportunityId) || this.activePositions.has(opportunityId)) {
+          rejectReasons.push('already_scheduled_or_active');
+        }
+
+        if (this.routeFailureMemory.isBlocked(routeFailureKey, this.lastPollTime)) {
+          rejectReasons.push('route_failure_blocked');
+        }
+        if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
+          rejectReasons.push('leg_occupied');
+        }
+        if (!this.config.enabledExchanges.includes(opportunity.shortExchange)) {
+          rejectReasons.push('short_exchange_disabled');
+        }
+        if (!this.config.enabledExchanges.includes(opportunity.longExchange)) {
+          rejectReasons.push('long_exchange_disabled');
+        }
+        if (hasTierCExchange(opportunity.shortExchange, opportunity.longExchange)) {
+          const tierCExchange = EXCHANGE_PROFILES[opportunity.shortExchange].tier === 'C'
+            ? opportunity.shortExchange
+            : opportunity.longExchange;
+          if (!this.config.enabledExchanges.includes(tierCExchange)) {
+            rejectReasons.push('tier_c_exchange_disabled');
+          }
+        }
 
         const aheadWindowMs = Math.max(5 * 3600000, opportunity.fundingIntervalMs ?? 8 * 3600000);
-        if (opportunity.nextFundingTime - this.lastPollTime > aheadWindowMs) return false;
-        if (opportunity.nextFundingTime < this.lastPollTime) return false;
-        if (opportunity.spreadPercent < this.config.minSpreadPercent) return false;
+        if (opportunity.nextFundingTime - this.lastPollTime > aheadWindowMs) {
+          rejectReasons.push('outside_schedule_window');
+        }
+        if (opportunity.nextFundingTime < this.lastPollTime) {
+          rejectReasons.push('funding_time_past');
+        }
+        if (opportunity.spreadPercent < this.config.minSpreadPercent) {
+          rejectReasons.push('spread_below_threshold');
+        }
+
         const preEntryEv = estimatePreEntryConservativeEV(opportunity, this.config);
-        if (!preEntryEv || !preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) return false;
+        if (!preEntryEv) {
+          rejectReasons.push('profitability_calculation_failed');
+        } else if (!preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) {
+          rejectReasons.push('profitability_scan_failed');
+        }
+
         if (minVolume24hUSD > 0) {
           const shortVol = volumeByExchangeAsset.get(`${opportunity.shortExchange}:${opportunity.baseAsset}`);
           const longVol = volumeByExchangeAsset.get(`${opportunity.longExchange}:${opportunity.baseAsset}`);
@@ -794,22 +838,32 @@ class ServerScheduler {
             (shortVol !== undefined && shortVol < minVolume24hUSD)
             || (longVol !== undefined && longVol < minVolume24hUSD)
           ) {
-            return false;
+            rejectReasons.push('volume_below_min');
           }
         }
 
-        // v2.1: strict funding timestamp alignment (3s) when confirmed snipe is active
         const snipeCfg = getSnipeConfig(this.config.confirmedSnipeConfig);
         if (snipeCfg.useConfirmedClose) {
-          const shortRate = rates.find(r => r.exchange === opportunity.shortExchange && r.symbol === opportunity.shortSymbol);
-          const longRate = rates.find(r => r.exchange === opportunity.longExchange && r.symbol === opportunity.longSymbol);
+          const shortRate = rates.find((r) => (
+            r.exchange === opportunity.shortExchange && r.symbol === opportunity.shortSymbol
+          ));
+          const longRate = rates.find((r) => (
+            r.exchange === opportunity.longExchange && r.symbol === opportunity.longSymbol
+          ));
           if (shortRate && longRate) {
             const tsDiff = Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
-            if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) return false;
+            if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) {
+              rejectReasons.push('funding_timestamp_mismatch');
+            }
           }
         }
 
-        return true;
+        return {
+          opportunity,
+          rejectReasons,
+          preEntryEv,
+          score: 0,
+        };
       });
 
       const currentCount = this.scheduledEntries.size + this.activePositions.size;
@@ -826,24 +880,46 @@ class ServerScheduler {
           this.config.paybackOverrides,
         ))
       );
-      const getOpportunityPlanScore = (opportunity: ArbitrageOpportunity) => {
-        const preEntryEv = estimatePreEntryConservativeEV(opportunity, this.config);
-        const baseScore = preEntryEv?.expectedNetUSD ?? opportunity.netProfit ?? opportunity.spreadPercent;
-        return baseScore * getOpportunityBalanceEqualizationMultiplier(balancePlan, opportunity);
+      const getOpportunityPlanScore = (entry: {
+        opportunity: ArbitrageOpportunity;
+        preEntryEv: ReturnType<typeof estimatePreEntryConservativeEV> | null;
+      }) => {
+        const baseScore = entry.preEntryEv?.expectedNetUSD
+          ?? entry.opportunity.netProfit
+          ?? entry.opportunity.spreadPercent;
+        return baseScore * getOpportunityBalanceEqualizationMultiplier(balancePlan, entry.opportunity);
       };
-      const ranked = [...filtered].sort((a, b) => {
-        const scoreDiff = getOpportunityPlanScore(b) - getOpportunityPlanScore(a);
-        if (scoreDiff !== 0) return scoreDiff;
-        if (b.spreadPercent !== a.spreadPercent) return b.spreadPercent - a.spreadPercent;
-        return a.nextFundingTime - b.nextFundingTime;
-      });
-      const toSchedule: ArbitrageOpportunity[] = [];
+
+      for (const entry of candidateEvaluations) {
+        entry.score = getOpportunityPlanScore(entry);
+      }
+
+      const rankedForSchedule = candidateEvaluations
+        .filter((item) => item.rejectReasons.length === 0)
+        .sort((a, b) => {
+          const scoreDiff = b.score - a.score;
+          if (scoreDiff !== 0) return scoreDiff;
+          if (b.opportunity.spreadPercent !== a.opportunity.spreadPercent) {
+            return b.opportunity.spreadPercent - a.opportunity.spreadPercent;
+          }
+          return a.opportunity.nextFundingTime - b.opportunity.nextFundingTime;
+        });
+
+      const toSchedule: typeof candidateEvaluations = [];
       const selectedLegs = new Set(occupiedLegs);
 
-      for (const opportunity of ranked) {
-        if (toSchedule.length >= Math.max(0, slotsAvailable)) break;
+      for (const item of rankedForSchedule) {
+        const opportunity = item.opportunity;
+        if (toSchedule.length >= Math.max(0, slotsAvailable)) {
+          item.rejectReasons.push('slots_full');
+          continue;
+        }
+
         const legKeys = getOpportunityLegKeys(opportunity);
-        if (legKeys.some((legKey) => selectedLegs.has(legKey))) continue;
+        if (legKeys.some((legKey) => selectedLegs.has(legKey))) {
+          item.rejectReasons.push('leg_overlap_after_selection');
+          continue;
+        }
 
         if (workingBalances) {
           const baseMargin = Math.max(0, this.config.investmentUSDT);
@@ -851,17 +927,94 @@ class ServerScheduler {
           const longCost = baseMargin * getPlanningCostFactor(opportunity.longExchange);
           const shortAvail = workingBalances[opportunity.shortExchange] ?? 0;
           const longAvail = workingBalances[opportunity.longExchange] ?? 0;
-          if (shortAvail < shortCost || longAvail < longCost) continue;
+          if (shortAvail < shortCost || longAvail < longCost) {
+            item.rejectReasons.push('balance_insufficient');
+            continue;
+          }
           workingBalances[opportunity.shortExchange] = Math.max(0, shortAvail - shortCost);
           workingBalances[opportunity.longExchange] = Math.max(0, longAvail - longCost);
         }
 
-        toSchedule.push(opportunity);
+        toSchedule.push(item);
         legKeys.forEach((legKey) => selectedLegs.add(legKey));
       }
 
-      for (const opportunity of toSchedule) {
-        this.scheduleEntry(opportunity);
+      const selectedIds = new Set(toSchedule.map((item) => getOpportunityId(item.opportunity)));
+      const selectedCount = toSchedule.length;
+      const analysisLimit = Math.min(candidateEvaluations.length, MAX_ANALYSIS_CANDIDATES_PER_POLL);
+      const scheduleProbeEvents: TradeEvent[] = candidateEvaluations
+        .sort((a, b) => b.score - a.score)
+        .slice(0, analysisLimit)
+        .map((entry, index) => {
+          const opportunity = entry.opportunity;
+          const status = selectedIds.has(getOpportunityId(opportunity))
+            ? 'selected'
+            : entry.rejectReasons.length > 0
+              ? 'rejected'
+              : 'unselected';
+          const ttfMs = Math.max(0, opportunity.nextFundingTime - this.lastPollTime);
+          const expectedNetProfit = entry.preEntryEv?.expectedNetUSD
+            ?? opportunity.netProfit
+            ?? 0;
+          const expectedRoiPercent = (this.config.investmentUSDT > 0 && this.config.leverage > 0)
+            ? (expectedNetProfit / (this.config.investmentUSDT * this.config.leverage)) * 100
+            : 0;
+          return {
+            timestamp: this.lastPollTime,
+            type: 'schedule_probe',
+            simulation: false,
+            baseAsset: opportunity.baseAsset,
+            shortExchange: opportunity.shortExchange,
+            longExchange: opportunity.longExchange,
+            spread: opportunity.spread,
+            spreadPercent: opportunity.spreadPercent,
+            margin: this.config.investmentUSDT,
+            leverage: this.config.leverage,
+            notional: this.config.investmentUSDT * this.config.leverage,
+            shortRate: opportunity.shortRate,
+            longRate: opportunity.longRate,
+            expectedNetProfit,
+            expectedRoiPercent,
+            milestone: status === 'selected' ? 'analysis_selected' : 'analysis_candidate',
+            reason: status,
+            timeToExecutionMs: ttfMs,
+            detail: `status=${status} score=${entry.score.toFixed(6)} reject=${entry.rejectReasons.join('|') || 'none'} ` +
+              `rank=${index + 1} ttfMs=${ttfMs}`,
+            analysis: {
+              opportunityId: getOpportunityId(opportunity),
+              status,
+              selected: status === 'selected',
+              rejectReasons: entry.rejectReasons,
+              score: entry.score,
+              scoreRank: index + 1,
+              timeToFundingMs: ttfMs,
+              slotAvailability: `${selectedCount}/${slotsAvailable}`,
+            },
+          } satisfies TradeEvent;
+        });
+
+      if (scheduleProbeEvents.length > 0) {
+        scheduleProbeEvents.push({
+          timestamp: this.lastPollTime,
+          type: 'schedule_probe',
+          simulation: false,
+          milestone: 'analysis_summary',
+          reason: 'analysis_summary',
+          detail: `opportunities=${opportunities.length} candidates=${candidateEvaluations.length} selected=${selectedCount} scheduled=${this.scheduledEntries.size + selectedCount}`,
+          analysis: {
+            totalOpportunities: opportunities.length,
+            analyzedOpportunities: candidateEvaluations.length,
+            candidateCount: candidateEvaluations.filter((item) => item.rejectReasons.length === 0).length,
+            selectedCount,
+            scheduledEntriesCount: this.scheduledEntries.size,
+            activePositionsCount: this.activePositions.size,
+          },
+        } satisfies TradeEvent);
+      }
+      this.recordTrades(scheduleProbeEvents);
+
+      for (const entry of toSchedule) {
+        this.scheduleEntry(entry.opportunity);
       }
 
       this.saveState();
@@ -951,6 +1104,18 @@ class ServerScheduler {
 
     if (!this.active) {
       this.log('warning', `entry skipped while inactive | asset=${asset}`);
+      this.recordTrades([{
+        timestamp: Date.now(),
+        type: 'guard_block',
+        simulation: false,
+        baseAsset: asset,
+        shortExchange: opportunity.shortExchange,
+        longExchange: opportunity.longExchange,
+        spread: opportunity.spread,
+        spreadPercent: opportunity.spreadPercent,
+        reason: 'scheduler_inactive',
+        detail: `opportunityId=${opportunityId}`,
+      }]);
       completeExecution(opportunityId, 'aborted');
       return;
     }
@@ -958,10 +1123,34 @@ class ServerScheduler {
     const secondsUntilFunding = (targetFundingTime - Date.now()) / 1000;
     if (secondsUntilFunding < -30) {
       this.log('warning', `entry skipped due to stale timing | asset=${asset} lateBy=${Math.abs(secondsUntilFunding).toFixed(0)}s`);
+      this.recordTrades([{
+        timestamp: Date.now(),
+        type: 'guard_block',
+        simulation: false,
+        baseAsset: asset,
+        shortExchange: opportunity.shortExchange,
+        longExchange: opportunity.longExchange,
+        spread: opportunity.spread,
+        spreadPercent: opportunity.spreadPercent,
+        reason: 'execution_timing_stale',
+        detail: `lateBySeconds=${Math.abs(secondsUntilFunding).toFixed(0)}`,
+      }]);
       return;
     }
     if (secondsUntilFunding > 60) {
       this.log('warning', `entry skipped due to early timing | asset=${asset} secondsUntilFunding=${secondsUntilFunding.toFixed(0)}`);
+      this.recordTrades([{
+        timestamp: Date.now(),
+        type: 'guard_block',
+        simulation: false,
+        baseAsset: asset,
+        shortExchange: opportunity.shortExchange,
+        longExchange: opportunity.longExchange,
+        spread: opportunity.spread,
+        spreadPercent: opportunity.spreadPercent,
+        reason: 'execution_timing_early',
+        detail: `secondsUntilFunding=${secondsUntilFunding.toFixed(0)}`,
+      }]);
       return;
     }
 
@@ -975,6 +1164,18 @@ class ServerScheduler {
         'error',
         `entry aborted due to missing API config | asset=${asset} exchanges=${opportunity.shortExchange}/${opportunity.longExchange}`,
       );
+      this.recordTrades([{
+        timestamp: Date.now(),
+        type: 'guard_block',
+        simulation: false,
+        baseAsset: asset,
+        shortExchange: opportunity.shortExchange,
+        longExchange: opportunity.longExchange,
+        spread: opportunity.spread,
+        spreadPercent: opportunity.spreadPercent,
+        reason: 'api_config_missing',
+        detail: `shortConfigExists=${Boolean(shortConfig)} longConfigExists=${Boolean(longConfig)}`,
+      }]);
       this.saveState();
       return;
     }
@@ -2383,8 +2584,87 @@ class ServerScheduler {
   }
 
   private recordTrades(events: TradeEvent[]) {
+    if (events.length === 0) return;
     appendTrades(events);
+    const logs = this.mapEventsToSchedulerLogs(events);
+    if (logs.length > 0) {
+      appendLogs(logs);
+    }
     this.routeFailureMemory.ingestEvents(events, { simulation: false });
+  }
+
+  private mapEventsToSchedulerLogs(events: TradeEvent[]): FileLogEntry[] {
+    const logs: FileLogEntry[] = [];
+
+    for (const event of events) {
+      if (event.type === 'guard_block') {
+        logs.push({
+          timestamp: event.timestamp,
+          level: 'warning',
+          message: `[REAL] ${event.baseAsset ?? 'UNKNOWN'} entry blocked`,
+          exchange: event.shortExchange ?? event.exchange,
+          detail: [
+            event.reason ? `reason=${event.reason}` : '',
+            event.detail,
+          ].filter((value) => Boolean(value)).join(' | '),
+        });
+        continue;
+      }
+
+      if (event.type === 'error') {
+        logs.push({
+          timestamp: event.timestamp,
+          level: 'error',
+          message: `[REAL] ${event.baseAsset ?? 'UNKNOWN'} execution error`,
+          exchange: event.shortExchange ?? event.exchange,
+          detail: [event.reason, event.detail].filter((value) => Boolean(value)).join(' | '),
+        });
+        continue;
+      }
+
+      if (event.type === 'schedule_probe') {
+        const status = event.reason ?? 'analysis';
+        const rejectReasons = Array.isArray(event.analysis?.rejectReasons)
+          ? event.analysis.rejectReasons
+          : [];
+        const shouldLog = status === 'analysis_summary'
+          || status === 'failed'
+          || status === 'canceled'
+          || status === 'rejected'
+          || (status === 'unselected' && rejectReasons.length > 0)
+          || (status === 'selected' && !!event.analysis?.timeToFundingMs);
+        if (!shouldLog) continue;
+        logs.push({
+          timestamp: event.timestamp,
+          level: status === 'analysis_summary' ? 'info' : 'warning',
+          message: `[REAL] ${event.baseAsset ?? 'UNKNOWN'} schedule_probe ${status}`,
+          exchange: event.shortExchange ?? event.exchange,
+          detail: [
+            `status=${status}`,
+            event.analysis?.selected !== undefined ? `selected=${event.analysis.selected}` : '',
+            event.analysis?.timeToFundingMs !== undefined ? `ttfMs=${event.analysis.timeToFundingMs}` : '',
+            rejectReasons.length > 0 ? `reject=${rejectReasons.join('|')}` : '',
+            event.milestone ? `milestone=${event.milestone}` : '',
+            event.detail,
+          ].filter((value) => Boolean(value)).join(' | '),
+        });
+      }
+
+      if (event.type === 'exit_failed') {
+        logs.push({
+          timestamp: event.timestamp,
+          level: event.success === false ? 'error' : 'warning',
+          message: `[REAL] ${event.baseAsset ?? 'UNKNOWN'} exit failed`,
+          exchange: event.shortExchange ?? event.exchange,
+          detail: [
+            event.reason ? `reason=${event.reason}` : '',
+            event.detail,
+          ].filter((value) => Boolean(value)).join(' | '),
+        });
+      }
+    }
+
+    return logs;
   }
 
   private async rollbackSingleEntry(
@@ -2455,15 +2735,29 @@ class ServerScheduler {
   }
 
   private log(level: string, message: string) {
-    const timestamp = formatTimestampYmdHmsMs(Date.now());
-    const line = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
+    const timestamp = Date.now();
+    const timestampText = formatTimestampYmdHmsMs(timestamp);
+    const normalizedLevel = level === 'error'
+      ? 'error'
+      : level === 'warning'
+        ? 'warning'
+        : 'info';
+    const line = `[${timestampText}] [${level.toUpperCase()}] ${message}`;
     console.log(`[ServerScheduler] ${line}`);
 
     try {
       if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-      appendFileSync(LOG_FILE, line + '\n');
+      appendFileSync(LOG_FILE, `[${timestampText}] [${level.toUpperCase()}] ${message}\n`);
     } catch {
       // ignore log persistence errors
+    }
+
+    if (normalizedLevel === 'error' || normalizedLevel === 'warning') {
+      appendLogs([{
+        timestamp,
+        level: normalizedLevel,
+        message: `[REAL] ${message}`,
+      }]);
     }
   }
 

@@ -8,6 +8,53 @@ import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
 const PAGE_SIZE = 15;
 const LEVEL_FILTERS: (LogLevel | 'all')[] = ['all', 'info', 'success', 'warning', 'error'];
+const INVALID_CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]+/g;
+const NON_ASCII_RE = /[^\u0000-\u007F]/;
+const HIGH_BYTE_RE = /[\u0080-\u00FF]/;
+const KOREAN_RE = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7A3]/;
+
+function hasUtf8MojibakeSymptoms(value: string): boolean {
+  if (!HIGH_BYTE_RE.test(value)) return false;
+  return !KOREAN_RE.test(value)
+    || /�/.test(value)
+    || /(Ã|â|ä|å|æ|ç|ë|î|ï|ô|ø|ú|û|ü|ÿ|Â|©|†|ƒ)/.test(value);
+}
+
+function tryRepairUtf8Mojibake(value: string): string {
+  if (!value) return '';
+  if (!NON_ASCII_RE.test(value)) return value;
+  if (!hasUtf8MojibakeSymptoms(value)) return value;
+
+  try {
+    let current = value;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const bytes = Uint8Array.from(current, (char) => char.charCodeAt(0) & 0xFF);
+      const decoded = new TextDecoder('utf-8').decode(bytes);
+      if (!decoded || decoded.includes('\uFFFD')) break;
+      const decodedKorCount = (decoded.match(KOREAN_RE) ?? []).length;
+      const currentKorCount = (current.match(KOREAN_RE) ?? []).length;
+      const decodedHighByteCount = (decoded.match(HIGH_BYTE_RE) ?? []).length;
+      const currentHighByteCount = (current.match(HIGH_BYTE_RE) ?? []).length;
+      const improved = decodedKorCount > currentKorCount || decodedHighByteCount < currentHighByteCount;
+      if (!improved) break;
+      current = decoded;
+    }
+    return current;
+  } catch {
+    return value;
+  }
+}
+
+function sanitizeLogText(value: string): string {
+  const repaired = tryRepairUtf8Mojibake(String(value));
+  const normalized = repaired
+    .normalize('NFC')
+    .replace(INVALID_CONTROL_CHARS_RE, '')
+    .replace(/\u0000/g, '')
+    .replace(/\uFFFD+/g, '')
+    .trim();
+  return normalized || '[로그 텍스트 손상]';
+}
 
 interface ServerLogEntry {
   timestamp: number;
@@ -110,9 +157,11 @@ export default function LogPanel() {
   const handleDownloadCurrentPage = () => {
     const text = entries
       .map((entry) => {
+        const message = sanitizeLogText(entry.message);
+        const detail = entry.detail ? sanitizeLogText(entry.detail) : '';
         const exchangeLabel = entry.exchange ? ` [${entry.exchange.toUpperCase()}]` : '';
-        const detailLabel = entry.detail ? ` | ${entry.detail}` : '';
-        return `[${entry.timestampText ?? formatTimestampYmdHmsMs(entry.timestamp)}] [${entry.level.toUpperCase()}]${exchangeLabel} ${entry.message}${detailLabel}`;
+        const detailLabel = detail ? ` | ${detail}` : '';
+        return `[${entry.timestampText ?? formatTimestampYmdHmsMs(entry.timestamp)}] [${entry.level.toUpperCase()}]${exchangeLabel} ${message}${detailLabel}`;
       })
       .join('\n');
 
@@ -245,9 +294,9 @@ export default function LogPanel() {
                 </span>
               )}
               <div style={{ flex: 1 }}>
-                <span style={{ color: 'var(--color-text)' }}>{entry.message}</span>
+                <span style={{ color: 'var(--color-text)' }}>{sanitizeLogText(entry.message)}</span>
                 {entry.detail && (
-                  <span style={{ color: 'var(--color-text-muted)', marginLeft: 8 }}>| {entry.detail}</span>
+                  <span style={{ color: 'var(--color-text-muted)', marginLeft: 8 }}>| {sanitizeLogText(entry.detail)}</span>
                 )}
               </div>
             </div>

@@ -31,6 +31,8 @@ const EXECUTED_TYPES = new Set([
   'auto_exit',
   'funding',
   'snipe_complete',
+  'guard_block',
+  'schedule_probe',
 ]);
 
 export async function GET(req: NextRequest) {

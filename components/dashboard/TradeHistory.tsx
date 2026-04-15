@@ -8,11 +8,20 @@ import { useFundingStore } from '@/store/fundingStore';
 
 const HISTORY_SCROLL_HEIGHT = 240;
 const PAGE_SIZE = 15;
+const EXECUTED_EVENT_TYPES = new Set([
+  'entry',
+  'snipe_entry',
+  'exit',
+  'snipe_exit',
+  'auto_exit',
+  'snipe_complete',
+]);
+const REASON_EVENT_TYPES = new Set(['guard_block', 'schedule_probe']);
 
 interface TradeEvent {
   timestamp: number;
   timestampText?: string;
-  type: 'entry' | 'snipe_entry' | 'exit' | 'snipe_exit' | 'auto_exit' | 'snipe_complete' | string;
+  type: 'entry' | 'snipe_entry' | 'exit' | 'snipe_exit' | 'auto_exit' | 'snipe_complete' | 'guard_block' | 'schedule_probe' | string;
   simulation: boolean;
   baseAsset: string;
   shortExchange?: string;
@@ -30,7 +39,12 @@ interface TradeEvent {
   entryFee?: number;
   exitFee?: number;
   pricePnl?: number;
+  reason?: string;
+  milestone?: string;
+  analysis?: Record<string, unknown>;
   detail?: string;
+  expectedNetProfit?: number;
+  expectedRoiPercent?: number;
 }
 
 interface HedgePair {
@@ -263,9 +277,9 @@ export default function TradeHistory() {
   const fetchTrades = useCallback(async () => {
     setLoading(true);
     try {
-      const typeQuery = 'type=snipe_entry,snipe_exit,entry,exit,auto_exit,snipe_complete';
+      const typeQuery = 'type=snipe_entry,snipe_exit,entry,exit,auto_exit,snipe_complete,guard_block,schedule_probe';
       const scope = simulationMode ? 'sim_executed' : 'real_executed';
-      const fromQuery = simulationMode && tradesClearedAt > 0 ? `&from=${tradesClearedAt}` : '';
+      const fromQuery = tradesClearedAt > 0 ? `&from=${tradesClearedAt}` : '';
       const res = await fetch(`/api/trades/list?all=true&scope=${scope}&${typeQuery}${fromQuery}`);
       const json = await res.json() as { success?: boolean; events?: TradeEvent[] };
       if (!json.success || !Array.isArray(json.events)) {
@@ -284,7 +298,20 @@ export default function TradeHistory() {
     void fetchTrades();
   }, [fetchTrades, tradesClearedAt, simulationMode]);
 
-  const pairs = useMemo(() => buildPairs(events), [events]);
+  const pairs = useMemo(() => buildPairs(events.filter((event) => EXECUTED_EVENT_TYPES.has(event.type))), [events]);
+  const reasonEvents = useMemo(() => events.filter((event) => REASON_EVENT_TYPES.has(event.type)), [events]);
+  const latestReasonEvents = useMemo(() => reasonEvents.slice(0, 40), [reasonEvents]);
+  const reasonSummary = useMemo(() => {
+    const byReason = new Map<string, number>();
+    for (const event of reasonEvents) {
+      const key = `${event.type}:${event.reason ?? 'unknown'}`;
+      byReason.set(key, (byReason.get(key) ?? 0) + 1);
+    }
+    return Array.from(byReason.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([key, count]) => ({ key, count }));
+  }, [reasonEvents]);
   const closedPairs = pairs.filter((pair) => pair.status === 'closed');
   const totalPnl = closedPairs.reduce((sum, pair) => sum + pair.totalPnl, 0);
   const totalFunding = closedPairs.reduce((sum, pair) => sum + pair.totalFunding, 0);
@@ -298,7 +325,7 @@ export default function TradeHistory() {
     setPage(1);
   }, [pairs.length, tradesClearedAt]);
 
-  if (pairs.length === 0 && !loading) return null;
+  if (pairs.length === 0 && reasonEvents.length === 0 && !loading) return null;
 
   return (
     <div className="glass-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -316,6 +343,7 @@ export default function TradeHistory() {
         <History size={16} color="#f59e0b" />
         <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>{panelTitle}</span>
         <span style={{ fontSize: 11, color: '#64748b' }}>{closedPairs.length}건 완료</span>
+        <span style={{ fontSize: 11, color: '#64748b' }}>{reasonEvents.length} reason</span>
         <span style={{ fontSize: 10, color: '#64748b' }}>{fromIndex}-{toIndex} / {pairs.length}</span>
         {closedPairs.length > 0 && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 4 }}>
@@ -344,6 +372,60 @@ export default function TradeHistory() {
 
       {!collapsed && (
         <>
+          {reasonSummary.length > 0 && (
+            <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>미진행 사유 요약</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {reasonSummary.map((entry) => (
+                  <span
+                    key={entry.key}
+                    style={{
+                      fontSize: 10,
+                      borderRadius: 999,
+                      padding: '2px 8px',
+                      background: 'rgba(59,130,246,0.1)',
+                      color: '#93c5fd',
+                    }}
+                  >
+                    {entry.key} ({entry.count})
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {latestReasonEvents.length > 0 && (
+            <div style={{ padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>최근 미진행 이벤트</div>
+              <div style={{ maxHeight: 180, overflowY: 'auto', fontSize: 11, display: 'grid', gap: 6 }}>
+                {latestReasonEvents.map((event, index) => (
+                  <div
+                    key={`${event.type}-${event.timestamp}-${index}`}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '140px 120px 1fr',
+                      gap: 8,
+                      border: '1px solid rgba(59,130,246,0.2)',
+                      borderRadius: 6,
+                      padding: 8,
+                      background: 'rgba(59,130,246,0.06)',
+                    }}
+                  >
+                    <span style={{ color: '#93c5fd', whiteSpace: 'nowrap' }}>
+                      {formatTimestampYmdHmsMs(event.timestamp)}
+                    </span>
+                    <span style={{ color: '#f59e0b' }}>
+                      {event.type}:{event.reason ?? 'unknown'}
+                    </span>
+                    <span style={{ color: '#cbd5e1', wordBreak: 'break-all' }}>
+                      {event.detail ?? 'no detail'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div style={{ maxHeight: HISTORY_SCROLL_HEIGHT, overflowY: 'auto' }}>
             <div
               style={{

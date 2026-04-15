@@ -12,7 +12,7 @@ import {
   getOpportunityBalanceEqualizationMultiplier,
   type BalanceEqualizationPlan,
 } from './balanceEqualization';
-import { appendTrades, readTrades, type TradeEvent } from './fileLogger';
+import { appendLogs, appendTrades, type FileLogEntry, readTrades, type TradeEvent } from './fileLogger';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import { loadAllServerApiConfigs } from './serverKeyStore';
 import {
@@ -65,7 +65,6 @@ const STATE_FILE = join(DATA_DIR, 'sim-scheduler-state.json');
 const LOOP_INTERVAL_MS = 1_000;
 const RATES_REFRESH_INTERVAL_MS = 3_000;
 const TICK_STATE_PERSIST_INTERVAL_MS = 3_000;
-const MAX_FUNDING_HISTORY = 500;
 const BASE_REVALIDATE_BATCH_SIZE = 3;
 const URGENT_REVALIDATE_BATCH_SIZE = 12;
 const URGENT_REVALIDATE_WINDOW_MS = 15_000;
@@ -84,6 +83,7 @@ const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
 const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
 const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
 const FAST_OPPORTUNITY_SEED_COUNT = 12;
+const MAX_FUNDING_HISTORY = 500;
 const WS_WARM_INTERVAL_MS = 15_000;
 
 const PRE_EXECUTION_PROBE_POINTS = [
@@ -893,7 +893,73 @@ class ServerSimScheduler {
   private recordTrades(events: TradeEvent[]) {
     if (events.length === 0) return;
     appendTrades(events);
+    const logs = this.mapEventsToSchedulerLogs(events);
+    if (logs.length > 0) {
+      appendLogs(logs);
+    }
     this.routeFailureMemory.ingestEvents(events, { simulation: true });
+  }
+
+  private mapEventsToSchedulerLogs(events: TradeEvent[]): FileLogEntry[] {
+    const logs: FileLogEntry[] = [];
+
+    for (const event of events) {
+      const status = (event as { status?: string }).status;
+      if (event.type === 'guard_block') {
+        logs.push({
+          timestamp: event.timestamp,
+          level: 'warning',
+          message: `[SIM] ${event.baseAsset ?? 'UNKNOWN'} entry blocked`,
+          exchange: event.shortExchange ?? event.exchange,
+          detail: [
+            event.reason ? `reason=${event.reason}` : '',
+            event.detail,
+          ].filter(Boolean).join(' | '),
+        });
+        continue;
+      }
+
+      if (event.type === 'error') {
+        logs.push({
+          timestamp: event.timestamp,
+          level: 'error',
+          message: `[SIM] ${event.baseAsset ?? 'UNKNOWN'} execution error`,
+          exchange: event.shortExchange ?? event.exchange,
+          detail: [event.reason, event.detail].filter((value) => Boolean(value)).join(' | '),
+        });
+        continue;
+      }
+
+      if (event.type === 'schedule_probe') {
+        const rejectReasons = Array.isArray(event.analysis?.rejectReasons)
+          ? event.analysis.rejectReasons
+          : [];
+        const shouldLog = status === 'analysis_summary'
+          || status === 'failed'
+          || status === 'canceled'
+          || status === 'rejected'
+          || (status === 'unselected' && rejectReasons.length > 0);
+        if (!shouldLog) continue;
+        if (status === 'analysis_summary' || status === 'failed' || status === 'canceled' || status === 'rejected' || status === 'unselected') {
+          logs.push({
+            timestamp: event.timestamp,
+            level: 'warning',
+            message: `[SIM] ${event.baseAsset ?? 'UNKNOWN'} schedule_probe ${status}`,
+            exchange: event.shortExchange ?? event.exchange,
+            detail: [
+              status === 'failed' ? `reason=${event.reason ?? 'unknown'}` : `reason=${event.reason ?? 'schedule_replanned'}`,
+              event.analysis?.selected !== undefined ? `selected=${event.analysis.selected}` : '',
+              event.analysis?.timeToFundingMs !== undefined ? `ttfMs=${event.analysis.timeToFundingMs}` : '',
+              rejectReasons.length > 0 ? `reject=${rejectReasons.join('|')}` : '',
+              `milestone=${event.milestone ?? 'N/A'}`,
+              event.detail,
+            ].filter((value) => Boolean(value)).join(' | '),
+          });
+        }
+      }
+    }
+
+    return logs;
   }
 
   private pruneFundingUniverseCache() {
@@ -2089,6 +2155,18 @@ class ServerSimScheduler {
         opportunity.longExchange,
       );
       if (this.routeFailureMemory.isBlocked(routeFailureKey, now)) {
+        this.recordTrades([{
+          timestamp: now,
+          type: 'guard_block',
+          simulation: true,
+          baseAsset: opportunity.baseAsset,
+          shortExchange: opportunity.shortExchange,
+          longExchange: opportunity.longExchange,
+          spread: opportunity.spread,
+          spreadPercent: opportunity.spreadPercent,
+          reason: 'route_failure_blocked',
+          detail: `routeFailureKey=${routeFailureKey}`,
+        }]);
         return false;
       }
       if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
@@ -2604,8 +2682,8 @@ class ServerSimScheduler {
 
     if (fundingEvents.length > 0) {
       state.fundingHistory = [...fundingEvents, ...state.fundingHistory]
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, MAX_FUNDING_HISTORY);
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, MAX_FUNDING_HISTORY);
     }
 
     this.setState(state);
@@ -2731,7 +2809,8 @@ class ServerSimScheduler {
         timestamp: Date.now(),
         side: position.side,
       };
-      fundingHistory = [payment, ...fundingHistory].sort((a, b) => b.timestamp - a.timestamp).slice(0, MAX_FUNDING_HISTORY);
+      fundingHistory = [payment, ...fundingHistory].sort((a, b) => b.timestamp - a.timestamp);
+      fundingHistory = fundingHistory.slice(0, MAX_FUNDING_HISTORY);
     }
 
     const returnAmount = position.margin + pricePnl - exitFee;

@@ -14,7 +14,6 @@ const DATA_DIR = getDataDir();
 const SIM_STATE_FILE = join(DATA_DIR, 'sim-state.json');
 const SIM_STATE_BACKUP = join(DATA_DIR, 'sim-state.backup.json');
 const SIM_STATE_TMP = join(DATA_DIR, 'sim-state.tmp.json');
-const MAX_FUNDING_HISTORY = 500;
 
 function ensureDataDir() {
   if (!existsSync(DATA_DIR)) {
@@ -50,8 +49,7 @@ function sanitizeFundingHistory(history: unknown): FundingPayment[] {
         && Number.isFinite(payment.timestamp)
         && (payment.side === 'long' || payment.side === 'short');
     })
-    .sort((a, b) => b.timestamp - a.timestamp)
-    .slice(0, MAX_FUNDING_HISTORY);
+    .sort((a, b) => b.timestamp - a.timestamp);
 }
 
 function sanitizeSimPositions(positions: unknown): SimPosition[] {
