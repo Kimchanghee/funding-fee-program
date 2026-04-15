@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getDataDir } from './dataDir';
+import { formatDateYmd } from './timeFormat';
 
 function getLegacyDataDir(): string | null {
   const base = process.env.LOCALAPPDATA || process.env.APPDATA;
@@ -60,31 +61,13 @@ function ensureDir(dir: string) {
 }
 
 function getDateStr(ts?: number): string {
-  const d = ts ? new Date(ts) : new Date();
-  return d.toISOString().slice(0, 10);
+  const now = ts ?? Date.now();
+  const formatted = formatDateYmd(now, { timeZone: 'Asia/Seoul' });
+  return formatted === '-' ? new Date(now).toISOString().slice(0, 10) : formatted;
 }
 
-const LOG_RETENTION_DAYS = 7;
-
-function pruneOldFiles(dir: string): void {
-  try {
-    ensureDir(dir);
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - LOG_RETENTION_DAYS);
-    const cutoffStr = cutoffDate.toISOString().slice(0, 10);
-
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
-    for (const f of files) {
-      const dateStr = f.replace('.jsonl', '');
-      if (dateStr < cutoffStr) {
-        fs.unlinkSync(path.join(dir, f));
-        console.log(`[fileLogger] pruned old file: ${f}`);
-      }
-    }
-  } catch (err) {
-    console.error('[fileLogger] pruneOldFiles failed:', err);
-  }
-}
+// Intentionally no automatic retention pruning.
+// Historical logs/trades/receipts must remain accumulated unless explicitly cleared.
 
 export interface FileLogEntry {
   timestamp: number;
@@ -204,23 +187,15 @@ function appendEventsToDailyFile(events: TradeEvent[], dir: string, dateStr: str
   fs.appendFileSync(filePath, lines, 'utf-8');
 }
 
-let lastPruneDate = '';
-
 export function appendLogs(entries: FileLogEntry[]): void {
   if (entries.length === 0) return;
   try {
     const logsDir = getLogsDir();
-    const tradesDir = getTradesDir();
     ensureDir(logsDir);
     const dateStr = getDateStr();
     const filePath = path.join(logsDir, `${dateStr}.jsonl`);
     const lines = entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
     fs.appendFileSync(filePath, lines, 'utf-8');
-    if (dateStr !== lastPruneDate) {
-      lastPruneDate = dateStr;
-      pruneOldFiles(logsDir);
-      pruneOldFiles(tradesDir);
-    }
   } catch (err) {
     console.error('[fileLogger] appendLogs failed:', err);
   }
@@ -229,7 +204,6 @@ export function appendLogs(entries: FileLogEntry[]): void {
 export function appendTrades(events: TradeEvent[]): void {
   if (events.length === 0) return;
   try {
-    const logsDir = getLogsDir();
     const tradesDir = getTradesDir();
     const dateStr = getDateStr();
     const normalizedEvents = events.map(normalizeTradeEvent);
@@ -259,16 +233,6 @@ export function appendTrades(events: TradeEvent[]): void {
       getFundingReceiptsDir('real'),
       dateStr,
     );
-
-    if (dateStr !== lastPruneDate) {
-      lastPruneDate = dateStr;
-      pruneOldFiles(logsDir);
-      pruneOldFiles(tradesDir);
-      pruneOldFiles(getExecutedTradesDir('sim'));
-      pruneOldFiles(getExecutedTradesDir('real'));
-      pruneOldFiles(getFundingReceiptsDir('sim'));
-      pruneOldFiles(getFundingReceiptsDir('real'));
-    }
   } catch (err) {
     console.error('[fileLogger] appendTrades failed:', err);
   }

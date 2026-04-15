@@ -49,6 +49,7 @@ import {
 } from './executionState';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import { loadAllServerApiConfigs } from './serverKeyStore';
+import { formatTimestampYmdHmsMs } from './timeFormat';
 import {
   makeServerPositionKey,
   removeServerPositionMeta,
@@ -605,7 +606,7 @@ class ServerScheduler {
         this.startPolling();
         this.log(
           'info',
-          `scheduler auto-resumed | startedAt=${this.startedAt ? new Date(this.startedAt).toISOString() : 'unknown'} openPositions=${this.activePositions.size} scheduled=${this.scheduledEntries.size}`,
+          `scheduler auto-resumed | startedAt=${this.startedAt ? formatTimestampYmdHmsMs(this.startedAt) : 'unknown'} openPositions=${this.activePositions.size} scheduled=${this.scheduledEntries.size}`,
         );
       } else if (this.activePositions.size > 0 || this.scheduledEntries.size > 0) {
         this.log(
@@ -2454,7 +2455,7 @@ class ServerScheduler {
   }
 
   private log(level: string, message: string) {
-    const timestamp = new Date().toISOString();
+    const timestamp = formatTimestampYmdHmsMs(Date.now());
     const line = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
     console.log(`[ServerScheduler] ${line}`);
 

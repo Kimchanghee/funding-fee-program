@@ -27,8 +27,31 @@ let lastDataProbeAt = 0;
 let lastRestartAt = 0;
 const startedAt = Date.now();
 
+function formatTimestamp() {
+  const date = new Date();
+  const intl = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = intl.formatToParts(date);
+  const year = parts.find((part) => part.type === 'year')?.value ?? '0000';
+  const month = parts.find((part) => part.type === 'month')?.value ?? '00';
+  const day = parts.find((part) => part.type === 'day')?.value ?? '00';
+  const hour = parts.find((part) => part.type === 'hour')?.value ?? '00';
+  const minute = parts.find((part) => part.type === 'minute')?.value ?? '00';
+  const second = parts.find((part) => part.type === 'second')?.value ?? '00';
+  const millisecond = String(date.getMilliseconds()).padStart(3, '0');
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}.${millisecond}`;
+}
+
 function log(message) {
-  process.stdout.write(`[watchdog] ${new Date().toISOString()} ${message}\n`);
+  process.stdout.write(`[watchdog] ${formatTimestamp()} ${message}\n`);
 }
 
 async function fetchJson(pathname) {
