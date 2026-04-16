@@ -118,6 +118,17 @@ const ANALYTICS_NEAR_DUE_INTERVAL_MS = 60 * 1000;
 const ANALYTICS_NEAR_DUE_WINDOW_MS = 30 * 60 * 1000;
 const ANALYTICS_MAX_CANDIDATES = 200;
 
+function isSingleCycleFundingRolloverShift(
+  shiftMs: number,
+  fundingIntervalMs: number,
+  toleranceMs: number,
+): boolean {
+  if (!Number.isFinite(shiftMs) || !Number.isFinite(fundingIntervalMs) || fundingIntervalMs <= 0) {
+    return false;
+  }
+  return Math.abs(shiftMs - fundingIntervalMs) <= toleranceMs;
+}
+
 function sumDepthUsd(levels: number[][] | undefined, depth: number): number {
   if (!levels?.length || depth <= 0) return 0;
   return levels.slice(0, depth).reduce((sum, [price, qty]) => {
@@ -3073,7 +3084,24 @@ class ServerSimScheduler {
 
       const shortFundingShiftMs = Math.abs(shortLiveRate.nextFundingTime - targetFundingTime);
       const longFundingShiftMs = Math.abs(longLiveRate.nextFundingTime - targetFundingTime);
-      if (shortFundingShiftMs > LIVE_FUNDING_TIME_DRIFT_MS || longFundingShiftMs > LIVE_FUNDING_TIME_DRIFT_MS) {
+      const fundingIntervalMs = Math.max(60_000, opportunity.fundingIntervalMs || 0);
+      const hasAnchoredLeg = (
+        shortFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS
+        || longFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS
+      );
+      const shortWithinWindow = shortFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS
+        || (hasAnchoredLeg && isSingleCycleFundingRolloverShift(
+          shortFundingShiftMs,
+          fundingIntervalMs,
+          LIVE_FUNDING_TIME_DRIFT_MS,
+        ));
+      const longWithinWindow = longFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS
+        || (hasAnchoredLeg && isSingleCycleFundingRolloverShift(
+          longFundingShiftMs,
+          fundingIntervalMs,
+          LIVE_FUNDING_TIME_DRIFT_MS,
+        ));
+      if (!shortWithinWindow || !longWithinWindow) {
         return {
           success: false,
           error: `funding window shift: short=${shortFundingShiftMs}ms long=${longFundingShiftMs}ms`,
@@ -3083,6 +3111,10 @@ class ServerSimScheduler {
               shortFundingShiftMs,
               longFundingShiftMs,
               liveFundingTimeDriftMs: LIVE_FUNDING_TIME_DRIFT_MS,
+              fundingIntervalMs,
+              hasAnchoredLeg,
+              shortWithinWindow,
+              longWithinWindow,
             },
           }),
         };
@@ -3122,15 +3154,22 @@ class ServerSimScheduler {
       };
     }
 
-    if (shortFeeInfo.source === 'preset' || longFeeInfo.source === 'preset') {
+    if (
+      !Number.isFinite(shortFeeInfo.fee)
+      || !Number.isFinite(longFeeInfo.fee)
+      || shortFeeInfo.fee < 0
+      || longFeeInfo.fee < 0
+    ) {
       return {
         success: false,
-        error: `runtime fee unavailable: ${opportunity.shortExchange}=${shortFeeInfo.source} ${opportunity.longExchange}=${longFeeInfo.source}`,
+        error: `runtime fee unavailable: ${opportunity.shortExchange}=${shortFeeInfo.fee}(${shortFeeInfo.source}) ${opportunity.longExchange}=${longFeeInfo.fee}(${longFeeInfo.source})`,
         analysis: buildFailureAnalysis({
           attemptedNotionalUSDT: baseNotional,
           extra: {
             shortFeeSource: shortFeeInfo.source,
             longFeeSource: longFeeInfo.source,
+            shortFeeRate: shortFeeInfo.fee,
+            longFeeRate: longFeeInfo.fee,
           },
         }),
       };
@@ -3560,4 +3599,3 @@ class ServerSimScheduler {
 export function getServerSimScheduler() {
   return ServerSimScheduler.getInstance();
 }
-
