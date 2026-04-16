@@ -17,6 +17,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: '3000',
+        SITE_PASSWORD: process.env.SITE_PASSWORD || '9788',
       },
     },
     {

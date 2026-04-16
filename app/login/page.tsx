@@ -25,7 +25,11 @@ export default function LoginPage() {
         router.push('/');
         router.refresh();
       } else {
-        setError('비밀번호가 올바르지 않습니다.');
+        if (res.status === 500) {
+          setError('서버 설정 오류가 발생했습니다. 관리자에게 문의해주세요.');
+        } else {
+          setError('비밀번호가 올바르지 않습니다.');
+        }
         setPassword('');
       }
     } catch {
