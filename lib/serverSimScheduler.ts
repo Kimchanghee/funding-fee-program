@@ -2166,18 +2166,6 @@ class ServerSimScheduler {
         opportunity.longExchange,
       );
       if (this.routeFailureMemory.isBlocked(routeFailureKey, now)) {
-        this.recordTrades([{
-          timestamp: now,
-          type: 'guard_block',
-          simulation: true,
-          baseAsset: opportunity.baseAsset,
-          shortExchange: opportunity.shortExchange,
-          longExchange: opportunity.longExchange,
-          spread: opportunity.spread,
-          spreadPercent: opportunity.spreadPercent,
-          reason: 'route_failure_blocked',
-          detail: `routeFailureKey=${routeFailureKey}`,
-        }]);
         return false;
       }
       if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
@@ -2314,7 +2302,14 @@ class ServerSimScheduler {
           || latestById.shortSymbol !== entry.opportunity.shortSymbol
           || latestById.longSymbol !== entry.opportunity.longSymbol
         );
-      const primaryOpportunity = isRouteOverridden
+      const scheduledFundingTime = entry.opportunity.nextFundingTime;
+      const scheduledIntervalMs = entry.opportunity.fundingIntervalMs && entry.opportunity.fundingIntervalMs > 0
+        ? entry.opportunity.fundingIntervalMs
+        : 8 * 3600000;
+      const latestCycleAdvanced = !!latestById
+        && Number.isFinite(latestById.nextFundingTime)
+        && latestById.nextFundingTime - scheduledFundingTime >= scheduledIntervalMs / 2;
+      const primaryOpportunity = isRouteOverridden || latestCycleAdvanced
         ? entry.opportunity
         : (latestById ?? entry.opportunity);
       if (!probeState.executeCaptured) {
@@ -2334,7 +2329,7 @@ class ServerSimScheduler {
         this.scheduleProbeStates.set(probeState.probeId, probeState);
       }
 
-      const primaryResult = await this.executeOpportunity(primaryOpportunity, entry.investmentUSDT, true, entry.targetTime);
+      const primaryResult = await this.executeOpportunity(primaryOpportunity, entry.investmentUSDT, true, scheduledFundingTime);
       if (primaryResult.success) {
         const executedAt = Date.now();
         if (Number.isFinite(primaryResult.shortSlippagePercent)) {
@@ -2376,7 +2371,7 @@ class ServerSimScheduler {
 
       // 筌띾뜆?筌?筌욊쑴??筌욊낯?????뽮쉭揶쎛 ??쇱춿??덈뮉 野껋럩??몴?????쑵鍮?獄쏆꼶? 獄쎻뫚堉????甕?????뺣즲??뺣뼄.
       const flipped = flipOpportunityDirection(primaryOpportunity);
-      const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true, entry.targetTime);
+      const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true, scheduledFundingTime);
       if (flippedResult.success) {
         const executedAt = Date.now();
         if (Number.isFinite(flippedResult.shortSlippagePercent)) {
@@ -3084,23 +3079,21 @@ class ServerSimScheduler {
 
       const shortFundingShiftMs = Math.abs(shortLiveRate.nextFundingTime - targetFundingTime);
       const longFundingShiftMs = Math.abs(longLiveRate.nextFundingTime - targetFundingTime);
-      const fundingIntervalMs = Math.max(60_000, opportunity.fundingIntervalMs || 0);
-      const hasAnchoredLeg = (
-        shortFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS
-        || longFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS
+      const fundingIntervalMs = opportunity.fundingIntervalMs && opportunity.fundingIntervalMs > 0
+        ? opportunity.fundingIntervalMs
+        : 8 * 3600000;
+      const shortIsRollover = isSingleCycleFundingRolloverShift(
+        shortFundingShiftMs,
+        fundingIntervalMs,
+        LIVE_FUNDING_TIME_DRIFT_MS,
       );
-      const shortWithinWindow = shortFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS
-        || (hasAnchoredLeg && isSingleCycleFundingRolloverShift(
-          shortFundingShiftMs,
-          fundingIntervalMs,
-          LIVE_FUNDING_TIME_DRIFT_MS,
-        ));
-      const longWithinWindow = longFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS
-        || (hasAnchoredLeg && isSingleCycleFundingRolloverShift(
-          longFundingShiftMs,
-          fundingIntervalMs,
-          LIVE_FUNDING_TIME_DRIFT_MS,
-        ));
+      const longIsRollover = isSingleCycleFundingRolloverShift(
+        longFundingShiftMs,
+        fundingIntervalMs,
+        LIVE_FUNDING_TIME_DRIFT_MS,
+      );
+      const shortWithinWindow = shortFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS || shortIsRollover;
+      const longWithinWindow = longFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS || longIsRollover;
       if (!shortWithinWindow || !longWithinWindow) {
         return {
           success: false,
@@ -3112,7 +3105,8 @@ class ServerSimScheduler {
               longFundingShiftMs,
               liveFundingTimeDriftMs: LIVE_FUNDING_TIME_DRIFT_MS,
               fundingIntervalMs,
-              hasAnchoredLeg,
+              shortIsRollover,
+              longIsRollover,
               shortWithinWindow,
               longWithinWindow,
             },
@@ -3412,7 +3406,10 @@ class ServerSimScheduler {
         notional, shortRateForDecision, longRateForDecision,
         shortDrift, longDrift, roundTripFeeDec, entryImpactDec, entryImpactDec,
       );
-      if (!ev.passesMinProfit || !ev.passesEVRatio) {
+      // Execute-time gate: scheduling already applied full EV filter (passesMinProfit+passesEVRatio).
+      // Here we only abort on actual expected loss to avoid rejecting marginally-positive trades
+      // whose costs moved after scheduling.
+      if (ev.expectedNetUSD <= 0) {
         return {
           success: false,
           error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,

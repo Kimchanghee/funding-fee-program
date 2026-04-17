@@ -1,8 +1,8 @@
 import type { TradeEvent } from './fileLogger';
 
-const DEFAULT_WINDOW_MS = 90 * 60 * 1000;
-const MIN_BLOCK_MS = 60 * 1000;
-const MAX_BLOCK_MS = 45 * 60 * 1000;
+const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
+const MIN_BLOCK_MS = 30 * 1000;
+const MAX_BLOCK_MS = 15 * 60 * 1000;
 
 interface RouteFailureState {
   timestamps: number[];
@@ -68,6 +68,7 @@ export class RouteFailureMemory {
       if (!routeKey) continue;
 
       if (event.type === 'guard_block') {
+        if (normalizeReason(event.reason).includes('route_failure_blocked')) continue;
         this.recordFailure(routeKey, event.reason, event.timestamp);
         continue;
       }
