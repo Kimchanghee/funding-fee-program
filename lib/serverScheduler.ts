@@ -616,12 +616,6 @@ class ServerScheduler {
       this.startedAt = saved.startedAt ?? null;
       this.stats = saved.stats ?? this.stats;
       this.lastPollTime = saved.lastPollTime ?? 0;
-      // Real scheduler always boots in STOP mode for safety — never auto-resume live trading
-      // after a restart. Operator must explicitly call /api/scheduler action=start. Existing
-      // positions/scheduled entries are preserved in memory so the operator can resume or
-      // reconcile them manually.
-      this.active = false;
-
       for (const entry of saved.scheduledEntries ?? []) {
         const opportunityId = entry.opportunityId ?? getOpportunityId(entry.opportunity);
         this.scheduledEntries.set(opportunityId, {
@@ -641,18 +635,36 @@ class ServerScheduler {
         });
       }
 
-      if (saved.active) {
+      // Real scheduler never auto-resumes entry-polling on boot — operator must explicitly
+      // start via /api/scheduler action=start. Exception: when open positions exist, we
+      // restore close timers only (no entry polling) so positions don't sit orphaned on
+      // exchanges waiting for manual intervention.
+      const hasOpenPositions = this.activePositions.size > 0;
+      if (hasOpenPositions) {
+        this.active = true;
+        for (const [opportunityId, pos] of this.activePositions) {
+          if (pos.closeTimer) clearTimeout(pos.closeTimer);
+          pos.closeTimer = this.scheduleCloseTimer(opportunityId, pos.closeAt);
+        }
         this.log(
           'warning',
-          `scheduler NOT auto-resumed (real mode boots in stop) | saved=active openPositions=${this.activePositions.size} scheduled=${this.scheduledEntries.size}`,
+          `scheduler auto-resumed CLOSE-ONLY (entry-polling not started) | openPositions=${this.activePositions.size} scheduled=${this.scheduledEntries.size} savedActive=${!!saved.active}`,
         );
-      } else if (this.activePositions.size > 0 || this.scheduledEntries.size > 0) {
-        this.log(
-          'info',
-          `scheduler state loaded without auto-start | openPositions=${this.activePositions.size} scheduled=${this.scheduledEntries.size}`,
-        );
+      } else {
+        this.active = false;
+        if (saved.active) {
+          this.log(
+            'warning',
+            `scheduler NOT auto-resumed (real mode boots in stop) | saved=active scheduled=${this.scheduledEntries.size}`,
+          );
+        } else if (this.scheduledEntries.size > 0) {
+          this.log(
+            'info',
+            `scheduler state loaded without auto-start | scheduled=${this.scheduledEntries.size}`,
+          );
+        }
       }
-      // Persist the forced-stop so downstream readers (status endpoint, UI) see active=false.
+      // Persist whatever the new active flag is so status endpoint/UI see it immediately.
       this.saveState();
     } catch (err) {
       this.log('error', `failed to load scheduler state: ${(err as Error).message}`);
