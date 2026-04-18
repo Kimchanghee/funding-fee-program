@@ -1,15 +1,29 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { X, Eye, EyeOff, CheckCircle, Loader, Key } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_NAMES, EXCHANGE_COLORS, OPERABLE_EXCHANGES, type ExchangeId } from '@/lib/types';
 import { hasRequiredApiCredentials, requiresPassphrase } from '@/lib/apiCredentials';
 
 export default function ApiPanel() {
-  const { apiConfigs, setApiConfig, removeApiConfig, testConnection, setShowApiPanel, refreshBalances } = useFundingStore();
-  const [activeTab, setActiveTab] = useState<ExchangeId>('binance');
-  const [form, setForm] = useState({ apiKey: '', secret: '', passphrase: '' });
+  const { apiConfigs, setApiConfig, removeApiConfig, testConnection, setShowApiPanel, refreshBalances, apiPanelInitialTab } = useFundingStore();
+  const [activeTab, setActiveTab] = useState<ExchangeId>(apiPanelInitialTab ?? 'binance');
+  const [form, setForm] = useState(() => {
+    const initial = apiPanelInitialTab ?? 'binance';
+    const cfg = apiConfigs[initial];
+    return { apiKey: cfg?.apiKey || '', secret: cfg?.secret || '', passphrase: cfg?.passphrase || '' };
+  });
+
+  useEffect(() => {
+    if (apiPanelInitialTab && apiPanelInitialTab !== activeTab) {
+      setActiveTab(apiPanelInitialTab);
+      const cfg = apiConfigs[apiPanelInitialTab];
+      setForm({ apiKey: cfg?.apiKey || '', secret: cfg?.secret || '', passphrase: cfg?.passphrase || '' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiPanelInitialTab]);
+
   const [showSecret, setShowSecret] = useState(false);
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [testing, setTesting] = useState(false);

@@ -130,19 +130,33 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
 
 /** 실거래 모드 거래소 카드 */
 function RealCard({ exchange }: { exchange: ExchangeId }) {
-  const { balances, apiConfigs } = useFundingStore();
+  const { balances, apiConfigs, openApiPanelFor } = useFundingStore();
   const color = EXCHANGE_COLORS[exchange];
   const balance = balances[exchange];
   const hasConfig = !!apiConfigs[exchange];
   const status = !hasConfig ? 'disconnected' : balance?.status ?? 'disconnected';
+  const isClickableToConfigure = !hasConfig;
 
   return (
-    <div className="glass-card" style={{
-      minWidth: 200, padding: '16px 20px',
-      borderColor: status === 'connected' ? `${color}44` : 'var(--color-border)',
-      background: status === 'connected' ? `linear-gradient(135deg, ${color}0a, var(--bg-card))` : 'var(--bg-card)',
-      flexShrink: 0,
-    }}>
+    <div
+      className="glass-card"
+      onClick={isClickableToConfigure ? () => openApiPanelFor(exchange) : undefined}
+      role={isClickableToConfigure ? 'button' : undefined}
+      tabIndex={isClickableToConfigure ? 0 : undefined}
+      onKeyDown={isClickableToConfigure ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openApiPanelFor(exchange);
+        }
+      } : undefined}
+      title={isClickableToConfigure ? `${EXCHANGE_NAMES[exchange]} API 키 설정하기` : undefined}
+      style={{
+        minWidth: 200, padding: '16px 20px',
+        borderColor: status === 'connected' ? `${color}44` : 'var(--color-border)',
+        background: status === 'connected' ? `linear-gradient(135deg, ${color}0a, var(--bg-card))` : 'var(--bg-card)',
+        flexShrink: 0,
+        cursor: isClickableToConfigure ? 'pointer' : 'default',
+      }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <span style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: '0.08em', padding: '2px 8px', borderRadius: 6, background: `${color}22` }}>
           {EXCHANGE_NAMES[exchange]}
@@ -168,10 +182,15 @@ function RealCard({ exchange }: { exchange: ExchangeId }) {
         </>
       ) : (
         <div style={{ padding: '16px 0', textAlign: 'center' }}>
-          <Wallet size={20} color="var(--color-text-muted)" style={{ margin: '0 auto 8px' }} />
-          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-            {hasConfig ? '잔고 로딩 중...' : 'API 키 미설정'}
+          <Wallet size={20} color={hasConfig ? 'var(--color-text-muted)' : color} style={{ margin: '0 auto 8px' }} />
+          <div style={{ fontSize: 12, color: hasConfig ? 'var(--color-text-muted)' : color, fontWeight: hasConfig ? 400 : 700 }}>
+            {hasConfig ? '잔고 로딩 중...' : '+ API 키 설정하기'}
           </div>
+          {!hasConfig && (
+            <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 4 }}>
+              클릭해서 바로 입력
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -83,6 +83,7 @@ export default function SettingsPage() {
     testConnection,
     showApiPanel,
     setShowApiPanel,
+    openApiPanelFor,
     refreshBalances,
     refreshRates,
     isLoadingRates,
@@ -547,6 +548,16 @@ export default function SettingsPage() {
                 return (
                   <div
                     key={ex}
+                    onClick={connected ? undefined : () => openApiPanelFor(ex)}
+                    role={connected ? undefined : 'button'}
+                    tabIndex={connected ? undefined : 0}
+                    onKeyDown={connected ? undefined : (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openApiPanelFor(ex);
+                      }
+                    }}
+                    title={connected ? undefined : `${EXCHANGE_NAMES[ex]} API 키 입력하기`}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -555,6 +566,7 @@ export default function SettingsPage() {
                       borderRadius: 8,
                       background: connected ? `${color}0a` : 'var(--bg-accent)',
                       border: `1px solid ${connected ? `${color}33` : 'var(--color-border)'}`,
+                      cursor: connected ? 'default' : 'pointer',
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -562,16 +574,24 @@ export default function SettingsPage() {
                       <span style={{ fontSize: 13, fontWeight: 700, color }}>{EXCHANGE_NAMES[ex]}</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 11, color: connected ? '#10b981' : 'var(--color-text-muted)' }}>
-                        {connected ? 'API 설정됨' : '미설정'}
+                      <span style={{ fontSize: 11, color: connected ? '#10b981' : color, fontWeight: connected ? 400 : 700 }}>
+                        {connected ? 'API 설정됨' : '+ 클릭해서 입력'}
                       </span>
-                      {connected && (
+                      {connected ? (
                         <button
                           className="btn btn-ghost"
                           style={{ padding: '3px 8px', fontSize: 10 }}
-                          onClick={() => testConnection(ex)}
+                          onClick={(e) => { e.stopPropagation(); testConnection(ex); }}
                         >
                           테스트
+                        </button>
+                      ) : (
+                        <button
+                          className="btn btn-ghost"
+                          style={{ padding: '3px 8px', fontSize: 10 }}
+                          onClick={(e) => { e.stopPropagation(); openApiPanelFor(ex); }}
+                        >
+                          입력
                         </button>
                       )}
                     </div>

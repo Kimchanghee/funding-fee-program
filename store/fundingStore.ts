@@ -767,6 +767,7 @@ interface FundingState {
 
   // UI state
   showApiPanel: boolean;
+  apiPanelInitialTab: ExchangeId | null;
   showStrategyPanel: boolean;
   rateFilter: string;
   exchangeFilter: ExchangeId[];
@@ -830,6 +831,7 @@ interface FundingState {
 
   toggleExchange: (exchange: ExchangeId) => void;
   setShowApiPanel: (v: boolean) => void;
+  openApiPanelFor: (exchange: ExchangeId) => void;
   setShowStrategyPanel: (v: boolean) => void;
   setRateFilter: (v: string) => void;
   setExchangeFilter: (v: ExchangeId[]) => void;
@@ -1228,6 +1230,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   exchangeFetchStatus: {},
   exchangeFetchErrors: {},
   showApiPanel: false,
+  apiPanelInitialTab: null,
   showStrategyPanel: false,
   rateFilter: '',
   exchangeFilter: [],
@@ -3456,7 +3459,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   // ── UI ────────────────────────────────────────
-  setShowApiPanel: (v) => set({ showApiPanel: v }),
+  setShowApiPanel: (v) => set({ showApiPanel: v, ...(v ? {} : { apiPanelInitialTab: null }) }),
+  openApiPanelFor: (exchange) => set({ showApiPanel: true, apiPanelInitialTab: exchange }),
   setShowStrategyPanel: (v) => set({ showStrategyPanel: v }),
   setRateFilter: (v) => set({ rateFilter: v }),
   setExchangeFilter: (v) => set({ exchangeFilter: v }),
@@ -4251,7 +4255,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               } catch (err) {
                 get().addLog(
                   'warning',
-                  `[?ㅻ굹?댄븨-?룹쭠][${modeLabel}] ${asset} ????섎졊 ?뺤씤 ?ъ떆??${attempt + 1} ?ㅽ뙣`,
+                  `[스나이핑-차감][${modeLabel}] ${asset} 거래내역 확인 재시도 ${attempt + 1} 실패`,
                   undefined,
                   (err as Error).message,
                 );
@@ -4406,7 +4410,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     let apiSuccessCount = 0;
 
     const fallbackHistory = await loadFundingHistoryFromTradeLog(false).catch((err) => {
-      get().addLog('warning', '[????섎졊] 嫄곕옒 濡쒓렇 fallback 濡쒕뱶 ?ㅽ뙣', undefined, (err as Error).message);
+      get().addLog('warning', '[거래내역] 거래 로그 fallback 로드 실패', undefined, (err as Error).message);
       return [] as FundingPayment[];
     });
 
@@ -4433,11 +4437,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const mergedHistory = mergeFundingHistory(apiHistory, fallbackHistory);
 
     if (failures.length > 0) {
-      get().addLog('warning', '[????섎졊] ?쇰? 嫄곕옒??議고쉶 ?ㅽ뙣', undefined, failures.join(' | '));
+      get().addLog('warning', '[거래내역] 일부 거래소 조회 실패', undefined, failures.join(' | '));
     }
 
     if (apiSuccessCount === 0 && fallbackHistory.length > 0) {
-      get().addLog('info', `[????섎졊] 嫄곕옒 濡쒓렇 fallback?쇰줈 ${fallbackHistory.length}嫄?蹂듭썝`);
+      get().addLog('info', `[거래내역] 거래 로그 fallback으로 ${fallbackHistory.length}건 복원`);
     }
 
     if (mergedHistory.length > 0) {
@@ -4448,7 +4452,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     if (previousHistory.length > 0 && failures.length > 0) {
       set({ isLoadingHistory: false });
-      get().addLog('warning', '[????섎졊] ?ㅽ뙣濡?湲곗〈 ?댁뿭??留ㅼ?');
+      get().addLog('warning', '[거래내역] 실패로 기존 이력을 유지');
       return;
     }
 
