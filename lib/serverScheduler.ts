@@ -280,8 +280,10 @@ class ServerScheduler {
   private balanceSnapshot: Partial<Record<ExchangeId, Balance>> = {};
   private lastBalanceRefreshAt = 0;
   private lastBalanceEqualizationPlan: BalanceEqualizationPlan | null = null;
+  private balancePollInterval: ReturnType<typeof setInterval> | null = null;
+  private balancePolling = false;
 
-  private static BALANCE_REFRESH_INTERVAL_MS = 60_000;
+  private static BALANCE_REFRESH_INTERVAL_MS = 2_000;
 
   static getInstance(): ServerScheduler {
     if (!ServerScheduler.instance) {
@@ -293,6 +295,33 @@ class ServerScheduler {
   private constructor() {
     this.loadPersistedState();
     this.bootstrapRouteFailureMemory();
+    this.startBalancePolling();
+  }
+
+  /**
+   * Continuous 2-second balance polling, independent of scheduler active/stop state.
+   * Keeps real-mode live balance fresh in the UI even when the scheduler is stopped.
+   */
+  private startBalancePolling() {
+    if (this.balancePollInterval) return;
+    const tick = async () => {
+      if (this.balancePolling) return;
+      this.balancePolling = true;
+      try {
+        const apiConfigs = loadAllServerApiConfigs();
+        const hasAnyKey = Object.values(apiConfigs).some((c) => !!c?.apiKey);
+        if (!hasAnyKey) return;
+        // Force refresh by resetting the gate (maybeRefreshBalanceSnapshot checks interval).
+        this.lastBalanceRefreshAt = 0;
+        await this.maybeRefreshBalanceSnapshot(apiConfigs);
+      } catch {
+        // Swallow; next tick will retry.
+      } finally {
+        this.balancePolling = false;
+      }
+    };
+    this.balancePollInterval = setInterval(() => void tick(), ServerScheduler.BALANCE_REFRESH_INTERVAL_MS);
+    void tick();
   }
 
   private bootstrapRouteFailureMemory() {
@@ -587,7 +616,11 @@ class ServerScheduler {
       this.startedAt = saved.startedAt ?? null;
       this.stats = saved.stats ?? this.stats;
       this.lastPollTime = saved.lastPollTime ?? 0;
-      this.active = !!saved.active;
+      // Real scheduler always boots in STOP mode for safety — never auto-resume live trading
+      // after a restart. Operator must explicitly call /api/scheduler action=start. Existing
+      // positions/scheduled entries are preserved in memory so the operator can resume or
+      // reconcile them manually.
+      this.active = false;
 
       for (const entry of saved.scheduledEntries ?? []) {
         const opportunityId = entry.opportunityId ?? getOpportunityId(entry.opportunity);
@@ -608,12 +641,10 @@ class ServerScheduler {
         });
       }
 
-      if (this.active) {
-        this.restoreTimers();
-        this.startPolling();
+      if (saved.active) {
         this.log(
-          'info',
-          `scheduler auto-resumed | startedAt=${this.startedAt ? formatTimestampYmdHmsMs(this.startedAt) : 'unknown'} openPositions=${this.activePositions.size} scheduled=${this.scheduledEntries.size}`,
+          'warning',
+          `scheduler NOT auto-resumed (real mode boots in stop) | saved=active openPositions=${this.activePositions.size} scheduled=${this.scheduledEntries.size}`,
         );
       } else if (this.activePositions.size > 0 || this.scheduledEntries.size > 0) {
         this.log(
@@ -621,6 +652,8 @@ class ServerScheduler {
           `scheduler state loaded without auto-start | openPositions=${this.activePositions.size} scheduled=${this.scheduledEntries.size}`,
         );
       }
+      // Persist the forced-stop so downstream readers (status endpoint, UI) see active=false.
+      this.saveState();
     } catch (err) {
       this.log('error', `failed to load scheduler state: ${(err as Error).message}`);
     }
