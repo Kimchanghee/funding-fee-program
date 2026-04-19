@@ -18,10 +18,57 @@ import {
   type FeeOverrides,
   type PaybackOverrides,
 } from '@/lib/types';
-import { estimateProfit } from '@/lib/opportunities';
+import { estimateProfit, getOpportunityLegKeys } from '@/lib/opportunities';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { buildManagedOpportunityItems, type ManagedOpportunityItem } from '@/lib/managedOpportunities';
 import { hasRequiredApiCredentials, getMissingApiCredentialFields } from '@/lib/apiCredentials';
+
+// Why a row is listed as "후보" instead of "예약됨". Kept client-side so the
+// table can surface it next to each opportunity without another API round-trip.
+function computeManagedItemRemark(params: {
+  item: ManagedOpportunityItem;
+  snipeActive: boolean;
+  occupiedLegs: Set<string>;
+  scheduledLegs: Set<string>;
+  itemPerSide: number;
+  shortBal: number;
+  longBal: number;
+  minSpreadPercent: number;
+  nowMs: number;
+}): { label: string; tone: 'ok' | 'warn' | 'info' } {
+  const { item, snipeActive, occupiedLegs, scheduledLegs, itemPerSide, shortBal, longBal, minSpreadPercent, nowMs } = params;
+  if (item.status === 'active') {
+    return { label: '진입 완료', tone: 'ok' };
+  }
+  if (item.status === 'scheduled') {
+    const secs = Math.max(0, Math.round((item.fundingTime - nowMs) / 1000));
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return { label: `자동진입 ${m}m${String(s).padStart(2, '0')}s 후`, tone: 'ok' };
+  }
+  // status === 'opportunity'
+  if (!snipeActive) {
+    return { label: '자동투자 OFF', tone: 'warn' };
+  }
+  const legs = getOpportunityLegKeys(item.opp);
+  if (legs.some((key) => occupiedLegs.has(key))) {
+    return { label: '레그 점유 중', tone: 'warn' };
+  }
+  if (legs.some((key) => scheduledLegs.has(key))) {
+    return { label: '다른 루트에 예약됨', tone: 'warn' };
+  }
+  if (item.opp.spreadPercent < minSpreadPercent) {
+    return { label: '스프레드 미달', tone: 'warn' };
+  }
+  if (!(itemPerSide > 0.5)) {
+    return { label: '잔고 부족', tone: 'warn' };
+  }
+  if (shortBal < itemPerSide || longBal < itemPerSide) {
+    return { label: '한쪽 잔고 부족', tone: 'warn' };
+  }
+  // Default: still could be scheduled on the next planning tick.
+  return { label: '다음 스캔 대기', tone: 'info' };
+}
 
 /* ─── Tiny countdown hook ─── */
 function useCountdown(targetMs: number) {
@@ -888,8 +935,8 @@ export default function OpportunityCard() {
             {/* Table Header */}
             <div className="opp-table-header" style={{
               display: 'grid',
-              gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px',
-              minWidth: 940,
+              gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px 120px',
+              minWidth: 1060,
               gap: 4, padding: '6px 10px', marginBottom: 4,
               fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)',
               borderBottom: '1px solid var(--color-border)',
@@ -909,6 +956,7 @@ export default function OpportunityCard() {
               <span style={{ textAlign: 'right' }}>순수익</span>
               <span style={{ textAlign: 'right' }}>수익률</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩까지</span>
+              <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>비고</span>
             </div>
 
             {/* Rows — 15행 고정 */}
@@ -916,6 +964,22 @@ export default function OpportunityCard() {
               let visibleIdx = 0;
               const ROW_HEIGHT = 42;
               const MIN_ROWS = 15;
+              const nowMs = Date.now();
+              const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
+              const minSpreadPercent = Math.max(0, strategyConfig.minSpreadPercent);
+              // Legs already held by an active position → fully occupied.
+              const occupiedLegs = new Set<string>();
+              for (const pos of (simulationMode ? simPositions : positions)) {
+                occupiedLegs.add(`${pos.exchange}:${pos.symbol}:${pos.side}`);
+                occupiedLegs.add(`${pos.exchange}:${pos.symbol}`);
+              }
+              // Legs currently reserved by a different scheduled/active item in the list.
+              const scheduledLegs = new Set<string>();
+              for (const coin of scheduledCoins) {
+                if (coin.status === 'scheduled' || coin.status === 'active') {
+                  for (const key of getOpportunityLegKeys(coin.opp)) scheduledLegs.add(key);
+                }
+              }
               // 순차적 잔고 추적: 이전 기회의 마진 사용을 반영
               const remainingBal: Record<string, number> = {};
               if (strategyConfig.compoundInvesting) {
@@ -1023,8 +1087,8 @@ export default function OpportunityCard() {
                     onClick={() => setExpandedAsset(isExpanded ? null : item.id)}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px',
-                      minWidth: 940,
+                      gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px 120px',
+                      minWidth: 1060,
                       gap: 4, padding: '8px 10px',
                       alignItems: 'center',
                       cursor: 'pointer',
@@ -1173,6 +1237,45 @@ export default function OpportunityCard() {
                         </span>
                       )}
                     </div>
+                    {/* 비고 — 왜 후보(혹은 예약됨)인지 한눈에 */}
+                    <div className="opp-hide-mobile" style={{ textAlign: 'center' }}>
+                      {(() => {
+                        const remark = computeManagedItemRemark({
+                          item,
+                          snipeActive,
+                          occupiedLegs,
+                          scheduledLegs,
+                          itemPerSide,
+                          shortBal: remainingBal[item.opp.shortExchange] ?? 0,
+                          longBal: remainingBal[item.opp.longExchange] ?? 0,
+                          minSpreadPercent,
+                          nowMs,
+                        });
+                        const palette = remark.tone === 'ok'
+                          ? { bg: 'rgba(16,185,129,0.12)', fg: '#10b981', bd: 'rgba(16,185,129,0.25)' }
+                          : remark.tone === 'warn'
+                            ? { bg: 'rgba(245,158,11,0.12)', fg: '#fbbf24', bd: 'rgba(245,158,11,0.25)' }
+                            : { bg: 'rgba(100,116,139,0.12)', fg: '#94a3b8', bd: 'rgba(100,116,139,0.25)' };
+                        return (
+                          <span
+                            title={remark.label}
+                            style={{
+                              display: 'inline-block',
+                              fontSize: 9,
+                              fontWeight: 700,
+                              padding: '2px 6px',
+                              borderRadius: 4,
+                              background: palette.bg,
+                              color: palette.fg,
+                              border: `1px solid ${palette.bd}`,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {remark.label}
+                          </span>
+                        );
+                      })()}
+                    </div>
                   </div>
 
                   {/* Expanded Detail */}
@@ -1201,8 +1304,8 @@ export default function OpportunityCard() {
                 emptyRows.push(
                   <div key={`empty-${i}`} style={{
                     display: 'grid',
-                    gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px',
-                    minWidth: 940,
+                    gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px 120px',
+                    minWidth: 1060,
                     gap: 4, padding: '8px 10px', height: ROW_HEIGHT,
                     alignItems: 'center', opacity: 0.2,
                   }}>
@@ -1220,6 +1323,7 @@ export default function OpportunityCard() {
                     <span style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                     <span style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
+                    <span className="opp-hide-mobile" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                   </div>
                 );
               }
