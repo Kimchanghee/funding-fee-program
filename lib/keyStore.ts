@@ -107,7 +107,9 @@ export function loadEnabledExchanges(): string[] | null {
 // zero-defaults. Only the money-related keys are cleared; API keys and the
 // other user-managed blobs survive the migration.
 const SCHEMA_VERSION_KEY = 'funding_fee_schema_version';
-const CURRENT_SCHEMA_VERSION = 'v2-zero-2026-04-19';
+// Bumped to v3 so clients running on v2 (which stored minSpreadPercent=0
+// or the legacy 0.08) flush and pick up the data-driven 0.3% default.
+const CURRENT_SCHEMA_VERSION = 'v3-analyzed-minspread-2026-04-19';
 
 export function runLocalStorageMigrations(): void {
   if (typeof window === 'undefined') return;

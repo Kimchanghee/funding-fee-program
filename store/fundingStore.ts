@@ -1188,9 +1188,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   logs: [],
   apiConfigs: {},
   strategyConfig: {
+    // Money/risk knobs require operator input — no hardcoded dollar or leverage defaults.
     investmentUSDT: 0,
     leverage: 0,
-    minSpreadPercent: 0,
+    // Data-driven default: 41 historical successful trades (2026-04-09 ~ 04-19)
+    // had spreads in [0.36%, 2.04%] with avg 0.99%. 0.3% captures every
+    // historical win while filtering out sub-0.3% noise that systematically
+    // fails the EV gate at execute time (round-trip fee ~0.16% + slippage
+    // ~0.1% alone eat nearly 0.27%).
+    minSpreadPercent: 0.3,
     autoExecute: false,
     compoundInvesting: false,
     timingConfig: { ...DEFAULT_TIMING_CONFIG },

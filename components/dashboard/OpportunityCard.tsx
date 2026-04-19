@@ -314,13 +314,9 @@ export default function OpportunityCard() {
         });
         return;
       }
-      if (!(state.strategyConfig.minSpreadPercent > 0)) {
-        setToastMsg({
-          text: `${simulationMode ? '[SIM]' : '[REAL]'} 설정 필요: /settings 에서 최소 스프레드를 입력하세요.`,
-          type: 'error',
-        });
-        return;
-      }
+      // Note: minSpreadPercent now has a data-driven default (0.3%), so we no
+      // longer block the start when it's not explicitly set. The operator can
+      // still tighten or loosen it in /settings if they want.
 
       if (!simulationMode) {
         if (realEnabledExchanges.length < 2) {
