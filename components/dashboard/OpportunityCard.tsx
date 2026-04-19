@@ -259,6 +259,22 @@ export default function OpportunityCard() {
         ? state.strategyConfig.investmentUSDT * 2 * state.enabledExchanges.length
         : state.strategyConfig.investmentUSDT * 2 * realEnabledExchanges.length;
 
+      // Zero-default guard: operator must supply positive investmentUSDT + leverage before starting.
+      if (!(state.strategyConfig.investmentUSDT > 0) || !(state.strategyConfig.leverage > 0)) {
+        setToastMsg({
+          text: `${simulationMode ? '[SIM]' : '[REAL]'} 설정 필요: /settings 에서 투자금·레버리지 입력 후 시작하세요.`,
+          type: 'error',
+        });
+        return;
+      }
+      if (!(state.strategyConfig.minSpreadPercent > 0)) {
+        setToastMsg({
+          text: `${simulationMode ? '[SIM]' : '[REAL]'} 설정 필요: /settings 에서 최소 스프레드를 입력하세요.`,
+          type: 'error',
+        });
+        return;
+      }
+
       if (!simulationMode) {
         if (realEnabledExchanges.length < 2) {
           const missingByExchange = state.enabledExchanges

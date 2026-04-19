@@ -102,6 +102,27 @@ export function loadEnabledExchanges(): string[] | null {
   }
 }
 
+// Storage schema version — bumped whenever default shape changes so stale
+// localStorage from prior builds gets cleared instead of overriding the new
+// zero-defaults. Only the money-related keys are cleared; API keys and the
+// other user-managed blobs survive the migration.
+const SCHEMA_VERSION_KEY = 'funding_fee_schema_version';
+const CURRENT_SCHEMA_VERSION = 'v2-zero-2026-04-19';
+
+export function runLocalStorageMigrations(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const stored = localStorage.getItem(SCHEMA_VERSION_KEY);
+    if (stored === CURRENT_SCHEMA_VERSION) return;
+    // Clear legacy money-related state so the new $0 defaults surface.
+    localStorage.removeItem('funding_fee_strategy_config');
+    localStorage.removeItem('funding_fee_sim_state');
+    localStorage.setItem(SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION);
+  } catch {
+    // localStorage unavailable — ignore; the in-memory zero defaults will apply.
+  }
+}
+
 // Strategy config persistence
 const STRATEGY_CONFIG_KEY = 'funding_fee_strategy_config';
 

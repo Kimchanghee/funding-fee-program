@@ -18,7 +18,7 @@ import type {
   SnipeStateSnapshot,
 } from '@/lib/types';
 import { OPERABLE_EXCHANGES, SUPPORTED_EXCHANGES, isExchangeOperable, sanitizeEnabledExchanges } from '@/lib/types';
-import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta, saveSimHistoryResetAt, loadSimHistoryResetAt } from '@/lib/keyStore';
+import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta, saveSimHistoryResetAt, loadSimHistoryResetAt, runLocalStorageMigrations } from '@/lib/keyStore';
 import {
   estimateProfit,
   findOpportunities,
@@ -1246,6 +1246,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     try {
       // React 18 Strict Mode / HMR에서 상태 초기화 (snipeActive는 서버 상태가 source of truth → 여기서 리셋하지 않음)
       set({ isLoadingRates: false, _snipeTimers: {}, _snipeCloseTimers: {} });
+
+      // ── 스키마 버전 마이그레이션: 옛 하드코드 기본값($1000/leverage 5 등)을 가진
+      // 로컬스토리지를 0으로 리셋해서 "사용자가 입력한 값만 반영" 원칙을 보장 ──
+      runLocalStorageMigrations();
 
       // ── 1회성 데이터 정리: 시뮬 초기화 (v3 마이그레이션) ──
       const MIGRATION_KEY = 'funding_fee_migration_v3';
