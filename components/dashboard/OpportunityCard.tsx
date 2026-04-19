@@ -25,18 +25,25 @@ import { hasRequiredApiCredentials, getMissingApiCredentialFields } from '@/lib/
 
 // Why a row is listed as "후보" instead of "예약됨". Kept client-side so the
 // table can surface it next to each opportunity without another API round-trip.
+//
+// Pre-deduction snapshot semantics: shortBalAvailable / longBalAvailable must
+// reflect the balance BEFORE this specific row is deducted in the sequential
+// compounding loop. Using the post-deduction value caused every row to
+// appear as "한쪽 잔고 부족" because the check compared balance-after-use
+// against the use itself.
 function computeManagedItemRemark(params: {
   item: ManagedOpportunityItem;
   snipeActive: boolean;
   occupiedLegs: Set<string>;
   scheduledLegs: Set<string>;
   itemPerSide: number;
-  shortBal: number;
-  longBal: number;
+  shortBalAvailable: number;
+  longBalAvailable: number;
+  investmentUSDT: number;
   minSpreadPercent: number;
   nowMs: number;
 }): { label: string; tone: 'ok' | 'warn' | 'info' } {
-  const { item, snipeActive, occupiedLegs, scheduledLegs, itemPerSide, shortBal, longBal, minSpreadPercent, nowMs } = params;
+  const { item, snipeActive, occupiedLegs, scheduledLegs, itemPerSide, shortBalAvailable, longBalAvailable, investmentUSDT, minSpreadPercent, nowMs } = params;
   if (item.status === 'active') {
     return { label: '진입 완료', tone: 'ok' };
   }
@@ -60,11 +67,20 @@ function computeManagedItemRemark(params: {
   if (item.opp.spreadPercent < minSpreadPercent) {
     return { label: '스프레드 미달', tone: 'warn' };
   }
+  // Operator hasn't set an investment size yet — nothing to allocate.
+  if (!(investmentUSDT > 0)) {
+    return { label: '투자금 미설정', tone: 'warn' };
+  }
+  // Only flag "잔고 부족" when the PRE-deduction balance on either leg is
+  // genuinely below the required per-side amount. This is the snapshot the
+  // caller passes in before `remainingBal` is decremented for this row.
+  if (shortBalAvailable > 0 || longBalAvailable > 0) {
+    if (shortBalAvailable < itemPerSide || longBalAvailable < itemPerSide) {
+      return { label: '한쪽 잔고 부족', tone: 'warn' };
+    }
+  }
   if (!(itemPerSide > 0.5)) {
     return { label: '잔고 부족', tone: 'warn' };
-  }
-  if (shortBal < itemPerSide || longBal < itemPerSide) {
-    return { label: '한쪽 잔고 부족', tone: 'warn' };
   }
   // Default: still could be scheduled on the next planning tick.
   return { label: '다음 스캔 대기', tone: 'info' };
@@ -1002,6 +1018,11 @@ export default function OpportunityCard() {
 
               // 순차 잔고 기반 투자금 계산 (복리: 이전 기회 마진 소진 반영)
               let itemPerSide = item.investmentUSDT ?? perExchangeInvestment;
+              // Capture the pre-deduction balance snapshot (used by the 비고 cell so it
+              // reports the real available amount, not the residual after this row already
+              // subtracted its own usage from remainingBal).
+              let preShortBalAvailable = 0;
+              let preLongBalAvailable = 0;
               if (strategyConfig.compoundInvesting) {
                 // 새 펀딩 시간대로 넘어갈 때: 이전 시간대 스나이프 자금 복귀 반영
                 const currentWindow = item.fundingTime;
@@ -1018,10 +1039,11 @@ export default function OpportunityCard() {
                 }
                 lastFundingWindow = currentWindow;
 
+                preShortBalAvailable = remainingBal[item.opp.shortExchange] ?? 0;
+                preLongBalAvailable = remainingBal[item.opp.longExchange] ?? 0;
+
                 if (item.investmentUSDT == null || item.status === 'opportunity') {
-                  const shortBal = remainingBal[item.opp.shortExchange] ?? 0;
-                  const longBal = remainingBal[item.opp.longExchange] ?? 0;
-                  itemPerSide = Math.max(0, Math.min(shortBal, longBal) * 0.9);
+                  itemPerSide = Math.max(0, Math.min(preShortBalAvailable, preLongBalAvailable) * 0.9);
                 }
                 // 이 기회가 사용할 마진을 잔고에서 순차 차감 + 복귀 예약
                 if (itemPerSide > 0) {
@@ -1031,6 +1053,14 @@ export default function OpportunityCard() {
                   pendingReturns.push({ exchange: item.opp.shortExchange, amount: itemPerSide, fundingTime: item.fundingTime });
                   pendingReturns.push({ exchange: item.opp.longExchange, amount: itemPerSide, fundingTime: item.fundingTime });
                 }
+              } else {
+                // 비복리 모드에서는 거래소 총 가용 잔고를 그대로 사용.
+                preShortBalAvailable = simulationMode
+                  ? (simBalances[item.opp.shortExchange] ?? 0)
+                  : (balances[item.opp.shortExchange]?.availableUSDT ?? 0);
+                preLongBalAvailable = simulationMode
+                  ? (simBalances[item.opp.longExchange] ?? 0)
+                  : (balances[item.opp.longExchange]?.availableUSDT ?? 0);
               }
               // 투자금 $1 미만이면 거래 불가 — 후보는 숨김 (예약/활성은 표시)
               if (item.status === 'opportunity' && itemPerSide < 1) return null;
@@ -1242,8 +1272,9 @@ export default function OpportunityCard() {
                           occupiedLegs,
                           scheduledLegs,
                           itemPerSide,
-                          shortBal: remainingBal[item.opp.shortExchange] ?? 0,
-                          longBal: remainingBal[item.opp.longExchange] ?? 0,
+                          shortBalAvailable: preShortBalAvailable,
+                          longBalAvailable: preLongBalAvailable,
+                          investmentUSDT: strategyConfig.investmentUSDT,
                           minSpreadPercent,
                           nowMs,
                         });
