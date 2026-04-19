@@ -256,13 +256,14 @@ class ServerScheduler {
   private static instance: ServerScheduler | null = null;
 
   private active = false;
+  // Defaults are all 0 / empty — operator must supply every value explicitly via /api/scheduler.
   private config: SchedulerConfig = {
-    investmentUSDT: 500,
-    leverage: 5,
-    minSpreadPercent: 0.01,
-    compoundInvesting: true,
+    investmentUSDT: 0,
+    leverage: 0,
+    minSpreadPercent: 0,
+    compoundInvesting: false,
     enabledExchanges: [],
-    maxConcurrentPairs: 5,
+    maxConcurrentPairs: 0,
     timingConfig: getResolvedTimingConfig(),
   };
   private startedAt: number | null = null;

@@ -585,11 +585,12 @@ class ServerSimScheduler {
   private static instance: ServerSimScheduler | null = null;
 
   private active = false;
+  // Defaults are all 0 / empty — operator must supply every value explicitly via /api/sim-scheduler.
   private config: ServerSimSchedulerConfig = {
-    investmentUSDT: 500,
-    leverage: 5,
-    minSpreadPercent: 0.01,
-    compoundInvesting: true,
+    investmentUSDT: 0,
+    leverage: 0,
+    minSpreadPercent: 0,
+    compoundInvesting: false,
     enabledExchanges: [],
     timingConfig: getResolvedTimingConfig(),
   };

@@ -26,6 +26,7 @@ export default function Header() {
     refreshPositions,
     refreshBalances,
     setShowApiPanel,
+    openApiPanelFor,
     simulationMode,
     toggleSimulationMode,
     resetSimulation,
@@ -34,6 +35,7 @@ export default function Header() {
     simPositions,
     positions,
     simBalances,
+    apiConfigs,
   } = useFundingStore();
 
   const anySnipeActive = simSnipeActive || realSnipeActive;
@@ -171,24 +173,35 @@ export default function Header() {
       {/* Spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* Exchange ON/OFF toggles */}
+      {/* Exchange ON/OFF toggles (+ REAL mode: click unconfigured = open API-key popup) */}
       <div className="header-exchanges" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         {OPERABLE_EXCHANGES.map((ex) => {
           const enabled = enabledExchanges.includes(ex);
           const color = EXCHANGE_COLORS[ex];
+          const hasApiKey = !!apiConfigs[ex];
+          // In REAL mode, if the exchange has no API key, clicking the pill opens the API-key
+          // popup pre-selected for that exchange instead of toggling ON/OFF. In SIM mode or
+          // when a key is already configured, keep the existing toggle behavior.
+          const clickOpensApiPanel = !simulationMode && !hasApiKey;
+          const handleClick = clickOpensApiPanel
+            ? () => openApiPanelFor(ex)
+            : () => toggleExchange(ex);
+          const titleText = clickOpensApiPanel
+            ? `${EXCHANGE_NAMES[ex]} API 키 미설정 — 클릭해서 입력`
+            : `${EXCHANGE_NAMES[ex]} ${enabled ? 'OFF' : 'ON'} (클릭하여 전환)${enabled && simulationMode ? `\n잔고: $${fmtNum(simBalances[ex] ?? 0, 0)}` : ''}`;
           return (
             <button
               key={ex}
-              onClick={() => toggleExchange(ex)}
-              title={`${EXCHANGE_NAMES[ex]} ${enabled ? 'OFF' : 'ON'} (클릭하여 전환)${enabled && simulationMode ? `\n잔고: $${fmtNum(simBalances[ex] ?? 0, 0)}` : ''}`}
+              onClick={handleClick}
+              title={titleText}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 4,
                 padding: '3px 8px',
                 borderRadius: 6,
-                background: enabled ? `${color}18` : 'var(--bg-accent)',
-                border: `1px solid ${enabled ? `${color}55` : 'var(--color-border)'}`,
+                background: clickOpensApiPanel ? `${color}12` : enabled ? `${color}18` : 'var(--bg-accent)',
+                border: `1px solid ${clickOpensApiPanel ? `${color}66` : enabled ? `${color}55` : 'var(--color-border)'}`,
                 cursor: 'pointer',
                 opacity: enabled ? 1 : 0.4,
                 transition: 'all 0.2s ease',
@@ -202,6 +215,22 @@ export default function Header() {
               <span style={{ fontSize: 10, fontWeight: 600, color: enabled ? color : 'var(--color-text-muted)' }}>
                 {EXCHANGE_NAMES[ex]}
               </span>
+              {clickOpensApiPanel && (
+                <span
+                  aria-label="API 키 미설정"
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 800,
+                    marginLeft: 2,
+                    padding: '0 4px',
+                    borderRadius: 4,
+                    background: `${color}33`,
+                    color,
+                  }}
+                >
+                  + 키
+                </span>
+              )}
             </button>
           );
         })}
