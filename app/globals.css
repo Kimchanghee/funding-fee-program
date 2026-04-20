@@ -339,6 +339,52 @@ body {
 .header-mobile-status {
   display: none;
 }
+
+/* Class for "비고" remarks column — only visible on wide screens */
+.opp-hide-tablet {
+  /* default visible */
+}
+
+/* Tablet / mid-size breakpoint — between mobile (768) and desktop (1280).
+ * Collapses the opportunity table to fit viewports like 1024–1280 where the
+ * 15-column layout would otherwise overflow. Also compacts header/balance
+ * card stacks so nothing gets clipped off the edge. */
+@media (max-width: 1280px) and (min-width: 769px) {
+  /* Hide the 비고 (remarks) column at this width — room is tight */
+  .opp-hide-tablet {
+    display: none !important;
+  }
+  /* Opportunity table: drop the 비고 column (last 120px) so grid fits */
+  .opp-table-header,
+  .opp-table-row {
+    grid-template-columns: 24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px !important;
+    min-width: 940px !important;
+  }
+  /* Shrink header exchange pills so they do not bleed off the right edge */
+  .header-exchanges {
+    flex-wrap: wrap !important;
+    gap: 3px !important;
+  }
+  .header-exchanges button {
+    padding: 2px 6px !important;
+  }
+  /* Balance card grid: allow wrapping instead of forcing horizontal overflow */
+  .balance-cards-container {
+    flex-wrap: wrap !important;
+  }
+  .balance-cards-container > div {
+    min-width: 180px !important;
+  }
+  /* Hedge exchange mini grid: 3 columns instead of auto-fit */
+  .hedge-exchange-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  /* Main content horizontal padding trim */
+  .main-content {
+    padding: 12px !important;
+  }
+}
+
 @media (max-width: 768px) {
   .toast {
     left: 12px;

@@ -968,7 +968,7 @@ export default function OpportunityCard() {
               <span style={{ textAlign: 'right' }}>순수익</span>
               <span style={{ textAlign: 'right' }}>수익률</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩까지</span>
-              <span className="opp-hide-mobile" style={{ textAlign: 'center' }}>비고</span>
+              <span className="opp-hide-mobile opp-hide-tablet" style={{ textAlign: 'center' }}>비고</span>
             </div>
 
             {/* Rows — 15행 고정 */}
@@ -1264,7 +1264,7 @@ export default function OpportunityCard() {
                       )}
                     </div>
                     {/* 비고 — 왜 후보(혹은 예약됨)인지 한눈에 */}
-                    <div className="opp-hide-mobile" style={{ textAlign: 'center' }}>
+                    <div className="opp-hide-mobile opp-hide-tablet" style={{ textAlign: 'center' }}>
                       {(() => {
                         const remark = computeManagedItemRemark({
                           item,
@@ -1350,7 +1350,7 @@ export default function OpportunityCard() {
                     <span style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                     <span style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
-                    <span className="opp-hide-mobile" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
+                    <span className="opp-hide-mobile opp-hide-tablet" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                   </div>
                 );
               }
