@@ -346,9 +346,8 @@ body {
 }
 
 /* Tablet / mid-size breakpoint — between mobile (768) and desktop (1280).
- * Collapses the opportunity table to fit viewports like 1024–1280 where the
- * 15-column layout would otherwise overflow. Also compacts header/balance
- * card stacks so nothing gets clipped off the edge. */
+ * Collapses layout so opportunity table, header and balance cards all fit
+ * without clipping on viewports like 1024–1280. */
 @media (max-width: 1280px) and (min-width: 769px) {
   /* Hide the 비고 (remarks) column at this width — room is tight */
   .opp-hide-tablet {
@@ -360,28 +359,60 @@ body {
     grid-template-columns: 24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px !important;
     min-width: 940px !important;
   }
-  /* Shrink header exchange pills so they do not bleed off the right edge */
+  /* Header: allow wrapping so nothing bleeds off the right edge */
+  .app-header {
+    flex-wrap: wrap !important;
+    height: auto !important;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+    gap: 8px !important;
+  }
+  .header-brand {
+    margin-right: 0 !important;
+  }
   .header-exchanges {
     flex-wrap: wrap !important;
-    gap: 3px !important;
+    gap: 4px !important;
+    justify-content: flex-start !important;
   }
   .header-exchanges button {
-    padding: 2px 6px !important;
+    padding: 3px 7px !important;
   }
-  /* Balance card grid: allow wrapping instead of forcing horizontal overflow */
+  .header-mode-group {
+    gap: 6px !important;
+  }
+  /* Balance card row: allow wrapping instead of forcing horizontal overflow */
   .balance-cards-container {
     flex-wrap: wrap !important;
   }
   .balance-cards-container > div {
     min-width: 180px !important;
+    flex: 1 1 180px;
   }
   /* Hedge exchange mini grid: 3 columns instead of auto-fit */
   .hedge-exchange-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   }
-  /* Main content horizontal padding trim */
+  /* Main content padding trim */
   .main-content {
     padding: 12px !important;
+  }
+  /* Settings page inputs grid: tighten */
+  .glass-card {
+    overflow-x: auto;
+  }
+}
+
+/* Narrower tablet (real narrow laptops, ~900px) — stack balance cards to 2 cols */
+@media (max-width: 1024px) and (min-width: 769px) {
+  .balance-cards-container > div {
+    flex: 1 1 calc(50% - 12px) !important;
+    min-width: calc(50% - 12px) !important;
+  }
+  .hedge-exchange-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 }
 
