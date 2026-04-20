@@ -863,6 +863,17 @@ const RATE_RETRY_TIMEOUT_MS = 15_000;
 const EXCHANGE_STATUS_STALE_OK_MS = 90_000;
 const RATE_REFRESH_STUCK_MS = 70_000;
 
+// Self-healing watchdog: if any exchange is stuck in 'loading' for longer than
+// this threshold we force a reset + retry before alerting the operator.
+const RATES_LOADING_STUCK_MS = 25_000;
+// How long to wait between auto-recovery attempts.
+const RATES_AUTO_RECOVERY_COOLDOWN_MS = 15_000;
+// After this many consecutive auto-recovery attempts failed, escalate (Telegram).
+const RATES_AUTO_RECOVERY_MAX_ATTEMPTS = 3;
+let ratesAutoRecoveryAttempts = 0;
+let ratesLastAutoRecoveryAt = 0;
+let ratesAutoRecoveryEscalated = false;
+
 async function fetchJsonWithDeadline<T>(url: string, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
   const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1862,25 +1873,41 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const failCount = get().consecutiveAllFailCount + 1;
       set({ ratesStatus: 'error', ratesError: '모든 거래소에서 데이터 조회 실패', consecutiveAllFailCount: failCount });
 
-      // 5회 연속 전체 실패 (~40초) → 경고 로그 + 텔레그램
-      if (failCount === 5) {
-        const msg = `⚠️ API 전체 장애: 모든 거래소 데이터 조회가 ${failCount}회 연속 실패했습니다. 서버 상태를 확인하세요. (.next 캐시 손상 가능 → 서버 재시작 필요)`;
+      // Gate Telegram alerts behind auto-recovery: only warn the operator
+      // once we've already tried the self-heal path RATES_AUTO_RECOVERY_MAX_ATTEMPTS
+      // times and it still hasn't helped. This avoids noise every time a
+      // transient stuck-loading state resolves itself.
+      const alreadyEscalated = ratesAutoRecoveryEscalated;
+      if (failCount === 5 && !alreadyEscalated) {
+        const msg = `[자동복구 대기] API 전체 조회 ${failCount}회 연속 실패 — 클라이언트가 자동 복구 시도 중 (최대 ${RATES_AUTO_RECOVERY_MAX_ATTEMPTS}회). 알림은 그래도 회복 안 되면 전송됩니다.`;
         get().addLog('warning', msg);
+      }
+      if (failCount >= 10 && ratesAutoRecoveryAttempts >= RATES_AUTO_RECOVERY_MAX_ATTEMPTS && !alreadyEscalated) {
+        ratesAutoRecoveryEscalated = true;
+        const msg = `⚠️ API 전체 장애: ${failCount}회 연속 실패 + 자동복구 ${ratesAutoRecoveryAttempts}회 모두 실패. 서버 상태 확인 필요.`;
+        get().addLog('error', msg);
         sendTelegramMessage(msg).catch(() => {});
       }
-      // 30회 연속 (~4분) → 경고만 발생 (서버 자동투자는 강제 중단하지 않음)
-      if (failCount === 30 && (get().simSnipeActive || get().realSnipeActive)) {
-        get().addLog('warning', `⚠️ API 장애 지속 (${failCount}회 연속 실패) — 자동 중단은 하지 않고 감시 유지`);
-        sendTelegramMessage(`⚠️ API 전체 장애 ${failCount}회 연속 감지. 자동 투자는 유지하며 상태 점검 필요.`).catch(() => {});
+      if (failCount === 30 && (get().simSnipeActive || get().realSnipeActive) && alreadyEscalated) {
+        get().addLog('warning', `⚠️ API 장애 지속 (${failCount}회) — 자동 중단은 하지 않고 감시 유지`);
       }
 
       if (!get().lastRatesUpdate) {
         setTimeout(() => get().refreshRates(), 3000);
       }
     } else {
-      // 성공 시 카운터 리셋
+      // 성공 시 카운터 리셋 (auto-recovery 관련 상태 포함)
       if (get().consecutiveAllFailCount > 0) {
         set({ consecutiveAllFailCount: 0 });
+      }
+      if (ratesAutoRecoveryAttempts > 0 || ratesAutoRecoveryEscalated) {
+        if (ratesAutoRecoveryEscalated) {
+          get().addLog('success', `[자동복구] API 정상 복구됨 (이전 ${ratesAutoRecoveryAttempts}회 복구 시도 후)`);
+          sendTelegramMessage(`✓ API 복구 완료 — ${ratesAutoRecoveryAttempts}회 시도 후 정상 동작`).catch(() => {});
+        }
+        ratesAutoRecoveryAttempts = 0;
+        ratesLastAutoRecoveryAt = 0;
+        ratesAutoRecoveryEscalated = false;
       }
     }
     } finally {
@@ -2177,6 +2204,47 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // 5초 간격 펀딩률 + 오더북 폴링 (기회 탐지 속도 향상)
     const ratesInterval = setInterval(() => {
+      // ── Self-healing watchdog ──
+      // 어떤 거래소든 'loading' 상태가 RATES_LOADING_STUCK_MS 이상 지속되면
+      // 텔레그램 보내기 전에 클라이언트가 먼저 자가 복구 시도.
+      const state = get();
+      const enabled = state.enabledExchanges;
+      const loadingStuck = enabled.some(ex => state.exchangeFetchStatus[ex] === 'loading');
+      const lastUpdateAge = state.lastRatesUpdate ? Date.now() - state.lastRatesUpdate : Infinity;
+      const staleSnapshot = lastUpdateAge > RATES_LOADING_STUCK_MS;
+      const sinceLastRecovery = Date.now() - ratesLastAutoRecoveryAt;
+
+      if (loadingStuck
+        && staleSnapshot
+        && sinceLastRecovery > RATES_AUTO_RECOVERY_COOLDOWN_MS
+        && ratesAutoRecoveryAttempts < RATES_AUTO_RECOVERY_MAX_ATTEMPTS
+      ) {
+        ratesAutoRecoveryAttempts += 1;
+        ratesLastAutoRecoveryAt = Date.now();
+        console.warn(
+          `[watchdog] loading stuck ${Math.round(lastUpdateAge/1000)}s — auto-recovery attempt ` +
+          `${ratesAutoRecoveryAttempts}/${RATES_AUTO_RECOVERY_MAX_ATTEMPTS}`,
+        );
+        get().addLog(
+          'warning',
+          `[자동복구] REST API 로딩 멈춤 감지 → 복구 ${ratesAutoRecoveryAttempts}/${RATES_AUTO_RECOVERY_MAX_ATTEMPTS} 시도`,
+        );
+        // Force reset in-flight flag + clear stuck statuses so the next
+        // refreshRates call is allowed to proceed from a clean slate.
+        ratesRefreshInFlight = false;
+        ratesRefreshStartedAt = 0;
+        set(s => {
+          const nextStatus = { ...s.exchangeFetchStatus };
+          for (const ex of enabled) {
+            if (nextStatus[ex] === 'loading') nextStatus[ex] = 'error';
+          }
+          return { exchangeFetchStatus: nextStatus, isLoadingRates: false };
+        });
+        // Trigger an immediate refresh (not silent so status updates are visible).
+        get().refreshRates();
+        return; // skip the normal tick; recovery will run fetch itself
+      }
+
       get().refreshRates({ silent: true });
       if (get().simSnipeActive || get().realSnipeActive) {
         get().refreshRealSpreads();
