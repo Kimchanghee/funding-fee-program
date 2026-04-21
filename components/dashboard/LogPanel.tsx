@@ -175,8 +175,8 @@ export default function LogPanel() {
   };
 
   return (
-    <div className="glass-card" style={{ overflow: 'hidden' }}>
-      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+    <div className="glass-card log-panel" style={{ overflow: 'hidden' }}>
+      <div className="log-panel-header" style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 12 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text)' }}>
           실시간 로그
           <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 400 }}>
@@ -185,7 +185,7 @@ export default function LogPanel() {
         </div>
         <div style={{ flex: 1 }} />
 
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div className="log-panel-filters" style={{ display: 'flex', gap: 4 }}>
           {LEVEL_FILTERS.map((level) => {
             const colors: Record<string, string> = {
               info: '#3b82f6',
@@ -259,6 +259,7 @@ export default function LogPanel() {
       </div>
 
       <div
+        className="log-panel-list"
         style={{
           height: 240,
           overflowY: 'auto',
@@ -305,7 +306,7 @@ export default function LogPanel() {
       </div>
 
       {totalPages > 1 && (
-        <div style={{ padding: '10px 12px', borderTop: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+        <div className="log-panel-pagination" style={{ padding: '10px 12px', borderTop: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
           <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
             {page} / {totalPages}
           </span>

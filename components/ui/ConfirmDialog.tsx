@@ -65,6 +65,7 @@ export default function ConfirmDialog({
 
   return (
     <div
+      className="confirm-dialog-overlay"
       onClick={onCancel}
       style={{
         position: 'fixed',
@@ -79,6 +80,7 @@ export default function ConfirmDialog({
       }}
     >
       <div
+        className="confirm-dialog-card"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: 'min(420px, 100%)',
@@ -113,6 +115,7 @@ export default function ConfirmDialog({
         </div>
 
         <div
+          className="confirm-dialog-actions"
           style={{
             borderTop: '1px solid rgba(148,163,184,0.16)',
             padding: 12,
@@ -148,4 +151,3 @@ export default function ConfirmDialog({
     </div>
   );
 }
-

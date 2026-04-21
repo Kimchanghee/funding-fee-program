@@ -71,6 +71,7 @@ export default function ApiPanel() {
 
   return (
     <div
+      className="api-panel-overlay"
       style={{
         position: 'fixed',
         inset: 0,
@@ -84,12 +85,12 @@ export default function ApiPanel() {
       onClick={() => setShowApiPanel(false)}
     >
       <div
-        className="glass-card animate-slide-in"
+        className="glass-card animate-slide-in api-panel"
         style={{ width: 520, maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Title bar */}
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="api-panel-header" style={{ padding: '20px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <Key size={16} color="var(--color-primary)" />
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-text)' }}>API 키 설정</span>
@@ -100,7 +101,7 @@ export default function ApiPanel() {
         </div>
 
         {/* Tabs */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--color-border)', overflowX: 'auto' }}>
+        <div className="api-panel-tabs" style={{ display: 'flex', borderBottom: '1px solid var(--color-border)', overflowX: 'auto' }}>
           {OPERABLE_EXCHANGES.map(ex => {
             const c = EXCHANGE_COLORS[ex];
             const connected = !!apiConfigs[ex];
@@ -136,7 +137,7 @@ export default function ApiPanel() {
         </div>
 
         {/* Form */}
-        <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="api-panel-form" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={{ padding: 12, borderRadius: 8, background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', fontSize: 12, color: '#94a3b8' }}>
             💡 API 키는 브라우저 로컬스토리지에만 저장됩니다. <strong style={{ color: 'var(--color-primary)' }}>선물 거래 권한</strong>이 있어야 하며, IP 화이트리스트 설정을 권장합니다.
           </div>
@@ -212,7 +213,7 @@ export default function ApiPanel() {
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+          <div className="api-panel-actions" style={{ display: 'flex', gap: 10, marginTop: 4 }}>
             <button
               className="btn btn-ghost"
               style={{ flex: 1 }}

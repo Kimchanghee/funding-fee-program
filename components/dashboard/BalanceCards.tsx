@@ -41,7 +41,7 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
   const netTransfer = balanceChange - fundingNet - closedPnl + totalFees;
 
   return (
-    <div style={{
+    <div className="exchange-mini-card" style={{
       padding: '10px 12px', borderRadius: 8,
       background: `${color}08`, border: `1px solid ${color}22`,
     }}>
@@ -139,7 +139,7 @@ function RealCard({ exchange }: { exchange: ExchangeId }) {
 
   return (
     <div
-      className="glass-card"
+      className="glass-card balance-real-card"
       onClick={isClickableToConfigure ? () => openApiPanelFor(exchange) : undefined}
       role={isClickableToConfigure ? 'button' : undefined}
       tabIndex={isClickableToConfigure ? 0 : undefined}
@@ -229,7 +229,7 @@ function SimModeColumn({
   const posCount = modePositions.filter(p => p.positionType === 'hedge_short').length;
 
   return (
-    <div className="glass-card" style={{
+    <div className="glass-card sim-mode-column" style={{
       flex: 1, minWidth: 0, padding: '14px 16px',
       background: `linear-gradient(135deg, ${accentColor}12, var(--bg-card))`,
       borderColor: `${accentColor}40`,
@@ -327,7 +327,7 @@ export default function BalanceCards() {
   if (!simulationMode) {
     // 실거래: 기존 가로 레이아웃
     return (
-      <div className="balance-cards-container" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
+      <div className="balance-cards-container balance-cards-real" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
         <div className="glass-card" style={{
           minWidth: 220, padding: '16px 20px', flexShrink: 0,
           background: 'linear-gradient(135deg, rgba(59,130,246,0.08), var(--bg-card))',
@@ -348,9 +348,9 @@ export default function BalanceCards() {
 
   return (
     <>
-      <div className="balance-cards-container" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="balance-cards-container balance-cards-sim" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 초기화 버튼 */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <div className="balance-cards-toolbar" style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button
             onClick={() => setShowResetConfirm(true)}
             style={{
@@ -365,7 +365,7 @@ export default function BalanceCards() {
         </div>
 
         {/* 헷징 컬럼 */}
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        <div className="balance-hedge-row" style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
           <SimModeColumn
             title="헷징 (Hedge)"
             accentColor="#3b82f6"

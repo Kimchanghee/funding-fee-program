@@ -40,6 +40,7 @@ export default function StrategyPanel() {
 
   return (
     <div
+      className="strategy-panel-overlay"
       style={{
         position: 'fixed',
         inset: 0,
@@ -53,12 +54,12 @@ export default function StrategyPanel() {
       onClick={() => setShowStrategyPanel(false)}
     >
       <div
-        className="glass-card animate-slide-in"
+        className="glass-card animate-slide-in strategy-panel"
         style={{ width: 460, maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Title */}
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="strategy-panel-header" style={{ padding: '20px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <TrendingUp size={16} color="var(--color-success)" />
             <span style={{ fontSize: 15, fontWeight: 700 }}>전략 설정</span>
@@ -68,7 +69,7 @@ export default function StrategyPanel() {
           </button>
         </div>
 
-        <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div className="strategy-panel-body" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* Investment */}
           <div>
             <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>

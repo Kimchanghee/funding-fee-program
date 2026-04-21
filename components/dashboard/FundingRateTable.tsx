@@ -112,9 +112,9 @@ export default function FundingRateTable() {
   };
 
   return (
-    <div className="glass-card" style={{ overflow: 'hidden' }}>
+    <div className="glass-card funding-rate-panel" style={{ overflow: 'hidden' }}>
       {/* Header */}
-      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div className="funding-rate-header" style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 12 }}>
         <div>
           <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text)' }}>펀딩률 기회 목록</div>
           <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
@@ -139,7 +139,7 @@ export default function FundingRateTable() {
       </div>
 
       {/* Table */}
-      <div style={{ maxHeight: OPPORTUNITY_SCROLL_HEIGHT, overflow: 'auto' }}>
+      <div className="funding-rate-table-wrap" style={{ maxHeight: OPPORTUNITY_SCROLL_HEIGHT, overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
@@ -269,7 +269,7 @@ export default function FundingRateTable() {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div style={{ padding: '12px 20px', borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+        <div className="funding-rate-pagination" style={{ padding: '12px 20px', borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
           <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
             {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filtered.length)} / {filtered.length}
           </span>

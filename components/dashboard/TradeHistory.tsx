@@ -161,8 +161,9 @@ function PairRow({ pair }: { pair: HedgePair }) {
   const totalFee = (pair.shortExit?.entryFee ?? 0) + (pair.shortExit?.exitFee ?? 0) + (pair.longExit?.entryFee ?? 0) + (pair.longExit?.exitFee ?? 0);
 
   return (
-    <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+    <div className="trade-pair-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
       <div
+        className="trade-pair-row-main"
         onClick={() => setExpanded((prev) => !prev)}
         style={{
           display: 'grid',
@@ -210,8 +211,8 @@ function PairRow({ pair }: { pair: HedgePair }) {
       </div>
 
       {expanded && (
-        <div style={{ padding: '0 12px 12px', display: 'grid', gap: 8 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)', fontSize: 11 }}>
+        <div className="trade-pair-expanded" style={{ padding: '0 12px 12px', display: 'grid', gap: 8 }}>
+          <div className="trade-pair-summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)', fontSize: 11 }}>
             <div>
               <div style={{ color: '#64748b' }}>투입금</div>
               <div className="mono" style={{ color: '#a78bfa', fontWeight: 700 }}>${fmtNum(pair.margin * 2, 0)}</div>
@@ -234,7 +235,7 @@ function PairRow({ pair }: { pair: HedgePair }) {
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', fontSize: 11 }}>
+          <div className="trade-pair-result-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', fontSize: 11 }}>
             <div>
               <div style={{ color: '#64748b' }}>숏 가격PnL</div>
               <div className="mono" style={{ color: pair.shortPricePnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
@@ -328,8 +329,9 @@ export default function TradeHistory() {
   if (pairs.length === 0 && reasonEvents.length === 0 && !loading) return null;
 
   return (
-    <div className="glass-card" style={{ padding: 0, overflow: 'hidden' }}>
+    <div className="glass-card trade-history-panel" style={{ padding: 0, overflow: 'hidden' }}>
       <div
+        className="trade-history-header"
         onClick={() => setCollapsed((prev) => !prev)}
         style={{
           display: 'flex',
@@ -373,7 +375,7 @@ export default function TradeHistory() {
       {!collapsed && (
         <>
           {reasonSummary.length > 0 && (
-            <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="trade-history-reason-summary" style={{ padding: '10px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
               <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>미진행 사유 요약</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {reasonSummary.map((entry) => (
@@ -395,9 +397,9 @@ export default function TradeHistory() {
           )}
 
           {latestReasonEvents.length > 0 && (
-            <div style={{ padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="trade-history-reason-events" style={{ padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
               <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>최근 미진행 이벤트</div>
-              <div style={{ maxHeight: 180, overflowY: 'auto', fontSize: 11, display: 'grid', gap: 6 }}>
+              <div className="trade-history-reason-list" style={{ maxHeight: 180, overflowY: 'auto', fontSize: 11, display: 'grid', gap: 6 }}>
                 {latestReasonEvents.map((event, index) => (
                   <div
                     key={`${event.type}-${event.timestamp}-${index}`}
@@ -426,8 +428,9 @@ export default function TradeHistory() {
             </div>
           )}
 
-          <div style={{ maxHeight: HISTORY_SCROLL_HEIGHT, overflowY: 'auto' }}>
+          <div className="trade-history-table-wrap" style={{ maxHeight: HISTORY_SCROLL_HEIGHT, overflowY: 'auto' }}>
             <div
+              className="trade-history-table-header"
               style={{
                 display: 'grid',
                 gridTemplateColumns: '50px 80px 1fr 90px 90px 90px 170px 30px',

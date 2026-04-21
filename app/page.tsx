@@ -45,7 +45,7 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0a0e17' }}>
+    <div className="dashboard-root" style={{ minHeight: '100vh', background: '#0a0e17' }}>
       <Header />
 
       <main
@@ -90,7 +90,7 @@ export default function DashboardPage() {
         <LogPanel />
 
         {/* Footer */}
-        <div style={{ textAlign: 'center', padding: '16px 0', fontSize: 11, color: 'var(--color-text-muted)' }}>
+        <div className="dashboard-footer" style={{ textAlign: 'center', padding: '16px 0', fontSize: 11, color: 'var(--color-text-muted)' }}>
           펀딩피 헷징 프로그램 • 멀티 거래소 REST API 모니터링 • 8시간마다 펀딩 수령
         </div>
       </main>

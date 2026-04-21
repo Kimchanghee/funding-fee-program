@@ -35,26 +35,29 @@ export default function CountdownTimer({ targetTime, label = '다음 펀딩까�
   const urgency = !expired && !noTarget && totalSeconds < 300; // less than 5 min
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-      <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+    <div className="countdown-timer" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+      <span className="countdown-label" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
         {label}
         {fundingIntervalMs != null && (
-          <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 600, color: fundingIntervalMs < 8 * 3600000 ? '#10b981' : 'var(--color-text-muted)' }}>
+          <span
+            className="countdown-interval"
+            style={{ marginLeft: 4, fontSize: 10, fontWeight: 600, color: fundingIntervalMs < 8 * 3600000 ? '#10b981' : 'var(--color-text-muted)' }}
+          >
             ({Math.round(fundingIntervalMs / 3600000)}h 주기)
           </span>
         )}
       </span>
       {noTarget ? (
-        <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-muted)' }}>
+        <span className="countdown-value countdown-value-pending" style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-muted)' }}>
           조회 중...
         </span>
       ) : expired ? (
-        <span style={{ fontSize: 14, fontWeight: 600, color: '#f59e0b' }}>
+        <span className="countdown-value countdown-value-expired" style={{ fontSize: 14, fontWeight: 600, color: '#f59e0b' }}>
           펀딩 정산 중...
         </span>
       ) : (
         <span
-          className="mono"
+          className={`mono countdown-value ${urgency ? 'countdown-value-urgent' : 'countdown-value-normal'}`}
           style={{
             fontSize: 20,
             fontWeight: 700,

@@ -55,8 +55,8 @@ export default function FeePaybackSummary() {
   }, [strategyConfig.feeOverrides, strategyConfig.paybackOverrides]);
 
   return (
-    <div className="glass-card" style={{ padding: '14px 16px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+    <div className="glass-card fee-payback-summary" style={{ padding: '14px 16px' }}>
+      <div className="fee-payback-summary-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text)' }}>
           거래소별 수수료/페이백 매트릭스
         </div>
@@ -65,8 +65,8 @@ export default function FeePaybackSummary() {
         </div>
       </div>
 
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', minWidth: 880, borderCollapse: 'collapse' }}>
+      <div className="fee-payback-summary-table-wrap" style={{ overflowX: 'auto' }}>
+        <table className="fee-payback-summary-table" style={{ width: '100%', minWidth: 880, borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
               <th style={th}>거래소</th>

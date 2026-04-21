@@ -340,6 +340,51 @@ body {
   display: none;
 }
 
+.kst-clock {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.countdown-timer {
+  min-width: 0;
+}
+
+.countdown-label {
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.countdown-interval {
+  white-space: nowrap;
+}
+
+.countdown-value {
+  line-height: 1;
+}
+
+.log-badge {
+  white-space: nowrap;
+}
+
+.error-card {
+  padding: 20px;
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.75);
+}
+
+.error-retry-btn {
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.error-retry-btn:hover {
+  background: #334155 !important;
+  border-color: #475569 !important;
+}
+
 /* Class for "비고" remarks column — only visible on wide screens */
 .opp-hide-tablet {
   /* default visible */
@@ -583,6 +628,56 @@ body {
     gap: 4px !important;
   }
 
+  .kst-clock {
+    font-size: 11px !important;
+  }
+
+  .kst-clock-compact {
+    font-size: 10px !important;
+  }
+
+  .countdown-label {
+    font-size: 10px !important;
+  }
+
+  .countdown-interval {
+    font-size: 9px !important;
+  }
+
+  .countdown-value {
+    font-size: 16px !important;
+    letter-spacing: 0.03em !important;
+  }
+
+  .countdown-value-pending,
+  .countdown-value-expired {
+    font-size: 12px !important;
+    letter-spacing: normal !important;
+  }
+
+  .log-badge {
+    min-width: 46px !important;
+    font-size: 9px !important;
+    padding: 1px 4px !important;
+  }
+
+  .error-card {
+    padding: 14px !important;
+    border-radius: 12px !important;
+  }
+
+  .error-title {
+    font-size: 17px !important;
+  }
+
+  .error-message {
+    font-size: 12px !important;
+  }
+
+  .error-retry-btn {
+    width: 100% !important;
+  }
+
   /* Main content padding */
   .main-content {
     padding: 8px !important;
@@ -622,6 +717,371 @@ body {
     padding: 8px !important;
     gap: 4px !important;
   }
+
+  .countdown-value {
+    font-size: 14px !important;
+    letter-spacing: 0.02em !important;
+  }
+
+  .log-badge {
+    min-width: 40px !important;
+  }
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Dashboard + Settings Responsive Hardening (2026-04-22)
+   ────────────────────────────────────────────────────────────────────────── */
 
+.settings-card,
+.balance-mode-card,
+.sim-mode-column,
+.balance-real-card,
+.exchange-mini-card {
+  min-width: 0;
+}
+
+@media (max-width: 1200px) {
+  .settings-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .return-projection-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+
+  .balance-equalization-cards {
+    flex-direction: column !important;
+  }
+
+  .balance-mode-card {
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+}
+
+@media (max-width: 1024px) {
+  .dashboard-root .main-content {
+    padding: 12px !important;
+    gap: 12px !important;
+  }
+
+  .opportunity-card-panel {
+    padding: 14px 16px !important;
+  }
+
+  .settings-main {
+    padding: 16px !important;
+  }
+
+  .settings-card {
+    padding: 18px !important;
+  }
+
+  .settings-input-grid,
+  .settings-fee-grid,
+  .settings-payback-grid,
+  .settings-how-grid {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)) !important;
+    gap: 10px !important;
+  }
+
+  .settings-toggle-list {
+    gap: 10px !important;
+  }
+
+  .settings-toggle-item {
+    min-width: 0 !important;
+    flex: 1 1 260px !important;
+  }
+
+  .settings-exchange-row {
+    padding: 10px 12px !important;
+  }
+
+  .data-status-bar {
+    padding: 8px 12px !important;
+    gap: 8px !important;
+  }
+
+  .data-status-meta {
+    margin-left: 0 !important;
+  }
+
+  .funding-rate-header,
+  .funding-history-header,
+  .positions-header,
+  .trade-history-header,
+  .log-panel-header,
+  .return-projection-header {
+    flex-wrap: wrap !important;
+    align-items: flex-start !important;
+    gap: 8px !important;
+    padding: 12px 14px !important;
+  }
+
+  .funding-history-summary {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+
+  .log-panel-filters {
+    flex-wrap: wrap !important;
+  }
+
+  .return-projection-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .return-projection-footer {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 6px !important;
+  }
+
+  .api-panel,
+  .strategy-panel {
+    width: min(560px, 96vw) !important;
+    max-height: calc(100vh - 24px) !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .dashboard-root .main-content {
+    padding: 8px !important;
+    gap: 10px !important;
+  }
+
+  .dashboard-footer {
+    font-size: 10px !important;
+    line-height: 1.4 !important;
+  }
+
+  .opportunity-card-panel {
+    padding: 10px 10px !important;
+  }
+
+  .opp-table-wrap {
+    overflow-x: visible !important;
+  }
+
+  .opp-table-row {
+    min-width: 0 !important;
+    padding: 9px 10px !important;
+  }
+
+  .settings-main {
+    padding: 10px !important;
+  }
+
+  .settings-card {
+    padding: 12px !important;
+  }
+
+  .settings-input-grid,
+  .settings-fee-grid,
+  .settings-payback-grid,
+  .settings-how-grid {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+
+  .settings-toggle-list {
+    flex-direction: column !important;
+  }
+
+  .settings-toggle-item {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .settings-exchange-row {
+    flex-wrap: wrap !important;
+    gap: 6px !important;
+    align-items: flex-start !important;
+  }
+
+  .settings-exchange-row > div:last-child {
+    width: 100%;
+    justify-content: space-between !important;
+  }
+
+  .data-status-bar {
+    padding: 8px 10px !important;
+    border-radius: 10px !important;
+  }
+
+  .data-status-divider,
+  .data-status-spacer {
+    display: none !important;
+  }
+
+  .data-status-meta {
+    width: 100%;
+    justify-content: space-between !important;
+  }
+
+  .fee-payback-summary {
+    padding: 10px 12px !important;
+  }
+
+  .fee-payback-summary-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 4px !important;
+  }
+
+  .fee-payback-summary-table {
+    min-width: 680px !important;
+  }
+
+  .funding-rate-header,
+  .funding-history-header,
+  .positions-header,
+  .trade-history-header,
+  .log-panel-header,
+  .return-projection-header {
+    padding: 10px 12px !important;
+  }
+
+  .funding-rate-table-wrap table {
+    min-width: 860px !important;
+  }
+
+  .funding-history-table-wrap table {
+    min-width: 620px !important;
+  }
+
+  .positions-table-wrap table {
+    min-width: 980px !important;
+  }
+
+  .trade-history-table-wrap {
+    overflow: auto !important;
+  }
+
+  .trade-history-table-header,
+  .trade-pair-row-main {
+    min-width: 760px !important;
+  }
+
+  .trade-pair-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .trade-pair-result-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .trade-history-reason-list > div {
+    grid-template-columns: 1fr !important;
+    gap: 4px !important;
+  }
+
+  .log-panel-filters {
+    width: 100%;
+  }
+
+  .log-panel-list {
+    padding: 4px 0 !important;
+  }
+
+  .return-projection-body {
+    padding: 10px 12px !important;
+  }
+
+  .return-projection-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 6px !important;
+  }
+
+  .balance-cards-toolbar {
+    justify-content: stretch !important;
+  }
+
+  .balance-cards-toolbar button {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+
+  .balance-hedge-row {
+    flex-direction: column !important;
+    gap: 10px !important;
+  }
+
+  .sim-mode-column {
+    padding: 10px 12px !important;
+  }
+
+  .sim-mode-column > div:nth-child(2) {
+    flex-wrap: wrap !important;
+  }
+
+  .balance-mode-stats-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .balance-mode-chip-list {
+    gap: 8px !important;
+  }
+
+  .exchange-delta-chip {
+    min-width: calc(50% - 6px) !important;
+    flex: 1 1 calc(50% - 6px);
+  }
+
+  .api-panel,
+  .strategy-panel,
+  .positions-close-modal {
+    width: calc(100vw - 12px) !important;
+    min-width: 0 !important;
+    max-width: calc(100vw - 12px) !important;
+    max-height: calc(100vh - 12px) !important;
+  }
+
+  .api-panel-header,
+  .strategy-panel-header {
+    padding: 14px 12px !important;
+  }
+
+  .api-panel-form,
+  .strategy-panel-body {
+    padding: 12px !important;
+    gap: 12px !important;
+  }
+
+  .api-panel-actions {
+    flex-wrap: wrap !important;
+  }
+
+  .api-panel-actions > button {
+    min-width: 0 !important;
+    flex: 1 1 100% !important;
+  }
+
+  .confirm-dialog-overlay {
+    padding: 10px !important;
+  }
+
+  .confirm-dialog-card {
+    border-radius: 12px !important;
+  }
+
+  .confirm-dialog-actions {
+    flex-direction: column-reverse !important;
+  }
+
+  .confirm-dialog-actions > button {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+
+  .login-page {
+    padding: 12px !important;
+  }
+
+  .login-form {
+    padding: 24px 16px !important;
+    max-width: 100% !important;
+    gap: 14px !important;
+  }
+}

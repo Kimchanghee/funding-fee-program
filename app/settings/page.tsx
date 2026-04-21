@@ -127,7 +127,7 @@ export default function SettingsPage() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
       <Header />
-      <main style={{ maxWidth: 1000, margin: '0 auto', padding: '24px' }}>
+      <main className="settings-main" style={{ maxWidth: 1000, margin: '0 auto', padding: '24px' }}>
 
         {/* Back */}
         <Link href="/" style={{ textDecoration: 'none' }}>
@@ -136,14 +136,14 @@ export default function SettingsPage() {
           </button>
         </Link>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div className="settings-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
 
           {/* Strategy Config */}
-          <div className="glass-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
+          <div className="glass-card settings-card settings-strategy-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 20, color: 'var(--color-text)' }}>
               전략 파라미터
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
+            <div className="settings-input-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
               <div>
                 <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
                   포지션당 투자금 (USDT)
@@ -236,7 +236,7 @@ export default function SettingsPage() {
               <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: 'var(--color-text)' }}>
                 스나이프 타이밍
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
+              <div className="settings-input-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
                 <div>
                   <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6, display: 'block' }}>
                     진입 리드 타임 (ms)
@@ -312,13 +312,14 @@ export default function SettingsPage() {
             </div>
 
             {/* Toggles */}
-            <div style={{ display: 'flex', gap: 16, marginTop: 16, flexWrap: 'wrap' }}>
+            <div className="settings-toggle-list" style={{ display: 'flex', gap: 16, marginTop: 16, flexWrap: 'wrap' }}>
               {[
                 { key: 'autoExecute', label: '자동 진입', desc: '최적 기회 발견 시 자동으로 포지션 진입', dangerous: true },
               ].map(({ key, label, desc, dangerous }) => {
                 const value = strategyConfig[key as keyof typeof strategyConfig] as boolean;
                 return (
                   <div
+                    className="settings-toggle-item"
                     key={key}
                     style={{
                       padding: '12px 16px',
@@ -369,7 +370,7 @@ export default function SettingsPage() {
           </div>
 
           {/* Fee Overrides */}
-          <div className="glass-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
+          <div className="glass-card settings-card settings-fee-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
               거래소별 수수료 설정
               <span style={{ fontSize: 10, fontWeight: 800, color: '#10b981', border: '1px solid rgba(16,185,129,0.35)', background: 'rgba(16,185,129,0.12)', borderRadius: 999, padding: '2px 8px' }}>{EXCHANGE_FEE_PRESET_LABEL}</span>
@@ -377,7 +378,7 @@ export default function SettingsPage() {
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 16 }}>
               {EXCHANGE_FEE_PRESET_NOTE} Leave blank to use this preset value, or enter your custom fee.
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            <div className="settings-fee-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
               {OPERABLE_EXCHANGES.map(ex => {
                 const defaults = EXCHANGE_FEES[ex];
                 const override = strategyConfig.feeOverrides?.[ex];
@@ -439,7 +440,7 @@ export default function SettingsPage() {
           </div>
 
           {/* Payback Overrides */}
-          <div className="glass-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
+          <div className="glass-card settings-card settings-payback-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
               거래소별 2계정 페이백 설정
               <span style={{ fontSize: 10, fontWeight: 800, color: '#22d3ee', border: '1px solid rgba(34,211,238,0.35)', background: 'rgba(34,211,238,0.12)', borderRadius: 999, padding: '2px 8px' }}>{EXCHANGE_PAYBACK_PRESET_LABEL}</span>
@@ -447,7 +448,7 @@ export default function SettingsPage() {
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 16 }}>
               {EXCHANGE_PAYBACK_PRESET_NOTE} Leave blank to use preset, or enter custom payback % for each account.
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            <div className="settings-payback-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
               {OPERABLE_EXCHANGES.map(ex => {
                 const defaults = EXCHANGE_PAYBACKS[ex];
                 const override = strategyConfig.paybackOverrides?.[ex];
@@ -530,7 +531,7 @@ export default function SettingsPage() {
           </div>
 
           {/* Exchange Status */}
-          <div className="glass-card" style={{ padding: 24 }}>
+          <div className="glass-card settings-card settings-exchange-status-card" style={{ padding: 24 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: 'var(--color-text)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               거래소 연결 상태
               <button
@@ -547,6 +548,7 @@ export default function SettingsPage() {
                 const connected = connectedExchanges.includes(ex);
                 return (
                   <div
+                    className="settings-exchange-row"
                     key={ex}
                     onClick={connected ? undefined : () => openApiPanelFor(ex)}
                     role={connected ? undefined : 'button'}
@@ -602,7 +604,7 @@ export default function SettingsPage() {
           </div>
 
           {/* Strategy Status */}
-          <div className="glass-card" style={{ padding: 24 }}>
+          <div className="glass-card settings-card settings-strategy-status-card" style={{ padding: 24 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: 'var(--color-text)' }}>
               전략 현황
             </div>
@@ -658,11 +660,11 @@ export default function SettingsPage() {
           </div>
 
           {/* How it works */}
-          <div className="glass-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
+          <div className="glass-card settings-card settings-how-card" style={{ padding: 24, gridColumn: '1 / -1' }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: 'var(--color-text)' }}>
               💡 작동 방식
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+            <div className="settings-how-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
               {[
                 { step: '1', title: '펀딩률 스캔', desc: '5개 거래소에서 40개+ 코인의 펀딩률을 30초마다 실시간 수집' },
                 { step: '2', title: '최적 쌍 발견', desc: '동일 코인에서 가장 높은 펀딩률(숏)과 가장 낮은 펀딩률(롱) 거래소 쌍 탐색' },

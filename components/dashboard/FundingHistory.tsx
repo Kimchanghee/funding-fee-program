@@ -158,8 +158,8 @@ export default function FundingHistory() {
   }, [notional, total, totalFundingAmount]);
 
   return (
-    <div className="glass-card" style={{ overflow: 'hidden' }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+    <div className="glass-card funding-history-panel" style={{ overflow: 'hidden' }}>
+      <div className="funding-history-header" style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <DollarSign size={15} color="#10b981" />
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text)' }}>펀딩피 수령 내역</div>
@@ -180,7 +180,7 @@ export default function FundingHistory() {
         </button>
       </div>
 
-      <div style={{ padding: '8px 12px', borderBottom: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div className="funding-history-summary" style={{ padding: '8px 12px', borderBottom: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
           페이지: {fromIndex}-{toIndex} / {total}
         </span>
@@ -192,7 +192,7 @@ export default function FundingHistory() {
         </span>
       </div>
 
-      <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+      <div className="funding-history-table-wrap" style={{ maxHeight: 240, overflowY: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
@@ -224,7 +224,7 @@ export default function FundingHistory() {
       </div>
 
       {totalPages > 1 && (
-        <div style={{ padding: '10px 12px', borderTop: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+        <div className="funding-history-pagination" style={{ padding: '10px 12px', borderTop: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
           <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
             {page} / {totalPages}
           </span>

@@ -13,6 +13,7 @@ export default function LogBadge({ level }: { level: LogLevel }) {
   const { bg, color, label } = CONFIG[level];
   return (
     <span
+      className="log-badge"
       style={{
         display: 'inline-flex',
         alignItems: 'center',

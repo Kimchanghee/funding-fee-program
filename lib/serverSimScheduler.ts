@@ -292,28 +292,32 @@ function getFallbackImpactPercent(config: Pick<StrategyConfig, 'maxSlippagePerce
   return (snipeConfig.targetImpactBps ?? 4) / 100;
 }
 
-function getOpportunityYieldScore(
+function estimatePreEntryConservativeEV(
   opportunity: ArbitrageOpportunity,
-  strategyConfig: StrategyConfig,
-): number {
-  const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
-  if (!Number.isFinite(notional) || notional <= 0) return 0;
+  config: Pick<
+    StrategyConfig,
+    'investmentUSDT' | 'leverage' | 'feeOverrides' | 'paybackOverrides' | 'maxSlippagePercent' | 'confirmedSnipeConfig'
+  >,
+  investmentUSDT = config.investmentUSDT,
+) {
+  const notional = investmentUSDT * config.leverage;
+  if (!Number.isFinite(notional) || notional <= 0) return null;
 
   const shortFeeRate = resolveRuntimeFee(
     opportunity.shortExchange,
     'taker',
-    strategyConfig.feeOverrides,
-    strategyConfig.paybackOverrides,
+    config.feeOverrides,
+    config.paybackOverrides,
   );
   const longFeeRate = resolveRuntimeFee(
     opportunity.longExchange,
     'taker',
-    strategyConfig.feeOverrides,
-    strategyConfig.paybackOverrides,
+    config.feeOverrides,
+    config.paybackOverrides,
   );
   const roundTripFeeDec = (shortFeeRate + longFeeRate) * 2;
 
-  const snipeConfig = strategyConfig.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+  const snipeConfig = config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
   const usesInstantRate = pairUsesInstantaneousRate(opportunity.shortExchange, opportunity.longExchange);
   const shortDrift = snipeConfig.useDriftBuffer
     ? calcDriftBuffer(opportunity.shortRate, undefined, usesInstantRate)
@@ -321,9 +325,9 @@ function getOpportunityYieldScore(
   const longDrift = snipeConfig.useDriftBuffer
     ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
     : 0;
-  const impactDec = getFallbackImpactPercent(strategyConfig) / 100;
+  const impactDec = getFallbackImpactPercent(config) / 100;
 
-  const ev = calcConservativeEV(
+  return calcConservativeEV(
     notional,
     opportunity.shortRate,
     opportunity.longRate,
@@ -333,6 +337,46 @@ function getOpportunityYieldScore(
     impactDec,
     impactDec,
   );
+}
+
+function calcExpectedRoiPercent(expectedNetProfit: number, investmentUSDT: number, leverage: number): number {
+  if (!Number.isFinite(expectedNetProfit) || investmentUSDT <= 0 || leverage <= 0) return 0;
+  return (expectedNetProfit / (investmentUSDT * leverage)) * 100;
+}
+
+function buildVolumeByExchangeAsset(rates: FundingRate[]): Map<string, number> {
+  const volumeByExchangeAsset = new Map<string, number>();
+  for (const rate of rates) {
+    if (typeof rate.quoteVolume24h !== 'number' || !Number.isFinite(rate.quoteVolume24h)) continue;
+    volumeByExchangeAsset.set(`${rate.exchange}:${rate.baseAsset}`, rate.quoteVolume24h);
+  }
+  return volumeByExchangeAsset;
+}
+
+function resolveOpportunityVolumeStatus(
+  opportunity: ArbitrageOpportunity,
+  minVolume24hUSD: number,
+  volumeByExchangeAsset: Map<string, number>,
+) {
+  const shortQuoteVolume24h = volumeByExchangeAsset.get(`${opportunity.shortExchange}:${opportunity.baseAsset}`);
+  const longQuoteVolume24h = volumeByExchangeAsset.get(`${opportunity.longExchange}:${opportunity.baseAsset}`);
+  const belowMin = minVolume24hUSD > 0 && (
+    (shortQuoteVolume24h !== undefined && shortQuoteVolume24h < minVolume24hUSD)
+    || (longQuoteVolume24h !== undefined && longQuoteVolume24h < minVolume24hUSD)
+  );
+  return {
+    shortQuoteVolume24h,
+    longQuoteVolume24h,
+    belowMin,
+  };
+}
+
+function getOpportunityYieldScore(
+  opportunity: ArbitrageOpportunity,
+  strategyConfig: StrategyConfig,
+): number {
+  const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig);
+  if (!ev) return 0;
   if (!ev.passesMinProfit || !ev.passesEVRatio) return 0;
   return Math.max(0, ev.expectedNetUSD / getOpportunityIntervalHours(opportunity));
 }
@@ -1211,6 +1255,8 @@ class ServerSimScheduler {
     const candidateIds = new Set(candidates.map((opportunity) => getOpportunityId(opportunity)));
     const initialBalances = state.simInitialBalances as Record<string, number>;
     const opportunities = this.opportunities.slice(0, ANALYTICS_MAX_CANDIDATES);
+    const minVolume24hUSD = Math.max(0, this.config.minVolume24hUSD ?? 0);
+    const volumeByExchangeAsset = buildVolumeByExchangeAsset(this.latestRates);
 
     for (const exchange of this.config.enabledExchanges) {
       const balance = prePlanBalances[exchange] ?? 0;
@@ -1269,6 +1315,7 @@ class ServerSimScheduler {
       const longInitial = initialBalances[opportunity.longExchange] ?? 0;
       const shortFreeRatio = shortInitial > 0 ? (shortBalance / shortInitial) * 100 : 0;
       const longFreeRatio = longInitial > 0 ? (longBalance / longInitial) * 100 : 0;
+      const volumeStatus = resolveOpportunityVolumeStatus(opportunity, minVolume24hUSD, volumeByExchangeAsset);
       const fundingTsDiffMs = (() => {
         const shortRate = this.latestRates.find((rate) => (
           rate.exchange === opportunity.shortExchange && rate.symbol === opportunity.shortSymbol
@@ -1293,6 +1340,9 @@ class ServerSimScheduler {
       if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
         rejectReasons.push('spread_below_threshold');
       }
+      if (volumeStatus.belowMin) {
+        rejectReasons.push('volume_below_min');
+      }
       if (this.routeFailureMemory.isBlocked(routeFailureKey, now)) {
         rejectReasons.push('route_failure_blocked');
       }
@@ -1312,6 +1362,17 @@ class ServerSimScheduler {
       if (!inReplanFreeze && !inAheadWindow) {
         rejectReasons.push('outside_schedule_window');
       }
+      const analysisInvestmentUSDT = selectedAllocation > 0 ? selectedAllocation : strategyConfig.investmentUSDT;
+      const preEntryEv = estimatePreEntryConservativeEV(
+        opportunity,
+        strategyConfig,
+        analysisInvestmentUSDT,
+      );
+      if (!preEntryEv) {
+        rejectReasons.push('profitability_calculation_failed');
+      } else if (!preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) {
+        rejectReasons.push('profitability_scan_failed');
+      }
       if (rejectReasons.length === 0 && !candidateIds.has(opportunityId)) {
         rejectReasons.push('not_in_candidates');
       }
@@ -1325,6 +1386,12 @@ class ServerSimScheduler {
         : rejectReasons.length === 0
           ? 'unselected'
           : 'rejected';
+      const expectedNetProfit = preEntryEv?.expectedNetUSD ?? opportunity.netProfit;
+      const expectedRoiPercent = calcExpectedRoiPercent(
+        expectedNetProfit,
+        analysisInvestmentUSDT,
+        strategyConfig.leverage,
+      );
       events.push({
         timestamp: now,
         type: 'schedule_probe',
@@ -1339,7 +1406,8 @@ class ServerSimScheduler {
         notional: (selectedAllocation > 0 ? selectedAllocation : strategyConfig.investmentUSDT) * strategyConfig.leverage,
         shortRate: opportunity.shortRate,
         longRate: opportunity.longRate,
-        expectedNetProfit: opportunity.netProfit,
+        expectedNetProfit,
+        expectedRoiPercent,
         milestone: 'analysis_candidate',
         reason: status,
         analysis: {
@@ -1359,13 +1427,21 @@ class ServerSimScheduler {
           longBalanceUSDT: longBalance,
           shortFreeMarginPct: shortFreeRatio,
           longFreeMarginPct: longFreeRatio,
+          shortQuoteVolume24h: volumeStatus.shortQuoteVolume24h ?? null,
+          longQuoteVolume24h: volumeStatus.longQuoteVolume24h ?? null,
+          minVolume24hUSD,
           fundingTimestampDiffMs: fundingTsDiffMs,
           inReplanFreeze,
           previousScheduleExists: previousExists,
           withinNearDueGrace: withinGrace,
           inScheduleAheadWindow: inAheadWindow,
+          expectedNetProfit,
+          expectedRoiPercent,
+          passesMinProfit: preEntryEv?.passesMinProfit ?? null,
+          passesEVRatio: preEntryEv?.passesEVRatio ?? null,
+          evRatio: preEntryEv?.evRatio ?? null,
         },
-        detail: `status=${status} alloc=${selectedAllocation.toFixed(4)} score=${score.toFixed(6)} reasons=${rejectReasons.join(',') || 'none'} ttfMs=${Math.round(opportunity.nextFundingTime - now)}`,
+        detail: `status=${status} alloc=${selectedAllocation.toFixed(4)} score=${score.toFixed(6)} expNet=${expectedNetProfit.toFixed(6)} expRoi=${expectedRoiPercent.toFixed(4)}% reasons=${rejectReasons.join(',') || 'none'} ttfMs=${Math.round(opportunity.nextFundingTime - now)}`,
       });
     }
 
@@ -1545,9 +1621,11 @@ class ServerSimScheduler {
       0,
       roundTripFeePct * 100,
     );
-    const expectedRoiPercent = investmentUSDT > 0
-      ? (expectedNetProfit / Math.max(1, investmentUSDT * 2)) * 100
-      : 0;
+    const expectedRoiPercent = calcExpectedRoiPercent(
+      expectedNetProfit,
+      investmentUSDT,
+      this.config.leverage,
+    );
     const timeToExecutionMs = options?.timeToExecutionMs;
     const timeFromFundingMs = options?.timeFromFundingMs;
     const marketSnapshot = options?.marketSnapshot;
@@ -2142,6 +2220,8 @@ class ServerSimScheduler {
     const prePlanBalances = { ...availableBalance } as Record<string, number>;
     const balancePlan = buildBalanceEqualizationPlan(this.config.enabledExchanges, availableBalance);
     const planningBalances = getBalanceEqualizationPlanningBalances(balancePlan, true);
+    const minVolume24hUSD = Math.max(0, this.config.minVolume24hUSD ?? 0);
+    const volumeByExchangeAsset = buildVolumeByExchangeAsset(this.latestRates);
     const occupiedLegs = new Set<string>();
 
     for (const position of state.simPositions) {
@@ -2159,6 +2239,10 @@ class ServerSimScheduler {
         if (!this.config.enabledExchanges.includes(tierCEx)) return false;
       }
       if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
+        return false;
+      }
+      const volumeStatus = resolveOpportunityVolumeStatus(opportunity, minVolume24hUSD, volumeByExchangeAsset);
+      if (volumeStatus.belowMin) {
         return false;
       }
       const routeFailureKey = makeRouteFailureKey(

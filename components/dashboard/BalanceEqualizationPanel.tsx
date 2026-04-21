@@ -37,6 +37,7 @@ function ExchangeDeltaChip({
 
   return (
     <div
+      className="exchange-delta-chip"
       style={{
         padding: '10px 12px',
         borderRadius: 10,
@@ -94,7 +95,7 @@ function ModeBalancePlanCard({
 
   return (
     <div
-      className="glass-card"
+      className="glass-card balance-mode-card"
       style={{
         flex: 1,
         minWidth: 320,
@@ -144,7 +145,7 @@ function ModeBalancePlanCard({
         </span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
+      <div className="balance-mode-stats-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
         <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(15,23,42,0.45)', border: '1px solid rgba(148,163,184,0.12)' }}>
           <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>Total</div>
           <div className="mono" style={{ fontSize: 16, fontWeight: 800, color: 'var(--color-text)' }}>
@@ -165,7 +166,7 @@ function ModeBalancePlanCard({
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+      <div className="balance-mode-chip-list" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
         {exchanges.map((item) => (
           <ExchangeDeltaChip
             key={item.exchange}
@@ -257,7 +258,7 @@ export default function BalanceEqualizationPanel() {
 
   return (
     <section
-      className="glass-card"
+      className="glass-card balance-equalization-panel"
       style={{
         padding: 20,
         display: 'flex',
@@ -289,7 +290,7 @@ export default function BalanceEqualizationPanel() {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+      <div className="balance-equalization-cards" style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
         <ModeBalancePlanCard
           label="SIM"
           active={simulationMode}

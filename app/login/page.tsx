@@ -41,6 +41,7 @@ export default function LoginPage() {
 
   return (
     <div
+      className="login-page"
       style={{
         minHeight: '100vh',
         display: 'flex',
@@ -50,6 +51,7 @@ export default function LoginPage() {
       }}
     >
       <form
+        className="login-form"
         onSubmit={handleSubmit}
         style={{
           background: '#141926',

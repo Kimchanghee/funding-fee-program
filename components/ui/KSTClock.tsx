@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from 'react';
 
-export default function KSTClock({ showLabel = true, compact = false }: { showLabel?: boolean; compact?: boolean }) {
+interface KSTClockProps {
+  showLabel?: boolean;
+  compact?: boolean;
+  className?: string;
+}
+
+export default function KSTClock({ showLabel = true, compact = false, className = '' }: KSTClockProps) {
   const [time, setTime] = useState('');
 
   useEffect(() => {
@@ -23,7 +29,10 @@ export default function KSTClock({ showLabel = true, compact = false }: { showLa
   }, []);
 
   return (
-    <span className="mono" style={{ fontSize: compact ? 11 : 13, color: 'var(--color-text-muted)' }}>
+    <span
+      className={`mono kst-clock ${compact ? 'kst-clock-compact' : ''} ${className}`.trim()}
+      style={{ fontSize: compact ? 11 : 13, color: 'var(--color-text-muted)' }}
+    >
       {showLabel ? `KST ${time}` : time}
     </span>
   );

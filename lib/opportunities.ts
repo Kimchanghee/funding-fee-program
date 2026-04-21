@@ -201,8 +201,8 @@ export function findOpportunities(
   paybackOverrides?: PaybackOverrides,
   minVolume24hUSD?: number,
 ): ArbitrageOpportunity[] {
-  // 볼륨 필터는 비동기 fetchTickers 타이밍 이슈로 여기서 적용하지 않음
-  // → 스케줄링 단계(fundingStore)에서 realSpread/볼륨 데이터 확인 후 필터링
+  // 볼륨 필터는 scheduler 단계에서(REAL/SIM 공통) reject reason을 남기기 위해 적용한다.
+  // findOpportunities는 순수 기회 계산만 담당한다.
   void minVolume24hUSD; // kept in signature for scheduling callers
   const byAsset = new Map<string, FundingRate[]>();
   for (const rate of rates) {

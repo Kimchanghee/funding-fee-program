@@ -42,6 +42,7 @@ function CloseModal({ position, onClose }: { position: Position; onClose: () => 
 
   return (
     <div
+      className="positions-close-overlay"
       style={{
         position: 'fixed',
         inset: 0,
@@ -55,7 +56,7 @@ function CloseModal({ position, onClose }: { position: Position; onClose: () => 
       onClick={onClose}
     >
       <div
-        className="glass-card animate-slide-in"
+        className="glass-card animate-slide-in positions-close-modal"
         style={{ padding: 28, minWidth: 360, maxWidth: 420 }}
         onClick={e => e.stopPropagation()}
       >
@@ -129,9 +130,9 @@ export default function PositionsTable() {
 
   return (
     <>
-      <div className="glass-card" style={{ overflow: 'hidden' }}>
+      <div className="glass-card positions-panel" style={{ overflow: 'hidden' }}>
         {/* Header */}
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="positions-header" style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
               {simulationMode ? '[SIM] 시뮬 포지션' : '활성 포지션'}
@@ -207,7 +208,7 @@ export default function PositionsTable() {
         </div>
 
         {/* Table */}
-        <div style={{ overflowX: 'auto' }}>
+        <div className="positions-table-wrap" style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>

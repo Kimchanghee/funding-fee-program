@@ -209,9 +209,9 @@ export default function ReturnProjectionPanel() {
   const data = compoundMode ? compound : simple;
 
   return (
-    <div className="glass-card" style={{ overflow: 'hidden' }}>
+    <div className="glass-card return-projection-panel" style={{ overflow: 'hidden' }}>
       {/* Header */}
-      <div style={{
+      <div className="return-projection-header" style={{
         padding: '14px 20px', borderBottom: '1px solid var(--color-border)',
         display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
       }}>
@@ -253,8 +253,8 @@ export default function ReturnProjectionPanel() {
       </div>
 
       {/* Projections Grid */}
-      <div style={{ padding: '14px 20px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 8 }}>
+      <div className="return-projection-body" style={{ padding: '14px 20px' }}>
+        <div className="return-projection-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 8 }}>
           {TIME_PERIODS.map(({ key: periodKey, label }) => {
             const value = data[periodKey];
             const roi = (value / deployedCapital) * 100;
@@ -283,7 +283,7 @@ export default function ReturnProjectionPanel() {
         </div>
 
         {/* Footer: 펀딩 수익 + 수수료 + 단리 vs 복리 비교 */}
-        <div style={{
+        <div className="return-projection-footer" style={{
           marginTop: 10, padding: '6px 12px', borderRadius: 6,
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           fontSize: 10, color: 'var(--color-text-muted)',

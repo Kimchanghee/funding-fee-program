@@ -54,6 +54,7 @@ export default function DataStatusBar() {
 
   return (
     <div
+      className="data-status-bar"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -82,7 +83,7 @@ export default function DataStatusBar() {
         </span>
       </div>
 
-      <div style={{ width: 1, height: 16, background: 'var(--color-border)' }} />
+      <div className="data-status-divider" style={{ width: 1, height: 16, background: 'var(--color-border)' }} />
 
       {enabledExchanges.map(ex => {
         const status = exchangeFetchStatus[ex];
@@ -117,9 +118,9 @@ export default function DataStatusBar() {
         );
       })}
 
-      <div style={{ flex: 1 }} />
+      <div className="data-status-spacer" style={{ flex: 1 }} />
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="data-status-meta" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {totalRates > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
             <span className="mono" style={{ color: '#10b981', fontWeight: 600 }}>{totalRates}</span>

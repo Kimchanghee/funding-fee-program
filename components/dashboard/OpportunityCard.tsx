@@ -687,7 +687,7 @@ export default function OpportunityCard() {
         </div>
       )}
 
-      <div className="glass-card opportunity-glow" style={{
+      <div className="glass-card opportunity-glow opportunity-card-panel" style={{
         padding: '20px 24px',
         background: 'linear-gradient(135deg, rgba(16,185,129,0.04), rgba(15,22,35,1) 60%)',
         borderColor: 'rgba(16,185,129,0.2)',
@@ -930,7 +930,7 @@ export default function OpportunityCard() {
 
         {/* ═══ SECTION 2: Scheduled/Candidate Table ═══ */}
         {scheduledCoins.length > 0 && (
-          <div style={{ marginBottom: 0, overflowX: 'auto' }}>
+          <div className="opp-table-wrap" style={{ marginBottom: 0, overflowX: 'auto' }}>
             {scheduledCount === 0 && activeCount === 0 && candidateCount > 0 && (
               <div style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center',

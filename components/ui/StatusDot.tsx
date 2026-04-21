@@ -13,6 +13,7 @@ export default function StatusDot({ status, size = 8 }: StatusDotProps) {
 
   return (
     <span
+      className={`status-dot status-dot-${status}`}
       style={{
         display: 'inline-block',
         width: size,
