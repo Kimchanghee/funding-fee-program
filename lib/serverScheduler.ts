@@ -87,6 +87,7 @@ import {
   type TimingConfig,
 } from './types';
 import { getDataDir } from './dataDir';
+import { getSchedulerRuntimeIdentity, getTradeWindowDiagnostics } from './runtimeDiagnostics';
 
 const DATA_DIR = getDataDir();
 const STATE_FILE = join(DATA_DIR, 'scheduler-state.json');
@@ -94,6 +95,7 @@ const LOG_FILE = join(DATA_DIR, 'scheduler.log');
 const CLOSE_RETRY_DELAY_MS = 30_000;
 const FUNDING_MATCH_WINDOW_MS = 10 * 60 * 1000;
 const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
+const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
 const FULL_FUNDING_SCAN_INTERVAL_MS = 5 * 60 * 1000;
 const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
@@ -102,7 +104,25 @@ const MAX_ANALYSIS_CANDIDATES_PER_POLL = 120;
 const COMPOUND_BALANCE_USAGE_PCT = 0.9;
 const MIN_ENTRY_NOTIONAL_USDT = 100;
 const MAX_ADAPTIVE_NOTIONAL_ATTEMPTS = 4;
+const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
+const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
+const TRANSIENT_DATA_ERROR_PATTERNS = [
+  /timeout/i,
+  /timed out/i,
+  /network/i,
+  /socket/i,
+  /fetch failed/i,
+  /temporar/i,
+  /429/,
+  /rate limit/i,
+  /too many requests/i,
+  /ECONNRESET/i,
+  /ECONNREFUSED/i,
+  /ENOTFOUND/i,
+  /EAI_AGAIN/i,
+  /5\d{2}/,
+];
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -118,6 +138,46 @@ function formatSignedUsd(value: number, digits = 4): string {
 function formatSignedPercent(value: number, digits = 4): string {
   const sign = value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(digits)}%`;
+}
+
+function isSingleCycleFundingRolloverShift(
+  shiftMs: number,
+  fundingIntervalMs: number,
+  toleranceMs: number,
+): boolean {
+  if (!Number.isFinite(shiftMs) || !Number.isFinite(fundingIntervalMs) || fundingIntervalMs <= 0) {
+    return false;
+  }
+  return Math.abs(shiftMs - fundingIntervalMs) <= toleranceMs;
+}
+
+function isLikelyTransientDataError(error: unknown): boolean {
+  const message = getErrorMessage(error);
+  return TRANSIENT_DATA_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+async function retryTransientFetch<T>(
+  task: () => Promise<T>,
+  attempts = TRANSIENT_FETCH_RETRY_ATTEMPTS,
+  delayMs = TRANSIENT_FETCH_RETRY_DELAY_MS,
+): Promise<T> {
+  let lastError: unknown;
+  const safeAttempts = Math.max(1, attempts);
+  for (let attempt = 0; attempt < safeAttempts; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      const hasNext = attempt < safeAttempts - 1;
+      if (!hasNext || !isLikelyTransientDataError(error)) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs * (attempt + 1));
+      });
+    }
+  }
+  throw lastError ?? new Error('transient fetch retry exhausted');
 }
 
 /** Resolve v2.1 config. Missing means all toggles OFF. */
@@ -572,6 +632,8 @@ class ServerScheduler {
       config: this.config,
       startedAt: this.startedAt,
       stats: this.stats,
+      runtime: getSchedulerRuntimeIdentity('real'),
+      diagnostics: getTradeWindowDiagnostics({ simulation: false, windowHours: 6 }),
       scheduledEntries: Array.from(this.scheduledEntries.values()).map((entry) => ({
         opportunityId: entry.opportunityId,
         asset: entry.asset,
@@ -1243,10 +1305,10 @@ class ServerScheduler {
       let spreadForDecision = opportunity.spread;
       let spreadPercentForDecision = opportunity.spreadPercent;
       try {
-        const [shortRates, longRates] = await Promise.all([
+        const [shortRates, longRates] = await retryTransientFetch(() => Promise.all([
           fetchFundingRates(opportunity.shortExchange, undefined, [opportunity.shortSymbol]),
           fetchFundingRates(opportunity.longExchange, undefined, [opportunity.longSymbol]),
-        ]);
+        ]));
         const shortLiveRate = shortRates.find((rate) => rate.symbol === opportunity.shortSymbol)
           ?? shortRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
         const longLiveRate = longRates.find((rate) => rate.symbol === opportunity.longSymbol)
@@ -1295,7 +1357,22 @@ class ServerScheduler {
 
         const shortFundingShiftMs = Math.abs(shortLiveRate.nextFundingTime - targetFundingTime);
         const longFundingShiftMs = Math.abs(longLiveRate.nextFundingTime - targetFundingTime);
-        if (shortFundingShiftMs > LIVE_FUNDING_TIME_DRIFT_MS || longFundingShiftMs > LIVE_FUNDING_TIME_DRIFT_MS) {
+        const fundingIntervalMs = opportunity.fundingIntervalMs && opportunity.fundingIntervalMs > 0
+          ? opportunity.fundingIntervalMs
+          : 8 * 3600000;
+        const shortIsRollover = isSingleCycleFundingRolloverShift(
+          shortFundingShiftMs,
+          fundingIntervalMs,
+          LIVE_FUNDING_TIME_DRIFT_MS,
+        );
+        const longIsRollover = isSingleCycleFundingRolloverShift(
+          longFundingShiftMs,
+          fundingIntervalMs,
+          LIVE_FUNDING_TIME_DRIFT_MS,
+        );
+        const shortWithinWindow = shortFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS || shortIsRollover;
+        const longWithinWindow = longFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS || longIsRollover;
+        if (!shortWithinWindow || !longWithinWindow) {
           this.log(
             'warning',
             `entry blocked by funding window shift | asset=${asset} shortShift=${shortFundingShiftMs}ms longShift=${longFundingShiftMs}ms`,
@@ -1310,7 +1387,7 @@ class ServerScheduler {
             spread: liveSpread,
             spreadPercent: liveSpreadPercent,
             reason: 'funding_window_shifted',
-            detail: `shortShiftMs:${shortFundingShiftMs} longShiftMs:${longFundingShiftMs} cap:${LIVE_FUNDING_TIME_DRIFT_MS}`,
+            detail: `shortShiftMs:${shortFundingShiftMs} longShiftMs:${longFundingShiftMs} cap:${LIVE_FUNDING_TIME_DRIFT_MS} fundingIntervalMs:${fundingIntervalMs} shortRollover:${shortIsRollover} longRollover:${longIsRollover}`,
           }]);
           return;
         }
@@ -1445,10 +1522,10 @@ class ServerScheduler {
 
       if (snipeConfig.useDynamicNotional) {
         try {
-          const [shortOb, longOb] = await Promise.all([
+          const [shortOb, longOb] = await retryTransientFetch(() => Promise.all([
             fetchOrderbook(opportunity.shortExchange, opportunity.shortSymbol, 50),
             fetchOrderbook(opportunity.longExchange, opportunity.longSymbol, 50),
-          ]);
+          ]));
           const shortImpact = calcOrderbookImpactBps(shortOb.bids, shortOb.asks, baseNotional, 'sell');
           const longImpact = calcOrderbookImpactBps(longOb.bids, longOb.asks, baseNotional, 'buy');
 
@@ -1604,10 +1681,10 @@ class ServerScheduler {
       const adaptiveSizingEnabled = this.config.compoundInvesting || snipeConfig.useDynamicNotional;
 
       for (let attempt = 0; attempt < MAX_ADAPTIVE_NOTIONAL_ATTEMPTS; attempt += 1) {
-        [shortFill, longFill] = await Promise.all([
+        [shortFill, longFill] = await retryTransientFetch(() => Promise.all([
           fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', targetNotional),
           fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', targetNotional),
-        ]);
+        ]));
 
         if (snipeConfig.useImpactGuards) {
           const roundTripImpactBps = (shortFill.slippagePercent + longFill.slippagePercent) * 2 * 100;
@@ -1688,16 +1765,17 @@ class ServerScheduler {
         const entryGapThreshold = snipeConfig.useImpactGuards
           ? impactCapBps / 100
           : maxSlippagePct;
+        const effectiveEntryGapThreshold = entryGapThreshold + ENTRY_GAP_TOLERANCE_PCT;
         const entryGap = getEntryGapMetrics({
           shortPrice: shortFill.fillPrice,
           longPrice: longFill.fillPrice,
           baselineShortPrice: opportunity.shortMarkPrice,
           baselineLongPrice: opportunity.longMarkPrice,
         });
-        if (entryGap.driftPercent > entryGapThreshold) {
+        if (entryGap.driftPercent > effectiveEntryGapThreshold) {
           this.log(
             'warning',
-            `entry blocked by gap drift | asset=${asset} drift=${entryGap.driftPercent.toFixed(4)}% (live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%) > ${entryGapThreshold.toFixed(4)}%`,
+            `entry blocked by gap drift | asset=${asset} drift=${entryGap.driftPercent.toFixed(4)}% (live=${entryGap.liveGapPercent.toFixed(4)}% base=${entryGap.baselineGapPercent.toFixed(4)}%) > ${effectiveEntryGapThreshold.toFixed(4)}%`,
           );
           this.recordTrades([{
             timestamp: Date.now(),
@@ -1709,7 +1787,7 @@ class ServerScheduler {
             spread: opportunity.spread,
             spreadPercent: opportunity.spreadPercent,
             reason: 'entry_gap_exceeded',
-            detail: `entryGapDrift:${entryGap.driftPercent.toFixed(6)}% live:${entryGap.liveGapPercent.toFixed(6)}% base:${entryGap.baselineGapPercent.toFixed(6)}% threshold:${entryGapThreshold.toFixed(6)}% notional:${targetNotional.toFixed(2)}`,
+            detail: `entryGapDrift:${entryGap.driftPercent.toFixed(6)}% live:${entryGap.liveGapPercent.toFixed(6)}% base:${entryGap.baselineGapPercent.toFixed(6)}% threshold:${effectiveEntryGapThreshold.toFixed(6)}% baseThreshold:${entryGapThreshold.toFixed(6)}% tolerance:${ENTRY_GAP_TOLERANCE_PCT.toFixed(6)}% notional:${targetNotional.toFixed(2)}`,
           }]);
           return;
         }

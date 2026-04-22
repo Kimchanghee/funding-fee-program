@@ -13,8 +13,10 @@ const STARTUP_GRACE_MS = Number(process.env.WATCHDOG_STARTUP_GRACE_MS || 90000);
 const RESTART_COOLDOWN_MS = Number(process.env.WATCHDOG_RESTART_COOLDOWN_MS || 300000);
 const DATA_PROBE_INTERVAL_MS = Number(process.env.WATCHDOG_DATA_PROBE_INTERVAL_MS || 60000);
 const FUNDING_STALL_THRESHOLD_MS = Number(process.env.WATCHDOG_FUNDING_STALL_THRESHOLD_MS || 1200000);
+const EXPECTED_MODE_RAW = (process.env.WATCHDOG_EXPECTED_MODE || 'either').toLowerCase();
 
 const SCHEDULER_PATH = '/api/scheduler';
+const SIM_SCHEDULER_PATH = '/api/sim-scheduler';
 const HEALTH_PATH = '/api/market-data-health';
 const FUNDING_PROBE_PATH = '/api/funding-rates?exchanges=binance';
 const ORDERBOOK_PROBE_PATH = '/api/exchanges/binance/orderbook?symbol=BTC%2FUSDT%3AUSDT&side=buy&notional=1000';
@@ -26,6 +28,29 @@ let dataFailCount = 0;
 let lastDataProbeAt = 0;
 let lastRestartAt = 0;
 const startedAt = Date.now();
+
+function normalizeExpectedMode(value) {
+  if (value === 'real' || value === 'sim' || value === 'both' || value === 'either') {
+    return value;
+  }
+  return 'either';
+}
+
+const EXPECTED_MODE = normalizeExpectedMode(EXPECTED_MODE_RAW);
+
+function isExpectedModeActive(realActive, simActive) {
+  switch (EXPECTED_MODE) {
+    case 'real':
+      return realActive;
+    case 'sim':
+      return simActive;
+    case 'both':
+      return realActive && simActive;
+    case 'either':
+    default:
+      return realActive || simActive;
+  }
+}
 
 function formatTimestamp() {
   const date = new Date();
@@ -94,8 +119,9 @@ function shouldEnforceFailures() {
 }
 
 async function runHealthChecks() {
-  const [scheduler, health] = await Promise.all([
+  const [scheduler, simScheduler, health] = await Promise.all([
     fetchJson(SCHEDULER_PATH),
+    fetchJson(SIM_SCHEDULER_PATH),
     fetchJson(HEALTH_PATH),
   ]);
 
@@ -146,18 +172,23 @@ async function runHealthChecks() {
     }
   }
 
-  return { scheduler, health };
+  return { scheduler, simScheduler, health };
 }
 
 async function cycle() {
   try {
-    const { scheduler, health } = await runHealthChecks();
+    const { scheduler, simScheduler, health } = await runHealthChecks();
     appFailCount = 0;
 
+    const realActive = scheduler?.active === true;
+    const simActive = simScheduler?.active === true;
+    const targetActive = isExpectedModeActive(realActive, simActive);
     const fundingHealth = health?.data?.funding?.binance;
     const orderbookHealth = health?.data?.orderbook;
     log(
-      `ok active=${scheduler?.active === true ? 'yes' : 'no'} `
+      `ok realActive=${realActive ? 'yes' : 'no'} `
+      + `simActive=${simActive ? 'yes' : 'no'} `
+      + `targetActive(${EXPECTED_MODE})=${targetActive ? 'yes' : 'no'} `
       + `funding=${fundingHealth?.source || 'none'} `
       + `orderbookFresh=${orderbookHealth?.freshEntries ?? 0}`,
     );
@@ -178,7 +209,7 @@ async function cycle() {
   }
 }
 
-log(`starting watchdog for ${TARGET_PROCESS} at ${BASE_URL}`);
+log(`starting watchdog for ${TARGET_PROCESS} at ${BASE_URL} (expectedMode=${EXPECTED_MODE})`);
 void cycle();
 setInterval(() => {
   void cycle();

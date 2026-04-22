@@ -60,6 +60,7 @@ import {
   saveServerSimState,
 } from './serverSimState';
 import { getDataDir } from './dataDir';
+import { getSchedulerRuntimeIdentity, getTradeWindowDiagnostics } from './runtimeDiagnostics';
 
 const DATA_DIR = getDataDir();
 const STATE_FILE = join(DATA_DIR, 'sim-scheduler-state.json');
@@ -85,7 +86,25 @@ const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
 const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
 const FAST_OPPORTUNITY_SEED_COUNT = 12;
 const MAX_FUNDING_HISTORY = 500;
+const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
+const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
+const TRANSIENT_DATA_ERROR_PATTERNS = [
+  /timeout/i,
+  /timed out/i,
+  /network/i,
+  /socket/i,
+  /fetch failed/i,
+  /temporar/i,
+  /429/,
+  /rate limit/i,
+  /too many requests/i,
+  /ECONNRESET/i,
+  /ECONNREFUSED/i,
+  /ENOTFOUND/i,
+  /EAI_AGAIN/i,
+  /5\d{2}/,
+];
 
 const PRE_EXECUTION_PROBE_POINTS = [
   { key: 'pre_30m', thresholdMs: 30 * 60 * 1000 },
@@ -180,6 +199,35 @@ function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return 'unknown';
+}
+
+function isLikelyTransientDataError(error: unknown): boolean {
+  const message = getErrorMessage(error);
+  return TRANSIENT_DATA_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+async function retryTransientFetch<T>(
+  task: () => Promise<T>,
+  attempts = TRANSIENT_FETCH_RETRY_ATTEMPTS,
+  delayMs = TRANSIENT_FETCH_RETRY_DELAY_MS,
+): Promise<T> {
+  let lastError: unknown;
+  const safeAttempts = Math.max(1, attempts);
+  for (let attempt = 0; attempt < safeAttempts; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      const hasNext = attempt < safeAttempts - 1;
+      if (!hasNext || !isLikelyTransientDataError(error)) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs * (attempt + 1));
+      });
+    }
+  }
+  throw lastError ?? new Error('transient fetch retry exhausted');
 }
 
 function ensureDataDir() {
@@ -859,6 +907,8 @@ class ServerSimScheduler {
       active: this.active,
       config: this.config,
       startedAt: this.startedAt,
+      runtime: getSchedulerRuntimeIdentity('sim'),
+      diagnostics: getTradeWindowDiagnostics({ simulation: true, windowHours: 6 }),
       lastRatesUpdate: this.lastRatesUpdate,
       scheduledEntries: Array.from(this.scheduledEntries.values()).sort((a, b) => a.targetTime - b.targetTime),
       snipeTargets: Object.fromEntries(
@@ -3198,10 +3248,10 @@ class ServerSimScheduler {
     };
 
     try {
-      const [shortRates, longRates] = await Promise.all([
+      const [shortRates, longRates] = await retryTransientFetch(() => Promise.all([
         fetchFundingRates(opportunity.shortExchange, undefined, [opportunity.shortSymbol]),
         fetchFundingRates(opportunity.longExchange, undefined, [opportunity.longSymbol]),
-      ]);
+      ]));
       const shortLiveRate = shortRates.find((rate) => rate.symbol === opportunity.shortSymbol)
         ?? shortRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
       const longLiveRate = longRates.find((rate) => rate.symbol === opportunity.longSymbol)
@@ -3332,10 +3382,10 @@ class ServerSimScheduler {
     let notional = baseNotional;
     if (snipeConfig.useDynamicNotional) {
       try {
-        const [shortOb, longOb] = await Promise.all([
+        const [shortOb, longOb] = await retryTransientFetch(() => Promise.all([
           fetchOrderbook(opportunity.shortExchange, opportunity.shortSymbol, 50),
           fetchOrderbook(opportunity.longExchange, opportunity.longSymbol, 50),
-        ]);
+        ]));
         const shortImpact = calcOrderbookImpactBps(shortOb.bids, shortOb.asks, baseNotional, 'sell');
         const longImpact = calcOrderbookImpactBps(longOb.bids, longOb.asks, baseNotional, 'buy');
         notional = Math.min(baseNotional, shortImpact.depthCapNotional, longImpact.depthCapNotional, snipeConfig.dynamicNotionalCap);
@@ -3393,14 +3443,14 @@ class ServerSimScheduler {
       let shortFill: Awaited<ReturnType<typeof fetchMarketFillPrice>>;
       let longFill: Awaited<ReturnType<typeof fetchMarketFillPrice>>;
       try {
-        [shortFill, longFill] = await Promise.all([
+        [shortFill, longFill] = await retryTransientFetch(() => Promise.all([
           fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
           fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
-        ]);
+        ]));
       } catch (err) {
         return {
           success: false,
-          error: `orderbook fetch failed ??cannot validate slippage: ${(err as Error).message ?? err}`,
+          error: `orderbook fetch failed; cannot validate slippage: ${(err as Error).message ?? err}`,
           analysis: buildFailureAnalysis({
             attemptedNotionalUSDT: baseNotional,
             effectiveNotionalUSDT: notional,
