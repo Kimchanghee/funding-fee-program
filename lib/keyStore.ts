@@ -103,25 +103,25 @@ export function loadEnabledExchanges(): string[] | null {
 }
 
 // Storage schema version — bumped whenever default shape changes so stale
-// localStorage from prior builds gets cleared instead of overriding the new
-// zero-defaults. Only the money-related keys are cleared; API keys and the
-// other user-managed blobs survive the migration.
+// localStorage from prior builds gets cleared instead of overriding updated
+// strategy defaults. Only money-related keys are cleared; API keys and other
+// user-managed blobs survive the migration.
 const SCHEMA_VERSION_KEY = 'funding_fee_schema_version';
-// Bumped to v3 so clients running on v2 (which stored minSpreadPercent=0
-// or the legacy 0.08) flush and pick up the data-driven 0.3% default.
-const CURRENT_SCHEMA_VERSION = 'v3-analyzed-minspread-2026-04-19';
+// Bumped to v4 so clients carrying the zero-default profile are re-seeded with
+// active trading defaults (investment/leverage/minSpread/compound settings).
+const CURRENT_SCHEMA_VERSION = 'v4-active-defaults-2026-04-22';
 
 export function runLocalStorageMigrations(): void {
   if (typeof window === 'undefined') return;
   try {
     const stored = localStorage.getItem(SCHEMA_VERSION_KEY);
     if (stored === CURRENT_SCHEMA_VERSION) return;
-    // Clear legacy money-related state so the new $0 defaults surface.
+    // Clear money-related state so updated defaults surface on next boot.
     localStorage.removeItem('funding_fee_strategy_config');
     localStorage.removeItem('funding_fee_sim_state');
     localStorage.setItem(SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION);
   } catch {
-    // localStorage unavailable — ignore; the in-memory zero defaults will apply.
+    // localStorage unavailable — ignore; in-memory defaults still apply.
   }
 }
 

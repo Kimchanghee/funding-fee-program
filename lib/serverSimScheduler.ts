@@ -15,6 +15,7 @@ import {
 import { appendLogs, appendTrades, type FileLogEntry, readTrades, type TradeEvent } from './fileLogger';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import { loadAllServerApiConfigs } from './serverKeyStore';
+import { sendTelegramMessage } from './telegram';
 import {
   findOpportunities,
   getOpportunityId,
@@ -127,6 +128,16 @@ function isSingleCycleFundingRolloverShift(
     return false;
   }
   return Math.abs(shiftMs - fundingIntervalMs) <= toleranceMs;
+}
+
+function formatSignedUsd(value: number, digits = 4): string {
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}$${value.toFixed(digits)}`;
+}
+
+function formatSignedPercent(value: number, digits = 4): string {
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toFixed(digits)}%`;
 }
 
 function sumDepthUsd(levels: number[][] | undefined, depth: number): number {
@@ -629,12 +640,12 @@ class ServerSimScheduler {
   private static instance: ServerSimScheduler | null = null;
 
   private active = false;
-  // Defaults are all 0 / empty — operator must supply every value explicitly via /api/sim-scheduler.
+  // Baseline profile aligned with legacy production defaults.
   private config: ServerSimSchedulerConfig = {
-    investmentUSDT: 0,
-    leverage: 0,
-    minSpreadPercent: 0,
-    compoundInvesting: false,
+    investmentUSDT: 500,
+    leverage: 5,
+    minSpreadPercent: 0.01,
+    compoundInvesting: true,
     enabledExchanges: [],
     timingConfig: getResolvedTimingConfig(),
   };
@@ -806,6 +817,36 @@ class ServerSimScheduler {
 
   private setState(state: SimStateSnapshot) {
     return saveServerSimState(state);
+  }
+
+  private getCurrentSimBalanceTotal(state: SimStateSnapshot): number {
+    return Object.values(state.simBalances).reduce((sum, balance) => (
+      sum + (Number.isFinite(balance) ? balance : 0)
+    ), 0);
+  }
+
+  private notifySimTradeSuccess(args: {
+    phase: '진입' | '청산' | '수동청산';
+    baseAsset: string;
+    investmentUSDT: number;
+    netProfitUSD: number;
+    roiPercent: number;
+    currentTotalBalanceUSDT: number;
+    pairId?: string;
+    route?: string;
+    extraLine?: string;
+  }) {
+    const lines = [
+      `[SIM 거래 성공][${args.phase}] ${args.baseAsset}`,
+      `투자금(총 마진): $${args.investmentUSDT.toFixed(2)}`,
+      `순수익(${args.phase === '진입' ? '예상' : '실현'}): ${formatSignedUsd(args.netProfitUSD)}`,
+      `수익률(${args.phase === '진입' ? '예상' : '실현'}): ${formatSignedPercent(args.roiPercent)}`,
+      `현재 전체 잔액: $${args.currentTotalBalanceUSDT.toFixed(2)}`,
+    ];
+    if (args.pairId) lines.push(`pairId: ${args.pairId}`);
+    if (args.route) lines.push(`route: ${args.route}`);
+    if (args.extraLine) lines.push(args.extraLine);
+    void sendTelegramMessage(lines.join('\n'));
   }
 
   getStatus() {
@@ -2694,6 +2735,7 @@ class ServerSimScheduler {
     const state = this.getState();
     const pairPositions = state.simPositions.filter((position) => position.pairId === pairId);
     if (pairPositions.length === 0) return;
+    const closeInvestmentUSDT = pairPositions.reduce((sum, position) => sum + Math.max(0, position.margin), 0);
 
     const closeStartedAt = Date.now();
     const preparedLegs = await Promise.all(
@@ -2770,6 +2812,9 @@ class ServerSimScheduler {
         detail: `fill:${leg.fillSource} pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
       });
     }
+    const closeNetProfitUSD = preparedLegs.reduce((sum, leg) => (
+      sum + leg.pricePnl + leg.actualFunding - (leg.position.entryFee ?? 0) - leg.exitFee
+    ), 0);
 
     if (fundingEvents.length > 0) {
       state.fundingHistory = [...fundingEvents, ...state.fundingHistory]
@@ -2795,6 +2840,21 @@ class ServerSimScheduler {
     if (tradeEvents.length > 0) {
       this.recordTrades(tradeEvents);
     }
+    const shortLeg = pairPositions.find((position) => position.side === 'short');
+    const longLeg = pairPositions.find((position) => position.side === 'long');
+    const closeRoiPercent = closeInvestmentUSDT > 0 ? (closeNetProfitUSD / closeInvestmentUSDT) * 100 : 0;
+    this.notifySimTradeSuccess({
+      phase: '청산',
+      baseAsset: pairPositions[0]?.baseAsset ?? 'UNKNOWN',
+      investmentUSDT: closeInvestmentUSDT,
+      netProfitUSD: closeNetProfitUSD,
+      roiPercent: closeRoiPercent,
+      currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(state),
+      pairId,
+      route: shortLeg && longLeg
+        ? `${shortLeg.exchange.toUpperCase()} -> ${longLeg.exchange.toUpperCase()}`
+        : undefined,
+    });
   }
 
   private async prepareCloseLeg(position: SimPosition): Promise<PreparedSimCloseLeg> {
@@ -2972,6 +3032,20 @@ class ServerSimScheduler {
         pricePnl,
       },
     ]);
+    const manualCloseInvestmentUSDT = Math.max(0, position.margin);
+    const manualCloseRoiPercent = manualCloseInvestmentUSDT > 0
+      ? (netPnl / manualCloseInvestmentUSDT) * 100
+      : 0;
+    this.notifySimTradeSuccess({
+      phase: '수동청산',
+      baseAsset: position.baseAsset,
+      investmentUSDT: manualCloseInvestmentUSDT,
+      netProfitUSD: netPnl,
+      roiPercent: manualCloseRoiPercent,
+      currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(state),
+      pairId: position.pairId,
+      route: `${position.exchange.toUpperCase()} ${position.side.toUpperCase()} ${position.symbol}`,
+    });
 
     return { netPnl, funding: actualFunding, pairId: position.pairId };
   }
@@ -3666,6 +3740,19 @@ class ServerSimScheduler {
         pairId,
       },
     ]);
+    const entryInvestmentUSDT = margin + longMargin;
+    const entryRoiPercent = entryInvestmentUSDT > 0 ? (netProfit / entryInvestmentUSDT) * 100 : 0;
+    this.notifySimTradeSuccess({
+      phase: '진입',
+      baseAsset: opportunity.baseAsset,
+      investmentUSDT: entryInvestmentUSDT,
+      netProfitUSD: netProfit,
+      roiPercent: entryRoiPercent,
+      currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(savedState),
+      pairId,
+      route: `${opportunity.shortExchange.toUpperCase()} -> ${opportunity.longExchange.toUpperCase()}`,
+      extraLine: `spread: +${spreadPercentForDecision.toFixed(4)}%`,
+    });
 
     return {
       success: true,

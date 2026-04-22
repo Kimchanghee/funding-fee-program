@@ -1089,7 +1089,21 @@ function flushLogs() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ entries }),
-  }).catch(() => { /* silent — don't break UI for log persistence */ });
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        const payload = await response.text().catch(() => '');
+        throw new Error(`HTTP ${response.status}${payload ? `: ${payload.slice(0, 120)}` : ''}`);
+      }
+    })
+    .catch((error) => {
+      // Requeue logs when persistence endpoint is unavailable to avoid silent data loss.
+      logBatch = [...entries, ...logBatch];
+      if (!logFlushTimer) {
+        logFlushTimer = setTimeout(flushLogs, 2500);
+      }
+      console.warn('[log-persist] failed to save logs, will retry:', (error as Error).message);
+    });
 }
 
 function flushTrades(options?: { preferBeacon?: boolean }) {
@@ -1112,13 +1126,21 @@ function flushTrades(options?: { preferBeacon?: boolean }) {
     headers: { 'Content-Type': 'application/json' },
     keepalive: true,
     body: JSON.stringify({ events }),
-  }).catch(() => {
-    // Requeue on transient transport failures to avoid dropping executed trades.
-    tradeBatch = [...events, ...tradeBatch];
-    if (!tradeFlushTimer) {
-      tradeFlushTimer = setTimeout(flushTrades, 1500);
-    }
-  });
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        const payload = await response.text().catch(() => '');
+        throw new Error(`HTTP ${response.status}${payload ? `: ${payload.slice(0, 120)}` : ''}`);
+      }
+    })
+    .catch((error) => {
+      // Requeue on transport/server failures to avoid dropping executed trades.
+      tradeBatch = [...events, ...tradeBatch];
+      if (!tradeFlushTimer) {
+        tradeFlushTimer = setTimeout(flushTrades, 1500);
+      }
+      console.warn('[trade-persist] failed to save trades, will retry:', (error as Error).message);
+    });
 }
 
 interface StoredTradeEventFundingShape {
@@ -1199,24 +1221,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   logs: [],
   apiConfigs: {},
   strategyConfig: {
-    // Money/risk knobs require operator input — no hardcoded dollar or leverage defaults.
-    investmentUSDT: 0,
-    leverage: 0,
-    // Data-driven default: 41 historical successful trades (2026-04-09 ~ 04-19)
-    // had spreads in [0.36%, 2.04%] with avg 0.99%. 0.3% captures every
-    // historical win while filtering out sub-0.3% noise that systematically
-    // fails the EV gate at execute time (round-trip fee ~0.16% + slippage
-    // ~0.1% alone eat nearly 0.27%).
-    minSpreadPercent: 0.3,
+    investmentUSDT: 1000,
+    leverage: 5,
+    minSpreadPercent: 0.08,
     autoExecute: false,
-    compoundInvesting: false,
+    compoundInvesting: true,
     timingConfig: { ...DEFAULT_TIMING_CONFIG },
   },
   fundingHistory: [],
   simulationMode: true,
   realPositionMeta: {},
-  simBalances: buildExchangeAllocationMap(0, OPERABLE_EXCHANGES),
-  simInitialBalances: buildExchangeAllocationMap(0, OPERABLE_EXCHANGES),
+  simBalances: buildExchangeAllocationMap(2000, OPERABLE_EXCHANGES),
+  simInitialBalances: buildExchangeAllocationMap(2000, OPERABLE_EXCHANGES),
   simPositions: [],
   simTotalFundingEarned: 0,
   simTotalTopUps: 0,
@@ -1264,8 +1280,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // React 18 Strict Mode / HMR에서 상태 초기화 (snipeActive는 서버 상태가 source of truth → 여기서 리셋하지 않음)
       set({ isLoadingRates: false, _snipeTimers: {}, _snipeCloseTimers: {} });
 
-      // ── 스키마 버전 마이그레이션: 옛 하드코드 기본값($1000/leverage 5 등)을 가진
-      // 로컬스토리지를 0으로 리셋해서 "사용자가 입력한 값만 반영" 원칙을 보장 ──
+      // ── 스키마 버전 마이그레이션: 기본 전략 프로필 변경 시
+      // 로컬 전략/시뮬 상태를 비워 최신 기본값으로 재시드 ──
       runLocalStorageMigrations();
 
       // ── 1회성 데이터 정리: 시뮬 초기화 (v3 마이그레이션) ──

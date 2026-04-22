@@ -192,7 +192,7 @@ export default function SettingsPage() {
                   onChange={e => setStrategyConfig({ minSpreadPercent: Number(e.target.value) })}
                 />
                 <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                  이 수치 이상일 때만 진입 · 기본 0.3% (최근 11일 성공 거래 41건: 최소 0.36% / 평균 0.99%)
+                  이 수치 이상일 때만 진입 · 기본 0.08%
                 </div>
               </div>
 

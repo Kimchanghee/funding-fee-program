@@ -110,6 +110,16 @@ function getErrorMessage(error: unknown): string {
   return 'unknown';
 }
 
+function formatSignedUsd(value: number, digits = 4): string {
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}$${value.toFixed(digits)}`;
+}
+
+function formatSignedPercent(value: number, digits = 4): string {
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toFixed(digits)}%`;
+}
+
 /** Resolve v2.1 config. Missing means all toggles OFF. */
 function getSnipeConfig(config?: ConfirmedSnipeConfig): ConfirmedSnipeConfig {
   return config ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
@@ -256,14 +266,14 @@ class ServerScheduler {
   private static instance: ServerScheduler | null = null;
 
   private active = false;
-  // Defaults are all 0 / empty — operator must supply every value explicitly via /api/scheduler.
+  // Baseline profile aligned with legacy production defaults.
   private config: SchedulerConfig = {
-    investmentUSDT: 0,
-    leverage: 0,
-    minSpreadPercent: 0,
-    compoundInvesting: false,
+    investmentUSDT: 500,
+    leverage: 5,
+    minSpreadPercent: 0.01,
+    compoundInvesting: true,
     enabledExchanges: [],
-    maxConcurrentPairs: 0,
+    maxConcurrentPairs: 5,
     timingConfig: getResolvedTimingConfig(),
   };
   private startedAt: number | null = null;
@@ -2038,6 +2048,13 @@ class ServerScheduler {
           this.config.feeOverrides,
           this.config.paybackOverrides,
         ));
+      const expectedNetProfit = expectedPerFunding - expectedTotalRoundTripFees;
+      const entryInvestmentUSDT = this.config.leverage > 0
+        ? (shortResult.value.filledNotional + longResult.value.filledNotional) / this.config.leverage
+        : 0;
+      const expectedRoiPercent = entryInvestmentUSDT > 0
+        ? (expectedNetProfit / entryInvestmentUSDT) * 100
+        : 0;
 
       this.recordTrades([{
         timestamp: entryTime,
@@ -2053,7 +2070,7 @@ class ServerScheduler {
         notional: Math.min(shortResult.value.filledNotional, longResult.value.filledNotional),
         pairId,
         entryFee: shortResult.value.estimatedFee + longResult.value.estimatedFee,
-        netProfit: expectedPerFunding - expectedTotalRoundTripFees,
+        netProfit: expectedNetProfit,
         perFunding: expectedPerFunding,
         totalRoundTripFees: expectedTotalRoundTripFees,
         shortPrice: shortResult.value.price,
@@ -2068,8 +2085,17 @@ class ServerScheduler {
         'success',
         `entry complete | asset=${asset} short=$${shortResult.value.filledNotional.toFixed(2)} long=$${longResult.value.filledNotional.toFixed(2)} pairId=${pairId}`,
       );
+      await this.refreshBalanceSnapshotForTelegram(apiConfigs);
+      const balanceSummary = this.getCurrentRealBalanceSummary();
       void sendTelegramMessage(
-        `[Server] ${asset} entry complete\nshort ${opportunity.shortExchange.toUpperCase()} $${shortResult.value.filledNotional.toFixed(2)}\nlong ${opportunity.longExchange.toUpperCase()} $${longResult.value.filledNotional.toFixed(2)}\nspread: +${spreadPercentForDecision.toFixed(4)}%`,
+        `[REAL 거래 성공][진입] ${asset}\n`
+        + `투자금(총 마진): $${entryInvestmentUSDT.toFixed(2)}\n`
+        + `순수익(예상): ${formatSignedUsd(expectedNetProfit)}\n`
+        + `수익률(예상): ${formatSignedPercent(expectedRoiPercent)}\n`
+        + `현재 전체 잔액: $${balanceSummary.totalUSDT.toFixed(2)}\n`
+        + `pairId: ${pairId}\n`
+        + `route: ${opportunity.shortExchange.toUpperCase()} -> ${opportunity.longExchange.toUpperCase()}\n`
+        + `spread: +${spreadPercentForDecision.toFixed(4)}%`,
       );
 
       this.saveState();
@@ -2493,12 +2519,26 @@ class ServerScheduler {
       this.activePositions.delete(opportunityId);
       this.stats.totalCloses++;
       this.stats.totalProfit += totalPnl;
+      const closeInvestmentUSDT = this.config.leverage > 0
+        ? (position.shortEntry.filledNotional + position.longEntry.filledNotional) / this.config.leverage
+        : 0;
+      const closeRoiPercent = closeInvestmentUSDT > 0
+        ? (totalPnl / closeInvestmentUSDT) * 100
+        : 0;
       this.log(
         'success',
         `close complete | asset=${asset} pnl=${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(4)} funding=${totalFunding >= 0 ? '+' : ''}$${totalFunding.toFixed(4)}`,
       );
+      await this.refreshBalanceSnapshotForTelegram(apiConfigs);
+      const balanceSummary = this.getCurrentRealBalanceSummary();
       void sendTelegramMessage(
-        `[Server] ${asset} close complete\npnl: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(4)}\nfunding: ${totalFunding >= 0 ? '+' : ''}$${totalFunding.toFixed(4)}${fundingVerification.verified ? '' : '\nfunding verification pending/manual check recommended'}`,
+        `[REAL 거래 성공][청산] ${asset}\n`
+        + `투자금(총 마진): $${closeInvestmentUSDT.toFixed(2)}\n`
+        + `순수익(실현): ${formatSignedUsd(totalPnl)}\n`
+        + `수익률(실현): ${formatSignedPercent(closeRoiPercent)}\n`
+        + `현재 전체 잔액: $${balanceSummary.totalUSDT.toFixed(2)}\n`
+        + `펀딩 정산: ${formatSignedUsd(totalFunding)}`
+        + `${fundingVerification.verified ? '' : '\nfunding verification pending/manual check recommended'}`,
       );
       this.saveState();
     } catch (err) {
@@ -2739,6 +2779,25 @@ class ServerScheduler {
         `entry rollback failed | asset=${asset} exchange=${exchange} reason=${reason} rollbackError=${(rollbackErr as Error).message}`,
       );
     }
+  }
+
+  private async refreshBalanceSnapshotForTelegram(apiConfigs: Partial<Record<ExchangeId, ApiConfig>>) {
+    try {
+      this.lastBalanceRefreshAt = 0;
+      await this.maybeRefreshBalanceSnapshot(apiConfigs);
+    } catch {
+      // best effort only
+    }
+  }
+
+  private getCurrentRealBalanceSummary() {
+    let totalUSDT = 0;
+    for (const exchange of this.config.enabledExchanges) {
+      const balance = this.balanceSnapshot[exchange];
+      if (!balance || balance.status !== 'connected') continue;
+      totalUSDT += balance.totalUSDT;
+    }
+    return { totalUSDT };
   }
 
   private saveState() {
