@@ -12,6 +12,7 @@ import LogPanel from '@/components/dashboard/LogPanel';
 import ApiPanel from '@/components/dashboard/ApiPanel';
 import StrategyPanel from '@/components/dashboard/StrategyPanel';
 import DataStatusBar from '@/components/dashboard/DataStatusBar';
+import RuntimeAuditSummary from '@/components/dashboard/RuntimeAuditSummary';
 import FundingHistory from '@/components/dashboard/FundingHistory';
 import TradeHistory from '@/components/dashboard/TradeHistory';
 
@@ -61,6 +62,9 @@ export default function DashboardPage() {
       >
         {/* Data Fetch Status */}
         <DataStatusBar />
+
+        {/* Runtime Audit Summary */}
+        <RuntimeAuditSummary />
 
         {/* Best Opportunity (Hero) */}
         <OpportunityCard />

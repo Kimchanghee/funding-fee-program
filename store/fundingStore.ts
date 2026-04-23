@@ -40,6 +40,10 @@ import {
   SIM_SYNC_INTERVAL_MS,
   POSITIONS_POLL_INTERVAL_MS,
 } from '@/lib/polling';
+import {
+  fetchSchedulerRuntimeActiveSnapshot,
+  type SchedulerRuntimeActiveSnapshot,
+} from '@/lib/runtime/schedulerRuntimeClient';
 import { sendTelegramMessage, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
 import {
   DEFAULT_TIMING_CONFIG,
@@ -389,6 +393,10 @@ async function fetchServerSimSchedulerStatus() {
   }>;
 }
 
+async function fetchSchedulerRuntimeActives() {
+  return fetchSchedulerRuntimeActiveSnapshot();
+}
+
 /** 복리/단리에 따른 실제 notional 계산 */
 function getEffectiveNotional(
   opp: { shortExchange: ExchangeId; longExchange: ExchangeId },
@@ -734,6 +742,7 @@ interface FundingState {
   ratesStatus: 'idle' | 'loading' | 'success' | 'error';
   ratesError: string | null;
   consecutiveAllFailCount: number;  // 전 거래소 연속 실패 횟수
+  schedulerRuntime: SchedulerRuntimeActiveSnapshot | null;
 
   // Exchange toggle
   enabledExchanges: ExchangeId[];
@@ -793,6 +802,7 @@ interface FundingState {
   refreshAndStampPositions: (baseAsset: string, exchanges: ExchangeId[]) => Promise<void>;
   refreshBalances: () => Promise<void>;
   refreshRealSpreads: () => Promise<void>;
+  refreshSchedulerRuntime: () => Promise<void>;
   revalidateScheduledSnipes: () => void;
 
   startPolling: () => void;
@@ -1259,6 +1269,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   ratesStatus: 'idle',
   ratesError: null,
   consecutiveAllFailCount: 0,
+  schedulerRuntime: null,
   enabledExchanges: [...OPERABLE_EXCHANGES],
   exchangeFetchStatus: {},
   exchangeFetchErrors: {},
@@ -1503,6 +1514,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         set({ ratesStatus: 'error', ratesError: (err as Error).message, isLoadingRates: false });
       });
       get().startPolling();
+      void get().refreshSchedulerRuntime();
     } catch (err) {
       console.error('[init] 초기화 실패:', err);
       set({ ratesStatus: 'error', ratesError: `초기화 실패: ${(err as Error).message}`, isLoadingRates: false });
@@ -2057,6 +2069,27 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ balances: next });
   },
 
+  async refreshSchedulerRuntime() {
+    try {
+      const snapshot = await fetchSchedulerRuntimeActives();
+      const state = get();
+      const statusChanged = state.realSnipeActive !== snapshot.realActive || state.simSnipeActive !== snapshot.simActive;
+      set({
+        schedulerRuntime: snapshot,
+        realSnipeActive: snapshot.realActive,
+        simSnipeActive: snapshot.simActive,
+      });
+      if (statusChanged) {
+        get().addLog(
+          'warning',
+          `[상태동기화] 런타임 기준으로 정정 real=${snapshot.realActive ? 'ON' : 'OFF'} sim=${snapshot.simActive ? 'ON' : 'OFF'}`,
+        );
+      }
+    } catch {
+      // ignore transient network/API failures; next poll will retry.
+    }
+  },
+
   // ── Refresh real orderbook spreads for scheduled coins ──
   async refreshRealSpreads() {
     const { snipeTargets, snipeAllocations, opportunities, strategyConfig, realSpreads, simBalances, balances: realBalances, simulationMode } = get();
@@ -2267,10 +2300,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
       void fetchSharedSnipeStateSnapshot()
         .then((snapshot) => {
+          // Runtime active 상태는 /api/scheduler, /api/sim-scheduler 를 source of truth로 사용.
+          // shared snipe-state는 UI 모드(simulationMode)만 동기화해 상태 경합을 막는다.
           applySharedSnipeStateSnapshot(set, snapshot, { includeActives: false });
           saveSimMode(snapshot.simulationMode);
         })
         .catch(() => {});
+
+      // 서버 런타임 active 상태를 직접 조회해 UI 상태 플래그를 강제 동기화.
+      // (프로세스 재시작/외부 stop 이후, 탭이 열린 상태에서도 UI 오인 방지)
+      void get().refreshSchedulerRuntime();
     }, RATES_POLL_INTERVAL_MS);
 
     // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)

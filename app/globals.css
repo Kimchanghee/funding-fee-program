@@ -740,6 +740,12 @@ body {
   min-width: 0;
 }
 
+.runtime-audit-header,
+.runtime-audit-headline,
+.runtime-audit-meta {
+  min-width: 0;
+}
+
 @media (max-width: 1200px) {
   .settings-grid {
     grid-template-columns: 1fr !important;
@@ -747,6 +753,10 @@ body {
 
   .return-projection-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+
+  .runtime-audit-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 
   .balance-equalization-cards {
@@ -922,6 +932,17 @@ body {
 
   .fee-payback-summary {
     padding: 10px 12px !important;
+  }
+
+  .runtime-audit-header {
+    flex-wrap: wrap !important;
+    align-items: flex-start !important;
+    gap: 8px !important;
+    padding: 10px 12px !important;
+  }
+
+  .runtime-audit-grid {
+    grid-template-columns: 1fr !important;
   }
 
   .fee-payback-summary-header {

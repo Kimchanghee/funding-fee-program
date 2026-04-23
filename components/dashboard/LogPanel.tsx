@@ -182,6 +182,9 @@ export default function LogPanel() {
           <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 400 }}>
             ({fromIndex}-{toIndex} / {total})
           </span>
+          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 500 }}>
+            시스템/상태 로그 (체결 내역은 거래 내역 패널)
+          </span>
         </div>
         <div style={{ flex: 1 }} />
 

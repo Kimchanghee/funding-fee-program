@@ -32,6 +32,7 @@ export default function Header() {
     resetSimulation,
     simSnipeActive,
     realSnipeActive,
+    schedulerRuntime,
     simPositions,
     positions,
     simBalances,
@@ -60,6 +61,20 @@ export default function Header() {
       hour12: false,
     })
     : '-';
+  const schedulerRuntimeUpdatedTime = schedulerRuntime?.fetchedAt
+    ? new Date(schedulerRuntime.fetchedAt).toLocaleTimeString('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+    : '-';
+  const schedulerRuntimeMismatch = !!schedulerRuntime
+    && (
+      schedulerRuntime.realActive !== realSnipeActive
+      || schedulerRuntime.simActive !== simSnipeActive
+    );
 
   const handleRefresh = async () => {
     await Promise.all([refreshRates(), refreshPositions(), refreshBalances()]);
@@ -302,6 +317,42 @@ export default function Header() {
               }
               return `투자중 ${parts.join(' | ')}`;
             })() : '대기'}
+          </span>
+        </div>
+
+        <div
+          title={`마지막 런타임 확인: ${schedulerRuntimeUpdatedTime}`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 8px',
+            borderRadius: 6,
+            flexShrink: 0,
+            background: schedulerRuntimeMismatch
+              ? 'rgba(239,68,68,0.14)'
+              : 'rgba(59,130,246,0.12)',
+            border: `1px solid ${schedulerRuntimeMismatch ? 'rgba(239,68,68,0.35)' : 'rgba(59,130,246,0.32)'}`,
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: schedulerRuntimeMismatch ? '#ef4444' : '#3b82f6',
+              boxShadow: schedulerRuntimeMismatch ? '0 0 4px #ef4444' : '0 0 4px #3b82f6',
+            }}
+          />
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              color: schedulerRuntimeMismatch ? '#ef4444' : '#93c5fd',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            런타임 R:{schedulerRuntime?.realActive ? 'ON' : 'OFF'} S:{schedulerRuntime?.simActive ? 'ON' : 'OFF'}
           </span>
         </div>
 
