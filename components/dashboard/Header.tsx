@@ -39,7 +39,9 @@ export default function Header() {
     apiConfigs,
   } = useFundingStore();
 
-  const anySnipeActive = simSnipeActive || realSnipeActive;
+  const runtimeRealActive = schedulerRuntime?.realActive ?? realSnipeActive;
+  const runtimeSimActive = schedulerRuntime?.simActive ?? simSnipeActive;
+  const anySnipeActive = runtimeSimActive || runtimeRealActive;
   const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
   const appBuildDateRaw = process.env.NEXT_PUBLIC_APP_BUILD_DATE;
   const appBuildDateCompact = appBuildDateRaw
@@ -307,11 +309,11 @@ export default function Header() {
           <span style={{ fontSize: 10, fontWeight: 700, color: anySnipeActive ? '#10b981' : 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
             {anySnipeActive ? (() => {
               const parts: string[] = [];
-              if (simSnipeActive) {
+              if (runtimeSimActive) {
                 const simCount = simPositions.length;
                 parts.push(`SIM${simCount > 0 ? ` ${simCount}P` : ''}`);
               }
-              if (realSnipeActive) {
+              if (runtimeRealActive) {
                 const realCount = positions.filter(p => p.positionType !== 'manual').length;
                 parts.push(`REAL${realCount > 0 ? ` ${realCount}P` : ''}`);
               }
@@ -352,7 +354,7 @@ export default function Header() {
               whiteSpace: 'nowrap',
             }}
           >
-            런타임 R:{schedulerRuntime?.realActive ? 'ON' : 'OFF'} S:{schedulerRuntime?.simActive ? 'ON' : 'OFF'}
+            런타임 R:{runtimeRealActive ? 'ON' : 'OFF'} S:{runtimeSimActive ? 'ON' : 'OFF'}
           </span>
         </div>
 

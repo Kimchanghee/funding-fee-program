@@ -5,24 +5,25 @@ export interface SchedulerRuntimeActiveSnapshot {
 }
 
 export async function fetchSchedulerRuntimeActiveSnapshot(): Promise<SchedulerRuntimeActiveSnapshot> {
-  const [realResponse, simResponse] = await Promise.all([
-    fetch('/api/scheduler'),
-    fetch('/api/sim-scheduler'),
-  ]);
+  const fetchActive = async (url: string): Promise<boolean> => {
+    try {
+      const response = await fetch(url, { cache: 'no-store' });
+      if (!response.ok) return false;
+      const payload = await response.json() as { active?: boolean };
+      return !!payload.active;
+    } catch {
+      return false;
+    }
+  };
 
-  if (!realResponse.ok || !simResponse.ok) {
-    throw new Error(`HTTP real=${realResponse.status} sim=${simResponse.status}`);
-  }
-
-  const [realPayload, simPayload] = await Promise.all([
-    realResponse.json() as Promise<{ active?: boolean }>,
-    simResponse.json() as Promise<{ active?: boolean }>,
+  const [realActive, simActive] = await Promise.all([
+    fetchActive('/api/scheduler'),
+    fetchActive('/api/sim-scheduler'),
   ]);
 
   return {
-    realActive: !!realPayload.active,
-    simActive: !!simPayload.active,
+    realActive,
+    simActive,
     fetchedAt: Date.now(),
   };
 }
-

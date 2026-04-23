@@ -206,13 +206,16 @@ export default function OpportunityCard() {
     opportunities, strategyConfig, setShowStrategyPanel,
     apiConfigs, simulationMode, simPositions,
     simSnipeActive, realSnipeActive,
+    schedulerRuntime, refreshSchedulerRuntime,
     snipeTargets, snipeAllocations, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
     simBalances, simInitialBalances, balances, fundingRates, enabledExchanges,
   } = useFundingStore();
 
-  const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
+  const snipeActive = simulationMode
+    ? (schedulerRuntime?.simActive ?? simSnipeActive)
+    : (schedulerRuntime?.realActive ?? realSnipeActive);
 
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'snipe' | 'error' } | null>(null);
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
@@ -231,6 +234,23 @@ export default function OpportunityCard() {
     return () => clearTimeout(t);
   }, [toastMsg]);
 
+  // Keep button state pinned to server runtime, even if a tab is stale.
+  useEffect(() => {
+    void refreshSchedulerRuntime();
+    const timer = setInterval(() => {
+      void refreshSchedulerRuntime();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [refreshSchedulerRuntime]);
+
+  const resolveRuntimeModeActive = useCallback(async () => {
+    await refreshSchedulerRuntime();
+    const latest = useFundingStore.getState();
+    return simulationMode
+      ? (latest.schedulerRuntime?.simActive ?? latest.simSnipeActive)
+      : (latest.schedulerRuntime?.realActive ?? latest.realSnipeActive);
+  }, [simulationMode, refreshSchedulerRuntime]);
+
   // ── Handlers ──
   const closeRealPosition = useFundingStore(s => s.closePosition);
   const handleToggle = useCallback(async () => {
@@ -246,7 +266,8 @@ export default function OpportunityCard() {
         return;
       }
     }
-    if (snipeActive) {
+    const runtimeModeActive = await resolveRuntimeModeActive();
+    if (runtimeModeActive) {
       if (simulationMode) {
         try {
           const res = await fetch('/api/sim-scheduler', {
@@ -271,10 +292,11 @@ export default function OpportunityCard() {
       } catch { /* silent */ }
     }
     setToastMsg({ text: '전체 포지션 청산 완료', type: 'success' });
-  }, [isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, snipeActive, cancelSnipe, positions, closeRealPosition]);
+  }, [isProcessing, isRunning, simulationMode, simPositions, closeSimPosition, cancelSnipe, positions, closeRealPosition, resolveRuntimeModeActive]);
 
   const handleSnipe = useCallback(async () => {
-    if (snipeActive) {
+    const runtimeModeActive = await resolveRuntimeModeActive();
+    if (runtimeModeActive) {
       // ── 정지 ──
       if (!simulationMode) {
         // REAL: 서버 스케줄러 정지를 먼저 확인 → 성공 후에만 상태 갱신
@@ -419,7 +441,7 @@ export default function OpportunityCard() {
         setToastMsg({ text: `[SIM] 스나이핑 시작! ${count}개 코인 예약`, type: 'success' });
       }
     }
-  }, [snipeActive, simulationMode, cancelSnipe]);
+  }, [simulationMode, cancelSnipe, resolveRuntimeModeActive]);
 
   // ── Portfolio ──
 
@@ -975,7 +997,6 @@ export default function OpportunityCard() {
               const ROW_HEIGHT = 42;
               const MIN_ROWS = 15;
               const nowMs = Date.now();
-              const snipeActive = simulationMode ? simSnipeActive : realSnipeActive;
               const minSpreadPercent = Math.max(0, strategyConfig.minSpreadPercent);
               // Legs already held by an active position → fully occupied.
               const occupiedLegs = new Set<string>();

@@ -2086,7 +2086,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         );
       }
     } catch {
-      // ignore transient network/API failures; next poll will retry.
+      // 통신 실패 시에도 ON 잔상으로 남지 않도록 OFF 스냅샷으로 정정.
+      const fallback: SchedulerRuntimeActiveSnapshot = {
+        realActive: false,
+        simActive: false,
+        fetchedAt: Date.now(),
+      };
+      set({
+        schedulerRuntime: fallback,
+        realSnipeActive: false,
+        simSnipeActive: false,
+      });
     }
   },
 
