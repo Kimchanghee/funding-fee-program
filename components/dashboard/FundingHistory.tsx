@@ -49,32 +49,32 @@ function ReceiptRow({ event }: { event: FundingReceiptEvent }) {
 
   return (
     <tr className="table-row-hover" style={{ borderBottom: '1px solid rgba(30,45,66,0.5)' }}>
-      <td style={{ padding: '8px 10px' }}>
+      <td data-label="시간" style={{ padding: '8px 10px' }}>
         <span className="mono" style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
           {event.timestampText ?? formatTimestampYmdHmsMs(event.timestamp)}
         </span>
       </td>
-      <td style={{ padding: '8px 10px' }}>
+      <td data-label="거래소" style={{ padding: '8px 10px' }}>
         <span style={{ fontSize: 10, fontWeight: 700, color, background: `${color}22`, padding: '1px 6px', borderRadius: 4 }}>
           {EXCHANGE_NAMES[exchange] ?? (event.exchange?.toUpperCase() ?? '-')}
         </span>
       </td>
-      <td style={{ padding: '8px 10px' }}>
+      <td data-label="코인" style={{ padding: '8px 10px' }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text)' }}>
           {(event.symbol ?? '-').split('/')[0]}
         </span>
       </td>
-      <td style={{ padding: '8px 10px' }}>
+      <td data-label="방향" style={{ padding: '8px 10px' }}>
         <span style={{ fontSize: 10, color: event.side === 'long' ? '#10b981' : '#ef4444', fontWeight: 600 }}>
           {event.side === 'long' ? 'LONG' : 'SHORT'}
         </span>
       </td>
-      <td style={{ padding: '8px 10px' }}>
+      <td data-label="펀딩률" style={{ padding: '8px 10px' }}>
         <span className="mono" style={{ fontSize: 10, color: rate >= 0 ? '#10b981' : '#ef4444' }}>
           {rate >= 0 ? '+' : ''}{(rate * 100).toFixed(4)}%
         </span>
       </td>
-      <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+      <td data-label="수령금액" style={{ padding: '8px 10px', textAlign: 'right' }}>
         <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: amount >= 0 ? '#10b981' : '#ef4444' }}>
           {amount >= 0 ? '+' : ''}${Math.abs(amount).toFixed(4)}
         </span>

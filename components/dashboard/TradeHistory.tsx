@@ -4,161 +4,25 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, History, RefreshCw } from 'lucide-react';
 import { fmtNum } from '@/lib/format';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
+import {
+  EXECUTED_TRADE_EVENT_TYPES,
+  REASON_TRADE_EVENT_TYPES,
+  buildTradePairsFromEvents,
+  getExecutionModeLabel,
+  type TradeEventLike,
+  type TradePairSummary,
+} from '@/lib/tradeEvents';
 import { useFundingStore } from '@/store/fundingStore';
 
 const HISTORY_SCROLL_HEIGHT = 240;
 const PAGE_SIZE = 15;
-const EXECUTED_EVENT_TYPES = new Set([
-  'entry',
-  'snipe_entry',
-  'exit',
-  'snipe_exit',
-  'auto_exit',
-  'snipe_complete',
-]);
-const REASON_EVENT_TYPES = new Set(['guard_block', 'schedule_probe']);
 
-interface TradeEvent {
-  timestamp: number;
-  timestampText?: string;
-  type: 'entry' | 'snipe_entry' | 'exit' | 'snipe_exit' | 'auto_exit' | 'snipe_complete' | 'guard_block' | 'schedule_probe' | string;
-  simulation: boolean;
-  baseAsset: string;
-  shortExchange?: string;
-  longExchange?: string;
-  spreadPercent?: number;
-  margin?: number;
-  leverage?: number;
-  notional?: number;
-  netProfit?: number;
-  pairId?: string;
-  exchange?: string;
-  side?: 'long' | 'short' | string;
-  pnl?: number;
-  fundingAmount?: number;
-  entryFee?: number;
-  exitFee?: number;
-  pricePnl?: number;
-  reason?: string;
-  milestone?: string;
-  analysis?: Record<string, unknown>;
-  detail?: string;
-  expectedNetProfit?: number;
-  expectedRoiPercent?: number;
-}
-
-interface HedgePair {
-  pairId: string;
-  baseAsset: string;
-  simulation: boolean;
-  entryTime: number;
-  shortExchange: string;
-  longExchange: string;
-  margin: number;
-  leverage: number;
-  notional: number;
-  spreadPercent: number;
-  expectedProfit: number;
-  shortExit: TradeEvent | null;
-  longExit: TradeEvent | null;
-  shortPnl: number;
-  longPnl: number;
-  shortFunding: number;
-  longFunding: number;
-  shortPricePnl: number;
-  longPricePnl: number;
-  totalPnl: number;
-  totalFunding: number;
-  status: 'open' | 'partial' | 'closed';
-  fundingVerified?: boolean | null;
-}
-
-function buildPairs(events: TradeEvent[]): HedgePair[] {
-  const pairs = new Map<string, HedgePair>();
-
-  for (const event of events) {
-    if ((event.type === 'entry' || event.type === 'snipe_entry') && event.pairId) {
-      pairs.set(event.pairId, {
-        pairId: event.pairId,
-        baseAsset: event.baseAsset,
-        simulation: !!event.simulation,
-        entryTime: event.timestamp,
-        shortExchange: event.shortExchange ?? '?',
-        longExchange: event.longExchange ?? '?',
-        margin: event.margin ?? 0,
-        leverage: event.leverage ?? 1,
-        notional: event.notional ?? 0,
-        spreadPercent: event.spreadPercent ?? 0,
-        expectedProfit: event.netProfit ?? 0,
-        shortExit: null,
-        longExit: null,
-        shortPnl: 0,
-        longPnl: 0,
-        shortFunding: 0,
-        longFunding: 0,
-        shortPricePnl: 0,
-        longPricePnl: 0,
-        totalPnl: 0,
-        totalFunding: 0,
-        status: 'open',
-        fundingVerified: null,
-      });
-    }
-  }
-
-  const exits = events.filter((event) => event.type === 'exit' || event.type === 'snipe_exit' || event.type === 'auto_exit');
-  for (const exitEvent of exits) {
-    let pair = exitEvent.pairId ? pairs.get(exitEvent.pairId) : undefined;
-
-    if (!pair) {
-      pair = [...pairs.values()].find((candidate) => {
-        if (candidate.baseAsset !== exitEvent.baseAsset) return false;
-        if (exitEvent.side === 'short') return candidate.shortExchange === exitEvent.exchange && !candidate.shortExit;
-        if (exitEvent.side === 'long') return candidate.longExchange === exitEvent.exchange && !candidate.longExit;
-        return false;
-      });
-    }
-
-    if (!pair) continue;
-
-    if (exitEvent.side === 'short') {
-      pair.shortExit = exitEvent;
-      pair.shortPnl = exitEvent.pnl ?? 0;
-      pair.shortFunding = exitEvent.fundingAmount ?? 0;
-      pair.shortPricePnl = exitEvent.pricePnl ?? 0;
-    } else if (exitEvent.side === 'long') {
-      pair.longExit = exitEvent;
-      pair.longPnl = exitEvent.pnl ?? 0;
-      pair.longFunding = exitEvent.fundingAmount ?? 0;
-      pair.longPricePnl = exitEvent.pricePnl ?? 0;
-    }
-
-    pair.totalPnl = pair.shortPnl + pair.longPnl;
-    pair.totalFunding = pair.shortFunding + pair.longFunding;
-    pair.status = pair.shortExit && pair.longExit ? 'closed' : 'partial';
-  }
-
-  const completes = events.filter((event) => event.type === 'snipe_complete');
-  for (const complete of completes) {
-    const pair = complete.pairId ? pairs.get(complete.pairId) : undefined;
-    if (!pair) continue;
-    if (typeof complete.pnl === 'number' && Number.isFinite(complete.pnl)) {
-      pair.totalPnl = complete.pnl;
-    }
-    if (complete.detail) {
-      const verified = complete.detail.match(/fundingVerified:(true|false)/);
-      if (verified) pair.fundingVerified = verified[1] === 'true';
-    }
-  }
-
-  return [...pairs.values()].sort((a, b) => b.entryTime - a.entryTime);
-}
-
-function PairRow({ pair }: { pair: HedgePair }) {
+function PairRow({ pair }: { pair: TradePairSummary }) {
   const [expanded, setExpanded] = useState(false);
   const statusColor = pair.status === 'closed' ? '#64748b' : pair.status === 'partial' ? '#f59e0b' : '#3b82f6';
   const statusLabel = pair.status === 'closed' ? '완료' : pair.status === 'partial' ? '부분' : '진행';
-  const totalFee = (pair.shortExit?.entryFee ?? 0) + (pair.shortExit?.exitFee ?? 0) + (pair.longExit?.entryFee ?? 0) + (pair.longExit?.exitFee ?? 0);
+  const totalFee = pair.totalFees;
+  const roi = pair.status === 'closed' ? pair.realizedRoiPercent : pair.expectedRoiPercent;
 
   return (
     <div className="trade-pair-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -167,7 +31,7 @@ function PairRow({ pair }: { pair: HedgePair }) {
         onClick={() => setExpanded((prev) => !prev)}
         style={{
           display: 'grid',
-          gridTemplateColumns: '50px 80px 1fr 90px 90px 90px 170px 30px',
+          gridTemplateColumns: '50px 80px 1fr 90px 90px 90px 80px 170px 30px',
           alignItems: 'center',
           padding: '10px 12px',
           cursor: 'pointer',
@@ -189,20 +53,23 @@ function PairRow({ pair }: { pair: HedgePair }) {
               color: pair.simulation ? '#a78bfa' : '#ef4444',
             }}
           >
-          {pair.simulation ? '[SIM]실체결' : '[REAL]실체결'}
+          {getExecutionModeLabel(pair.simulation)}
           </span>
         </span>
         <span style={{ color: '#94a3b8', fontSize: 11 }}>
           숏:{pair.shortExchange.toUpperCase()} / 롱:{pair.longExchange.toUpperCase()}
         </span>
         <span className="mono" style={{ color: '#a78bfa', textAlign: 'right' }}>
-          ${fmtNum(pair.margin * 2, 0)}
+          ${fmtNum(pair.totalMargin, 0)}
         </span>
         <span className="mono" style={{ color: pair.totalFunding >= 0 ? '#10b981' : '#ef4444', textAlign: 'right' }}>
           {pair.totalFunding >= 0 ? '+' : ''}{fmtNum(pair.totalFunding, 2)}
         </span>
         <span className="mono" style={{ color: pair.totalPnl >= 0 ? '#10b981' : '#ef4444', textAlign: 'right', fontWeight: 700 }}>
           {pair.totalPnl >= 0 ? '+' : ''}{fmtNum(pair.totalPnl, 2)}
+        </span>
+        <span className="mono" style={{ color: roi >= 0 ? '#10b981' : '#ef4444', textAlign: 'right', fontWeight: 700 }}>
+          {roi >= 0 ? '+' : ''}{fmtNum(roi, 2)}%
         </span>
         <span style={{ color: '#64748b', fontSize: 10, textAlign: 'right' }}>
           {formatTimestampYmdHmsMs(pair.entryTime)}
@@ -215,7 +82,7 @@ function PairRow({ pair }: { pair: HedgePair }) {
           <div className="trade-pair-summary-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)', fontSize: 11 }}>
             <div>
               <div style={{ color: '#64748b' }}>투입금</div>
-              <div className="mono" style={{ color: '#a78bfa', fontWeight: 700 }}>${fmtNum(pair.margin * 2, 0)}</div>
+              <div className="mono" style={{ color: '#a78bfa', fontWeight: 700 }}>${fmtNum(pair.totalMargin, 0)}</div>
             </div>
             <div>
               <div style={{ color: '#64748b' }}>노셔널</div>
@@ -261,6 +128,21 @@ function PairRow({ pair }: { pair: HedgePair }) {
               </div>
             </div>
           </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', fontSize: 11 }}>
+            <div>
+              <div style={{ color: '#64748b' }}>예상 수익률</div>
+              <div className="mono" style={{ color: pair.expectedRoiPercent >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
+                {pair.expectedRoiPercent >= 0 ? '+' : ''}{fmtNum(pair.expectedRoiPercent, 2)}%
+              </div>
+            </div>
+            <div>
+              <div style={{ color: '#64748b' }}>실현 수익률</div>
+              <div className="mono" style={{ color: pair.realizedRoiPercent >= 0 ? '#10b981' : '#ef4444', fontWeight: 800 }}>
+                {pair.realizedRoiPercent >= 0 ? '+' : ''}{fmtNum(pair.realizedRoiPercent, 2)}%
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -268,7 +150,7 @@ function PairRow({ pair }: { pair: HedgePair }) {
 }
 
 export default function TradeHistory() {
-  const [events, setEvents] = useState<TradeEvent[]>([]);
+  const [events, setEvents] = useState<TradeEventLike[]>([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [page, setPage] = useState(1);
@@ -278,16 +160,23 @@ export default function TradeHistory() {
   const fetchTrades = useCallback(async () => {
     setLoading(true);
     try {
-      const typeQuery = 'type=snipe_entry,snipe_exit,entry,exit,auto_exit,snipe_complete,guard_block,schedule_probe';
+      const executedTypeQuery = 'type=snipe_entry,snipe_exit,entry,exit,auto_exit,snipe_complete,funding';
+      const reasonTypeQuery = 'type=guard_block,schedule_probe';
       const scope = simulationMode ? 'sim_executed' : 'real_executed';
       const fromQuery = tradesClearedAt > 0 ? `&from=${tradesClearedAt}` : '';
-      const res = await fetch(`/api/trades/list?all=true&scope=${scope}&${typeQuery}${fromQuery}`);
-      const json = await res.json() as { success?: boolean; events?: TradeEvent[] };
-      if (!json.success || !Array.isArray(json.events)) {
+      const simulationQuery = `simulation=${simulationMode ? 'true' : 'false'}`;
+      const [executedRes, reasonRes] = await Promise.all([
+        fetch(`/api/trades/list?all=true&scope=${scope}&${executedTypeQuery}${fromQuery}`),
+        fetch(`/api/trades/list?all=true&scope=all&${simulationQuery}&${reasonTypeQuery}${fromQuery}`),
+      ]);
+      const executedJson = await executedRes.json() as { success?: boolean; events?: TradeEventLike[] };
+      const reasonJson = await reasonRes.json() as { success?: boolean; events?: TradeEventLike[] };
+      if (!executedJson.success || !Array.isArray(executedJson.events)) {
         setEvents([]);
         return;
       }
-      setEvents(json.events);
+      const reasonEvents = reasonJson.success && Array.isArray(reasonJson.events) ? reasonJson.events : [];
+      setEvents([...executedJson.events, ...reasonEvents].sort((a, b) => b.timestamp - a.timestamp));
     } catch {
       setEvents([]);
     } finally {
@@ -299,8 +188,8 @@ export default function TradeHistory() {
     void fetchTrades();
   }, [fetchTrades, tradesClearedAt, simulationMode]);
 
-  const pairs = useMemo(() => buildPairs(events.filter((event) => EXECUTED_EVENT_TYPES.has(event.type))), [events]);
-  const reasonEvents = useMemo(() => events.filter((event) => REASON_EVENT_TYPES.has(event.type)), [events]);
+  const pairs = useMemo(() => buildTradePairsFromEvents(events.filter((event) => EXECUTED_TRADE_EVENT_TYPES.has(event.type))), [events]);
+  const reasonEvents = useMemo(() => events.filter((event) => REASON_TRADE_EVENT_TYPES.has(event.type)), [events]);
   const latestReasonEvents = useMemo(() => reasonEvents.slice(0, 40), [reasonEvents]);
   const reasonSummary = useMemo(() => {
     const byReason = new Map<string, number>();
@@ -433,7 +322,7 @@ export default function TradeHistory() {
               className="trade-history-table-header"
               style={{
                 display: 'grid',
-                gridTemplateColumns: '50px 80px 1fr 90px 90px 90px 170px 30px',
+                gridTemplateColumns: '50px 80px 1fr 90px 90px 90px 80px 170px 30px',
                 padding: '6px 12px',
                 fontSize: 10,
                 color: '#64748b',
@@ -448,6 +337,7 @@ export default function TradeHistory() {
               <span style={{ textAlign: 'right' }}>투입금</span>
               <span style={{ textAlign: 'right' }}>펀딩</span>
               <span style={{ textAlign: 'right' }}>PnL</span>
+              <span style={{ textAlign: 'right' }}>수익률</span>
               <span style={{ textAlign: 'right' }}>시간</span>
               <span />
             </div>

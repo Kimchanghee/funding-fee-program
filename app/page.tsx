@@ -95,7 +95,7 @@ export default function DashboardPage() {
 
         {/* Footer */}
         <div className="dashboard-footer" style={{ textAlign: 'center', padding: '16px 0', fontSize: 11, color: 'var(--color-text-muted)' }}>
-          펀딩피 헷징 프로그램 • 멀티 거래소 REST API 모니터링 • 8시간마다 펀딩 수령
+          펀딩피 헷징 프로그램 • 멀티 거래소 WS + REST 이중화 모니터링 • 8시간마다 펀딩 수령
         </div>
       </main>
 

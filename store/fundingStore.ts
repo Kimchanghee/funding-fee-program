@@ -572,7 +572,7 @@ function getOpportunityYieldScore(
     useDriftBuffer: cfg.confirmedSnipeConfig?.useDriftBuffer,
   });
   if (profit.netPerFunding <= 0) return 0;
-  if (!hasRealSpread && (!profit.conservativeEV.passesMinProfit || !profit.conservativeEV.passesEVRatio)) {
+  if (!hasRealSpread && profit.conservativeEV.expectedNetUSD <= 0) {
     return 0;
   }
   return Math.max(0, profit.netPerFunding / getOpportunityIntervalHours(opportunity));
@@ -1231,9 +1231,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   logs: [],
   apiConfigs: {},
   strategyConfig: {
-    investmentUSDT: 1000,
-    leverage: 5,
-    minSpreadPercent: 0.08,
+    investmentUSDT: 250,
+    leverage: 17,
+    minSpreadPercent: 0.3,
     autoExecute: false,
     compoundInvesting: true,
     timingConfig: { ...DEFAULT_TIMING_CONFIG },
@@ -2286,7 +2286,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         );
         get().addLog(
           'warning',
-          `[자동복구] REST API 로딩 멈춤 감지 → 복구 ${ratesAutoRecoveryAttempts}/${RATES_AUTO_RECOVERY_MAX_ATTEMPTS} 시도`,
+          `[자동복구] 시장 데이터 로딩 멈춤 감지 → WS/REST 복구 ${ratesAutoRecoveryAttempts}/${RATES_AUTO_RECOVERY_MAX_ATTEMPTS} 시도`,
         );
         // Force reset in-flight flag + clear stuck statuses so the next
         // refreshRates call is allowed to proceed from a clean slate.
@@ -2405,18 +2405,18 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const simulationMode = simModeOverride ?? get().simulationMode;
     const plannedInvestmentUSDT = investmentOverrideUSDT ?? strategyConfig.investmentUSDT;
 
-    // Guard: spread check
+    // Guard: execution only needs a positive live spread; profitability gates handle costs.
     const effectiveMinSpread = getEffectiveMinSpread(strategyConfig);
-    if (opportunity.spreadPercent < effectiveMinSpread) {
+    if (opportunity.spread <= 0) {
       get().addLog('warning',
-        `스프레드 ${fmtNum(opportunity.spreadPercent, 4)}%가 최소 기준 ${effectiveMinSpread}% 미만 — 진입 스킵`,
+        `스프레드 ${fmtNum(opportunity.spreadPercent, 4)}%가 0 이하 — 진입 스킵`,
         undefined,
         `${opportunity.baseAsset} ${opportunity.shortExchange}↔${opportunity.longExchange}`,
       );
       queueTrade({
         timestamp: Date.now(), type: 'guard_block', simulation: simulationMode,
         baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
-        spreadPercent: opportunity.spreadPercent, reason: `스프레드 ${opportunity.spreadPercent.toFixed(4)}% < 최소 ${effectiveMinSpread}%`,
+        spreadPercent: opportunity.spreadPercent, reason: `스프레드 ${opportunity.spreadPercent.toFixed(4)}% <= 0 | userMinSpread=${effectiveMinSpread}%`,
       });
       return { success: false };
     }
@@ -3389,7 +3389,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       );
       const icon = totalNewFunding >= 0 ? '💰' : '💸';
       void sendTelegramMessage([
-        `${icon} <b>[SIM] 펀딩 수령: ${simFundingPayments.length}건</b>`,
+        `${icon} <b>[SIM]실체결 펀딩 수령: ${simFundingPayments.length}건</b>`,
         ...lines,
         `\n합계: ${totalNewFunding >= 0 ? '+' : ''}$${totalNewFunding.toFixed(4)}`,
       ].join('\n'));
@@ -3731,7 +3731,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         // 같은 모드에서 이미 예약됨
         if (snipeTargets[mkSnipeKey(isSim, getOpportunityId(o))]) return false;
         if (opportunityConflictsWithLegs(o, occupiedLegs)) return false;
-        if (o.spreadPercent < effectiveMinPercent) return false;
+        if (o.spread <= 0) return false;
         if ((o.nextFundingTime - targetTime) > MAX_REPLACEMENT_DELAY_MS) return false;
         // ★ realSpread 없는 후보는 교체 대상에서 제외 (이론값 과대평가 방지)
         const candidateRs = getRealSpreadForOpportunity(currentRealSpreads, o);
@@ -3843,14 +3843,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           filterReasons.noProfit++; return false;
         }
       }
-      if (!hasRS && o.spreadPercent < effectiveMinPercent) { filterReasons.lowSpread++; return false; }
       if (!hasRS) {
         const evProfit = estimateProfit(o, strategyConfig.investmentUSDT, strategyConfig.leverage, {
           feeOverrides: strategyConfig.feeOverrides,
           paybackOverrides: strategyConfig.paybackOverrides,
           useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
         });
-        if (evProfit.netPerFunding <= 0 || !evProfit.conservativeEV.passesMinProfit || !evProfit.conservativeEV.passesEVRatio) {
+        if (o.spreadPercent < effectiveMinPercent && evProfit.conservativeEV.expectedNetUSD <= 0) {
+          filterReasons.lowSpread++;
+          return false;
+        }
+        if (evProfit.netPerFunding <= 0 || evProfit.conservativeEV.expectedNetUSD <= 0) {
           filterReasons.noProfit++; return false;
         }
       }
@@ -4106,7 +4109,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // 진입 시점에 해당 코인의 최신 기회 확인 (순수익 + 최소스프레드 기준)
     const { opportunities, strategyConfig, realSpreads: currentRealSpreads, simBalances, balances: realBalances } = get();
-    const effectiveMinPercent = getEffectiveMinSpread(strategyConfig);
 
     const latestOpp = opportunities.find(o =>
       getOpportunityId(o) === getOpportunityId(opportunity) &&
@@ -4114,7 +4116,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       currentEnabled.includes(o.longExchange),
     );
     const meetsThreshold = (o: ArbitrageOpportunity) => {
-      if (o.spreadPercent < effectiveMinPercent) return false;
+      if (o.spread <= 0) return false;
       const n = plannedInvestmentUSDT * strategyConfig.leverage;
       const rs = getRealSpreadForOpportunity(currentRealSpreads, o);
       const hasRS = rs && Date.now() - rs.updatedAt < 30_000;

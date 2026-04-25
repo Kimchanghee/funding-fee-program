@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getDataDir } from './dataDir';
+import { EXECUTED_TRADE_EVENT_TYPES } from './tradeEvents';
 import { formatDateYmd } from './timeFormat';
 
 function getLegacyDataDir(): string | null {
@@ -157,19 +158,10 @@ export interface TradeEvent {
   executionScope?: ExecutedTradeScope;
 }
 
-const EXECUTED_EVENT_TYPES = new Set<TradeEvent['type']>([
-  'entry',
-  'snipe_entry',
-  'exit',
-  'snipe_exit',
-  'auto_exit',
-  'funding',
-  'snipe_complete',
-]);
 const FUNDING_RECEIPT_EVENT_TYPES = new Set<TradeEvent['type']>(['funding']);
 
 function normalizeTradeEvent(event: TradeEvent): TradeEvent {
-  if (!EXECUTED_EVENT_TYPES.has(event.type)) {
+  if (!EXECUTED_TRADE_EVENT_TYPES.has(event.type)) {
     return event;
   }
   return {
@@ -205,33 +197,43 @@ export function appendTrades(events: TradeEvent[]): void {
   if (events.length === 0) return;
   try {
     const tradesDir = getTradesDir();
-    const dateStr = getDateStr();
     const normalizedEvents = events.map(normalizeTradeEvent);
+    const appendGroupedByEventDate = (rows: TradeEvent[], dir: string) => {
+      const grouped = new Map<string, TradeEvent[]>();
+      for (const event of rows) {
+        const dateStr = getDateStr(event.timestamp);
+        const dateEvents = grouped.get(dateStr);
+        if (dateEvents) {
+          dateEvents.push(event);
+        } else {
+          grouped.set(dateStr, [event]);
+        }
+      }
+      for (const [dateStr, dateEvents] of grouped.entries()) {
+        appendEventsToDailyFile(dateEvents, dir, dateStr);
+      }
+    };
 
-    appendEventsToDailyFile(normalizedEvents, tradesDir, dateStr);
-    appendEventsToDailyFile(
+    appendGroupedByEventDate(normalizedEvents, tradesDir);
+    appendGroupedByEventDate(
       normalizedEvents.filter((event) => event.executionScope === 'sim'),
       getExecutedTradesDir('sim'),
-      dateStr,
     );
-    appendEventsToDailyFile(
+    appendGroupedByEventDate(
       normalizedEvents.filter((event) => event.executionScope === 'real'),
       getExecutedTradesDir('real'),
-      dateStr,
     );
-    appendEventsToDailyFile(
+    appendGroupedByEventDate(
       normalizedEvents.filter(
         (event) => event.executionScope === 'sim' && FUNDING_RECEIPT_EVENT_TYPES.has(event.type),
       ),
       getFundingReceiptsDir('sim'),
-      dateStr,
     );
-    appendEventsToDailyFile(
+    appendGroupedByEventDate(
       normalizedEvents.filter(
         (event) => event.executionScope === 'real' && FUNDING_RECEIPT_EVENT_TYPES.has(event.type),
       ),
       getFundingReceiptsDir('real'),
-      dateStr,
     );
   } catch (err) {
     console.error('[fileLogger] appendTrades failed:', err);

@@ -6,6 +6,7 @@ import {
   readTrades,
   type TradeEvent,
 } from '@/lib/fileLogger';
+import { EXECUTED_TRADE_EVENT_TYPES } from '@/lib/tradeEvents';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
 function parseTimestamp(value: string | null): number | null {
@@ -22,18 +23,6 @@ function parsePositiveInt(value: string | null): number | null {
   if (!Number.isFinite(numeric) || numeric <= 0) return null;
   return Math.floor(numeric);
 }
-
-const EXECUTED_TYPES = new Set([
-  'entry',
-  'snipe_entry',
-  'exit',
-  'snipe_exit',
-  'auto_exit',
-  'funding',
-  'snipe_complete',
-  'guard_block',
-  'schedule_probe',
-]);
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -76,7 +65,7 @@ export async function GET(req: NextRequest) {
     }
 
     const simulation = scope === 'sim_executed';
-    return readTrades(targetDate).filter((event) => event.simulation === simulation && EXECUTED_TYPES.has(event.type));
+    return readTrades(targetDate).filter((event) => event.simulation === simulation && EXECUTED_TRADE_EVENT_TYPES.has(event.type));
   };
 
   if (listOnly) {

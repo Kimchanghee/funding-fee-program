@@ -62,6 +62,7 @@ import {
   upsertServerPositionMeta,
 } from './serverPositionMeta';
 import { sendTelegramMessage } from './telegram';
+import { buildTradePairsFromEvents, formatTradePairTelegramMessage } from './tradeEvents';
 import {
   getResolvedTimingConfig,
   sanitizeEnabledExchanges,
@@ -128,16 +129,6 @@ function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return 'unknown';
-}
-
-function formatSignedUsd(value: number, digits = 4): string {
-  const sign = value >= 0 ? '+' : '';
-  return `${sign}$${value.toFixed(digits)}`;
-}
-
-function formatSignedPercent(value: number, digits = 4): string {
-  const sign = value >= 0 ? '+' : '';
-  return `${sign}${value.toFixed(digits)}%`;
 }
 
 function isSingleCycleFundingRolloverShift(
@@ -328,9 +319,9 @@ class ServerScheduler {
   private active = false;
   // Baseline profile aligned with legacy production defaults.
   private config: SchedulerConfig = {
-    investmentUSDT: 500,
-    leverage: 5,
-    minSpreadPercent: 0.01,
+    investmentUSDT: 250,
+    leverage: 17,
+    minSpreadPercent: 0.3,
     compoundInvesting: true,
     enabledExchanges: [],
     maxConcurrentPairs: 5,
@@ -568,7 +559,7 @@ class ServerScheduler {
       `scheduler started | investment=$${this.config.investmentUSDT} leverage=${this.config.leverage}x compound=${this.config.compoundInvesting ? 'on' : 'off'} exchanges=${this.config.enabledExchanges.join(',')} minSpread=${this.config.minSpreadPercent}%`,
     );
     void sendTelegramMessage(
-      `[Server Scheduler] started\ninvestment: $${this.config.investmentUSDT} | leverage: ${this.config.leverage}x | compound: ${this.config.compoundInvesting ? 'ON' : 'OFF'}\nexchanges: ${this.config.enabledExchanges.join(', ')}\nminSpread: ${this.config.minSpreadPercent}%`,
+      `[REAL Scheduler] started\ninvestment: $${this.config.investmentUSDT} | leverage: ${this.config.leverage}x | compound: ${this.config.compoundInvesting ? 'ON' : 'OFF'}\nexchanges: ${this.config.enabledExchanges.join(', ')}\nminSpread: ${this.config.minSpreadPercent}%`,
     );
   }
 
@@ -622,7 +613,7 @@ class ServerScheduler {
       `scheduler stopped | entries=${this.stats.totalEntries} closes=${this.stats.totalCloses}${openPositions > 0 ? ` openPositions=${openPositions}` : ''}`,
     );
     void sendTelegramMessage(
-      `[Server Scheduler] stopped\nentries: ${this.stats.totalEntries} | closes: ${this.stats.totalCloses}${openPositions > 0 ? `\nopen positions require manual handling: ${openPositions}` : ''}`,
+      `[REAL Scheduler] stopped\nentries: ${this.stats.totalEntries} | closes: ${this.stats.totalCloses}${openPositions > 0 ? `\nopen positions require manual handling: ${openPositions}` : ''}`,
     );
   }
 
@@ -938,14 +929,15 @@ class ServerScheduler {
         if (opportunity.nextFundingTime < this.lastPollTime) {
           rejectReasons.push('funding_time_past');
         }
-        if (opportunity.spreadPercent < this.config.minSpreadPercent) {
-          rejectReasons.push('spread_below_threshold');
-        }
 
         const preEntryEv = estimatePreEntryConservativeEV(opportunity, this.config);
+        const evPositive = (preEntryEv?.expectedNetUSD ?? Number.NEGATIVE_INFINITY) > 0;
+        if (opportunity.spreadPercent < this.config.minSpreadPercent && !evPositive) {
+          rejectReasons.push('spread_below_threshold');
+        }
         if (!preEntryEv) {
           rejectReasons.push('profitability_calculation_failed');
-        } else if (!preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) {
+        } else if (preEntryEv.expectedNetUSD <= 0) {
           rejectReasons.push('profitability_scan_failed');
         }
 
@@ -1335,10 +1327,10 @@ class ServerScheduler {
 
         const liveSpread = shortLiveRate.rate - longLiveRate.rate;
         const liveSpreadPercent = liveSpread * 100;
-        if (liveSpread <= 0 || liveSpreadPercent < this.config.minSpreadPercent) {
+        if (liveSpread <= 0) {
           this.log(
             'warning',
-            `entry blocked by live spread revalidate | asset=${asset} spread=${liveSpreadPercent.toFixed(4)}% min=${this.config.minSpreadPercent.toFixed(4)}%`,
+            `entry blocked by live spread revalidate | asset=${asset} spread=${liveSpreadPercent.toFixed(4)}% <= 0.0000%`,
           );
           this.recordTrades([{
             timestamp: Date.now(),
@@ -1350,7 +1342,7 @@ class ServerScheduler {
             spread: liveSpread,
             spreadPercent: liveSpreadPercent,
             reason: 'live_spread_reverted',
-            detail: `liveSpread:${liveSpreadPercent.toFixed(6)} minSpread:${this.config.minSpreadPercent.toFixed(6)}`,
+            detail: `liveSpread:${liveSpreadPercent.toFixed(6)} executionGate:positive_live_spread_then_ev minSpread:${this.config.minSpreadPercent.toFixed(6)}`,
           }]);
           return;
         }
@@ -1804,7 +1796,8 @@ class ServerScheduler {
       let profitabilityDetail = '';
       let evDecisionValue: number | undefined;
 
-      // Profitability gate: conservative EV (REAL fail-safe)
+      // Profitability gate: match the aggressive 2026-04-17 behavior.
+      // Scheduling already ranks by full conservative EV; execute-time only aborts expected loss.
       {
         const usesInstantRate = pairUsesInstantaneousRate(
           opportunity.shortExchange, opportunity.longExchange,
@@ -1830,7 +1823,7 @@ class ServerScheduler {
           exitImpactDec,
         );
 
-        profitabilityPassed = ev.passesMinProfit && ev.passesEVRatio;
+        profitabilityPassed = ev.expectedNetUSD > 0;
         evDecisionValue = ev.expectedNetUSD;
         profitabilityDetail = `EV=$${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)} drift=${shortDrift.toFixed(6)}/${longDrift.toFixed(6)}`;
 
@@ -2127,14 +2120,7 @@ class ServerScheduler {
           this.config.paybackOverrides,
         ));
       const expectedNetProfit = expectedPerFunding - expectedTotalRoundTripFees;
-      const entryInvestmentUSDT = this.config.leverage > 0
-        ? (shortResult.value.filledNotional + longResult.value.filledNotional) / this.config.leverage
-        : 0;
-      const expectedRoiPercent = entryInvestmentUSDT > 0
-        ? (expectedNetProfit / entryInvestmentUSDT) * 100
-        : 0;
-
-      this.recordTrades([{
+      const entryTrade: TradeEvent = {
         timestamp: entryTime,
         type: 'snipe_entry',
         simulation: false,
@@ -2157,7 +2143,8 @@ class ServerScheduler {
         longLiquidity: longResult.value.liquidity,
         detail: `expectedPerFunding:${expectedPerFunding.toFixed(8)} totalRoundTripFees:${expectedTotalRoundTripFees.toFixed(8)}`,
         success: true,
-      }]);
+      };
+      this.recordTrades([entryTrade]);
 
       this.log(
         'success',
@@ -2165,16 +2152,12 @@ class ServerScheduler {
       );
       await this.refreshBalanceSnapshotForTelegram(apiConfigs);
       const balanceSummary = this.getCurrentRealBalanceSummary();
-      void sendTelegramMessage(
-        `[REAL 거래 성공][진입] ${asset}\n`
-        + `투자금(총 마진): $${entryInvestmentUSDT.toFixed(2)}\n`
-        + `순수익(예상): ${formatSignedUsd(expectedNetProfit)}\n`
-        + `수익률(예상): ${formatSignedPercent(expectedRoiPercent)}\n`
-        + `현재 전체 잔액: $${balanceSummary.totalUSDT.toFixed(2)}\n`
-        + `pairId: ${pairId}\n`
-        + `route: ${opportunity.shortExchange.toUpperCase()} -> ${opportunity.longExchange.toUpperCase()}\n`
-        + `spread: +${spreadPercentForDecision.toFixed(4)}%`,
-      );
+      const entryPair = buildTradePairsFromEvents([entryTrade])[0];
+      if (entryPair) {
+        void sendTelegramMessage(formatTradePairTelegramMessage(entryPair, 'entry', {
+          currentTotalBalanceUSDT: balanceSummary.totalUSDT,
+        }));
+      }
 
       this.saveState();
     } catch (err) {
@@ -2474,7 +2457,7 @@ class ServerScheduler {
           detail: errors.join(' | '),
         }]);
         void sendTelegramMessage(
-          `[Server] ${asset} close incomplete\nretry scheduled in ${CLOSE_RETRY_DELAY_MS / 1000}s\n${errors.join('\n')}`,
+          `[REAL]실체결 ${asset} close incomplete\nretry scheduled in ${CLOSE_RETRY_DELAY_MS / 1000}s\n${errors.join('\n')}`,
         );
         this.saveState();
         return;
@@ -2566,24 +2549,38 @@ class ServerScheduler {
 
       const totalFunding = exitTrades.reduce((sum, trade) => sum + (trade.fundingAmount ?? 0), 0);
       const totalPnl = exitTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0);
+      const totalPricePnl = exitTrades.reduce((sum, trade) => sum + (trade.pricePnl ?? 0), 0);
+      const totalEntryFees = exitTrades.reduce((sum, trade) => sum + (trade.entryFee ?? 0), 0);
+      const totalExitFees = exitTrades.reduce((sum, trade) => sum + (trade.exitFee ?? 0), 0);
+      const totalFees = totalEntryFees + totalExitFees;
+      const closeInvestmentUSDT = this.config.leverage > 0
+        ? (position.shortEntry.filledNotional + position.longEntry.filledNotional) / this.config.leverage
+        : 0;
+      const completeTrade: TradeEvent = {
+        timestamp: Date.now(),
+        type: 'snipe_complete',
+        simulation: false,
+        baseAsset: asset,
+        shortExchange: position.opportunity.shortExchange,
+        longExchange: position.opportunity.longExchange,
+        pairId: position.pairId,
+        margin: closeInvestmentUSDT > 0 ? closeInvestmentUSDT / 2 : 0,
+        leverage: this.config.leverage,
+        notional: Math.min(position.shortEntry.filledNotional, position.longEntry.filledNotional),
+        fundingCollected: fundingVerification.verified ? totalFunding : null,
+        pnl: totalPnl,
+        pricePnl: totalPricePnl,
+        entryFee: totalEntryFees,
+        exitFee: totalExitFees,
+        detail: fundingVerification.verified
+          ? `fundingVerified:true fundingEvents:${fundingVerification.payments.length} pricePnl:${totalPricePnl.toFixed(6)} fees:${totalFees.toFixed(6)}`
+          : `fundingVerified:false errors:${fundingVerification.errors.join(' | ') || 'none'}`,
+      };
 
       this.recordTrades([
         ...exitTrades,
         ...fundingTrades,
-        {
-          timestamp: Date.now(),
-          type: 'snipe_complete',
-          simulation: false,
-          baseAsset: asset,
-          shortExchange: position.opportunity.shortExchange,
-          longExchange: position.opportunity.longExchange,
-          pairId: position.pairId,
-          fundingCollected: fundingVerification.verified ? totalFunding : null,
-          pnl: totalPnl,
-          detail: fundingVerification.verified
-            ? `fundingVerified:true fundingEvents:${fundingVerification.payments.length}`
-            : `fundingVerified:false errors:${fundingVerification.errors.join(' | ') || 'none'}`,
-        },
+        completeTrade,
       ]);
 
       transitionPhase(opportunityId, 'cooldown');
@@ -2597,27 +2594,20 @@ class ServerScheduler {
       this.activePositions.delete(opportunityId);
       this.stats.totalCloses++;
       this.stats.totalProfit += totalPnl;
-      const closeInvestmentUSDT = this.config.leverage > 0
-        ? (position.shortEntry.filledNotional + position.longEntry.filledNotional) / this.config.leverage
-        : 0;
-      const closeRoiPercent = closeInvestmentUSDT > 0
-        ? (totalPnl / closeInvestmentUSDT) * 100
-        : 0;
       this.log(
         'success',
         `close complete | asset=${asset} pnl=${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(4)} funding=${totalFunding >= 0 ? '+' : ''}$${totalFunding.toFixed(4)}`,
       );
       await this.refreshBalanceSnapshotForTelegram(apiConfigs);
       const balanceSummary = this.getCurrentRealBalanceSummary();
-      void sendTelegramMessage(
-        `[REAL 거래 성공][청산] ${asset}\n`
-        + `투자금(총 마진): $${closeInvestmentUSDT.toFixed(2)}\n`
-        + `순수익(실현): ${formatSignedUsd(totalPnl)}\n`
-        + `수익률(실현): ${formatSignedPercent(closeRoiPercent)}\n`
-        + `현재 전체 잔액: $${balanceSummary.totalUSDT.toFixed(2)}\n`
-        + `펀딩 정산: ${formatSignedUsd(totalFunding)}`
-        + `${fundingVerification.verified ? '' : '\nfunding verification pending/manual check recommended'}`,
-      );
+      const completedPair = buildTradePairsFromEvents([...exitTrades, ...fundingTrades, completeTrade])
+        .find((pair) => pair.pairId === position.pairId);
+      if (completedPair) {
+        void sendTelegramMessage(formatTradePairTelegramMessage(completedPair, 'close', {
+          currentTotalBalanceUSDT: balanceSummary.totalUSDT,
+          note: fundingVerification.verified ? undefined : 'funding verification pending/manual check recommended',
+        }));
+      }
       this.saveState();
     } catch (err) {
       position.closeAttempts += 1;

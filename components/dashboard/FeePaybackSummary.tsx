@@ -82,18 +82,18 @@ export default function FeePaybackSummary() {
           <tbody>
             {rows.map((row) => (
               <tr key={row.exchange} style={{ borderBottom: '1px solid rgba(30,45,66,0.5)' }}>
-                <td style={td}>
+                <td data-label="거래소" style={td}>
                   <span style={{ color: EXCHANGE_COLORS[row.exchange], fontWeight: 800 }}>
                     {EXCHANGE_NAMES[row.exchange]}
                   </span>
                 </td>
-                <td style={tdMono}>{fmtPct(row.rawTaker)}</td>
-                <td style={tdMono}>{fmtPct(row.rawMaker)}</td>
-                <td style={tdMono}>{fmtPayback(row.accountA)}</td>
-                <td style={tdMono}>{fmtPayback(row.accountB)}</td>
-                <td style={tdMono}>{fmtPayback(row.totalPayback)}</td>
-                <td style={{ ...tdMono, color: '#10b981', fontWeight: 700 }}>{fmtPct(row.effectiveTaker)}</td>
-                <td style={{ ...tdMono, color: '#10b981', fontWeight: 700 }}>{fmtPct(row.effectiveMaker)}</td>
+                <td data-label="원 Taker" style={tdMono}>{fmtPct(row.rawTaker)}</td>
+                <td data-label="원 Maker" style={tdMono}>{fmtPct(row.rawMaker)}</td>
+                <td data-label="계정A" style={tdMono}>{fmtPayback(row.accountA)}</td>
+                <td data-label="계정B" style={tdMono}>{fmtPayback(row.accountB)}</td>
+                <td data-label="총 페이백" style={tdMono}>{fmtPayback(row.totalPayback)}</td>
+                <td data-label="유효 Taker" style={{ ...tdMono, color: '#10b981', fontWeight: 700 }}>{fmtPct(row.effectiveTaker)}</td>
+                <td data-label="유효 Maker" style={{ ...tdMono, color: '#10b981', fontWeight: 700 }}>{fmtPct(row.effectiveMaker)}</td>
               </tr>
             ))}
           </tbody>

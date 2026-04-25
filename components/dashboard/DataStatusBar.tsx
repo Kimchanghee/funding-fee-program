@@ -5,6 +5,41 @@ import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES } from '@/lib/types';
 import { RATES_POLL_INTERVAL_MS } from '@/lib/polling';
 
+type ExchangeLoopSummary = {
+  loops: number;
+  healthyLoops: number;
+  errorLoops: number;
+  lastSuccessAgeMs: number | null;
+  lastError?: string;
+};
+
+type FundingHealth = {
+  status: 'idle' | 'ok' | 'error';
+  source: 'none' | 'live' | 'fresh-cache' | 'stale-cache';
+  stale: boolean;
+  ageMs: number | null;
+  ratesCount: number;
+  lastError?: string;
+};
+
+type MarketDataHealth = {
+  funding?: Record<string, FundingHealth>;
+  orderbook?: {
+    entries: number;
+    inFlight: number;
+    freshEntries: number;
+    staleEntries: number;
+    oldestAgeMs: number | null;
+  };
+  ws?: {
+    fundingByExchange?: Record<string, ExchangeLoopSummary>;
+    orderbookByExchange?: Record<string, ExchangeLoopSummary>;
+  };
+};
+
+const WS_HEALTHY_MAX_AGE_MS = 15_000;
+const REST_HEALTHY_MAX_AGE_MS = 90_000;
+
 export default function DataStatusBar() {
   const {
     exchangeFetchStatus,
@@ -16,16 +51,73 @@ export default function DataStatusBar() {
   } = useFundingStore();
 
   const [now, setNow] = useState(Date.now());
+  const [marketHealth, setMarketHealth] = useState<MarketDataHealth | null>(null);
+
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  const okCount = enabledExchanges.filter(ex => exchangeFetchStatus[ex] === 'ok').length;
+  useEffect(() => {
+    let canceled = false;
+    const loadHealth = async () => {
+      try {
+        const response = await fetch('/api/market-data-health', { cache: 'no-store' });
+        const payload = await response.json() as { success?: boolean; data?: MarketDataHealth };
+        if (!canceled && payload.success && payload.data) {
+          setMarketHealth(payload.data);
+        }
+      } catch {
+        if (!canceled) setMarketHealth(null);
+      }
+    };
+    void loadHealth();
+    const id = setInterval(() => void loadHealth(), 5_000);
+    return () => {
+      canceled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  const getWsHealthy = (exchange: string) => {
+    const fundingWs = marketHealth?.ws?.fundingByExchange?.[exchange];
+    const orderbookWs = marketHealth?.ws?.orderbookByExchange?.[exchange];
+    return [fundingWs, orderbookWs].some((summary) => (
+      !!summary
+      && summary.healthyLoops > 0
+      && summary.lastSuccessAgeMs != null
+      && summary.lastSuccessAgeMs <= WS_HEALTHY_MAX_AGE_MS
+    ));
+  };
+
+  const getRestHealthy = (exchange: string) => {
+    const funding = marketHealth?.funding?.[exchange];
+    const uiOk = exchangeFetchStatus[exchange as keyof typeof exchangeFetchStatus] === 'ok';
+    const cacheOk = !!funding
+      && funding.ratesCount > 0
+      && funding.ageMs != null
+      && funding.ageMs <= REST_HEALTHY_MAX_AGE_MS;
+    return uiOk || cacheOk;
+  };
+
+  const getHybridState = (exchange: string) => {
+    const ws = getWsHealthy(exchange);
+    const rest = getRestHealthy(exchange);
+    if (ws && rest) return 'hybrid';
+    if (ws) return 'ws';
+    if (rest) return 'rest';
+    return exchangeFetchStatus[exchange as keyof typeof exchangeFetchStatus] === 'loading' ? 'loading' : 'error';
+  };
+
+  const healthyCount = enabledExchanges.filter(ex => getWsHealthy(ex) || getRestHealthy(ex)).length;
+  const hybridCount = enabledExchanges.filter(ex => getWsHealthy(ex) && getRestHealthy(ex)).length;
   const totalRates = fundingRates.length;
   const pollingSeconds = Math.max(1, Math.round(RATES_POLL_INTERVAL_MS / 1000));
 
-  const getStatusColor = (status: string | undefined) => {
+  const getStatusColor = (status: string | undefined, hybridState?: string) => {
+    if (hybridState === 'hybrid') return '#10b981';
+    if (hybridState === 'ws') return '#38bdf8';
+    if (hybridState === 'rest') return '#a78bfa';
     switch (status) {
       case 'ok': return '#10b981';
       case 'error': return '#ef4444';
@@ -34,16 +126,17 @@ export default function DataStatusBar() {
     }
   };
 
-  const getStatusLabel = (status: string | undefined) => {
-    switch (status) {
-      case 'ok': return '정상';
-      case 'error': return '오류';
-      case 'loading': return '로딩';
-      default: return '대기';
-    }
+  const getStatusLabel = (status: string | undefined, hybridState: string) => {
+    if (hybridState === 'hybrid') return 'WS+REST';
+    if (hybridState === 'ws') return 'WS';
+    if (hybridState === 'rest') return 'REST';
+    if (status === 'loading') return '로딩';
+    return '대기';
   };
 
-  const globalColor = ratesStatus === 'success' ? '#10b981'
+  const globalColor = hybridCount > 0 ? '#10b981'
+    : healthyCount > 0 ? '#38bdf8'
+    : ratesStatus === 'success' ? '#10b981'
     : ratesStatus === 'loading' ? '#f59e0b'
     : ratesStatus === 'error' ? '#ef4444'
     : '#4b5563';
@@ -76,18 +169,29 @@ export default function DataStatusBar() {
           animation: isLoadingRates ? 'pulse-glow 1s ease-in-out infinite' : 'none',
         }} />
         <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-muted)' }}>
-          REST API
+          WS + REST
         </span>
-        <span style={{ fontSize: 11, color: okCount > 0 ? '#10b981' : 'var(--color-text-muted)' }}>
-          {okCount}/{enabledExchanges.length} 정상
+        <span style={{ fontSize: 11, color: healthyCount > 0 ? '#10b981' : 'var(--color-text-muted)' }}>
+          {healthyCount}/{enabledExchanges.length} 정상
         </span>
+        {hybridCount > 0 && (
+          <span style={{ fontSize: 10, color: '#38bdf8' }}>
+            {hybridCount}개 이중화
+          </span>
+        )}
+        {marketHealth?.orderbook && (
+          <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
+            오더북 {marketHealth.orderbook.freshEntries + marketHealth.orderbook.staleEntries}/{marketHealth.orderbook.entries}
+          </span>
+        )}
       </div>
 
       <div className="data-status-divider" style={{ width: 1, height: 16, background: 'var(--color-border)' }} />
 
       {enabledExchanges.map(ex => {
         const status = exchangeFetchStatus[ex];
-        const color = getStatusColor(status);
+        const hybridState = getHybridState(ex);
+        const color = getStatusColor(status, hybridState);
         const exColor = EXCHANGE_COLORS[ex];
         const rateCount = fundingRates.filter(r => r.exchange === ex).length;
         return (
@@ -107,7 +211,7 @@ export default function DataStatusBar() {
               {EXCHANGE_NAMES[ex]}
             </span>
             <span style={{ fontSize: 9, color }}>
-              {getStatusLabel(status)}
+              {getStatusLabel(status, hybridState)}
             </span>
             {rateCount > 0 && (
               <span className="mono" style={{ fontSize: 9, color: 'var(--color-text-muted)' }}>

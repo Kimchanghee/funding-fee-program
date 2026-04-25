@@ -16,6 +16,7 @@ import { appendLogs, appendTrades, type FileLogEntry, readTrades, type TradeEven
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import { loadAllServerApiConfigs } from './serverKeyStore';
 import { sendTelegramMessage } from './telegram';
+import { buildTradePairsFromEvents, formatTradePairTelegramMessage } from './tradeEvents';
 import {
   findOpportunities,
   getOpportunityId,
@@ -436,7 +437,7 @@ function getOpportunityYieldScore(
 ): number {
   const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig);
   if (!ev) return 0;
-  if (!ev.passesMinProfit || !ev.passesEVRatio) return 0;
+  if (ev.expectedNetUSD <= 0) return 0;
   return Math.max(0, ev.expectedNetUSD / getOpportunityIntervalHours(opportunity));
 }
 
@@ -690,9 +691,9 @@ class ServerSimScheduler {
   private active = false;
   // Baseline profile aligned with legacy production defaults.
   private config: ServerSimSchedulerConfig = {
-    investmentUSDT: 500,
-    leverage: 5,
-    minSpreadPercent: 0.01,
+    investmentUSDT: 250,
+    leverage: 17,
+    minSpreadPercent: 0.3,
     compoundInvesting: true,
     enabledExchanges: [],
     timingConfig: getResolvedTimingConfig(),
@@ -882,15 +883,25 @@ class ServerSimScheduler {
     currentTotalBalanceUSDT: number;
     pairId?: string;
     route?: string;
+    fundingUSD?: number;
+    pricePnlUSD?: number;
+    feesUSD?: number;
     extraLine?: string;
   }) {
+    const realized = args.phase !== '진입';
+    let title = `[SIM]실체결 거래 청산[실현] ${args.baseAsset}`;
+    if (args.phase === '진입') title = `[SIM]실체결 거래 진입[예상] ${args.baseAsset}`;
+    if (args.phase === '수동청산') title = `[SIM]실체결 수동청산[실현] ${args.baseAsset}`;
     const lines = [
-      `[SIM 거래 성공][${args.phase}] ${args.baseAsset}`,
+      title,
       `투자금(총 마진): $${args.investmentUSDT.toFixed(2)}`,
-      `순수익(${args.phase === '진입' ? '예상' : '실현'}): ${formatSignedUsd(args.netProfitUSD)}`,
-      `수익률(${args.phase === '진입' ? '예상' : '실현'}): ${formatSignedPercent(args.roiPercent)}`,
+      `순수익(${realized ? '실현' : '예상'}): ${formatSignedUsd(args.netProfitUSD)}`,
+      `수익률(${realized ? '실현' : '예상'}): ${formatSignedPercent(args.roiPercent)}`,
       `현재 전체 잔액: $${args.currentTotalBalanceUSDT.toFixed(2)}`,
     ];
+    if (args.fundingUSD != null) lines.push(`펀딩 정산: ${formatSignedUsd(args.fundingUSD)}`);
+    if (args.pricePnlUSD != null) lines.push(`가격PnL: ${formatSignedUsd(args.pricePnlUSD)}`);
+    if (args.feesUSD != null) lines.push(`수수료: -$${Math.abs(args.feesUSD).toFixed(4)}`);
     if (args.pairId) lines.push(`pairId: ${args.pairId}`);
     if (args.route) lines.push(`route: ${args.route}`);
     if (args.extraLine) lines.push(args.extraLine);
@@ -1417,6 +1428,13 @@ class ServerSimScheduler {
         if (!shortRate || !longRate) return null;
         return Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
       })();
+      const analysisInvestmentUSDT = selectedAllocation > 0 ? selectedAllocation : strategyConfig.investmentUSDT;
+      const preEntryEv = estimatePreEntryConservativeEV(
+        opportunity,
+        strategyConfig,
+        analysisInvestmentUSDT,
+      );
+      const evPositive = (preEntryEv?.expectedNetUSD ?? Number.NEGATIVE_INFINITY) > 0;
       const rejectReasons: string[] = [];
       if (!this.config.enabledExchanges.includes(opportunity.shortExchange)
         || !this.config.enabledExchanges.includes(opportunity.longExchange)) {
@@ -1428,7 +1446,7 @@ class ServerSimScheduler {
           rejectReasons.push('tier_c_disabled');
         }
       }
-      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
+      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent) && !evPositive) {
         rejectReasons.push('spread_below_threshold');
       }
       if (volumeStatus.belowMin) {
@@ -1453,15 +1471,9 @@ class ServerSimScheduler {
       if (!inReplanFreeze && !inAheadWindow) {
         rejectReasons.push('outside_schedule_window');
       }
-      const analysisInvestmentUSDT = selectedAllocation > 0 ? selectedAllocation : strategyConfig.investmentUSDT;
-      const preEntryEv = estimatePreEntryConservativeEV(
-        opportunity,
-        strategyConfig,
-        analysisInvestmentUSDT,
-      );
       if (!preEntryEv) {
         rejectReasons.push('profitability_calculation_failed');
-      } else if (!preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) {
+      } else if (preEntryEv.expectedNetUSD <= 0) {
         rejectReasons.push('profitability_scan_failed');
       }
       if (rejectReasons.length === 0 && !candidateIds.has(opportunityId)) {
@@ -2329,9 +2341,6 @@ class ServerSimScheduler {
         const tierCEx = opportunity.shortExchange === 'bingx' ? opportunity.shortExchange : opportunity.longExchange;
         if (!this.config.enabledExchanges.includes(tierCEx)) return false;
       }
-      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
-        return false;
-      }
       const volumeStatus = resolveOpportunityVolumeStatus(opportunity, minVolume24hUSD, volumeByExchangeAsset);
       if (volumeStatus.belowMin) {
         return false;
@@ -2865,6 +2874,36 @@ class ServerSimScheduler {
     const closeNetProfitUSD = preparedLegs.reduce((sum, leg) => (
       sum + leg.pricePnl + leg.actualFunding - (leg.position.entryFee ?? 0) - leg.exitFee
     ), 0);
+    const closeFundingUSD = preparedLegs.reduce((sum, leg) => sum + leg.actualFunding, 0);
+    const closePricePnlUSD = preparedLegs.reduce((sum, leg) => sum + leg.pricePnl, 0);
+    const closeEntryFeesUSD = preparedLegs.reduce((sum, leg) => sum + (leg.position.entryFee ?? 0), 0);
+    const closeExitFeesUSD = preparedLegs.reduce((sum, leg) => sum + leg.exitFee, 0);
+    const closeFeesUSD = closeEntryFeesUSD + closeExitFeesUSD;
+    const shortLeg = pairPositions.find((position) => position.side === 'short');
+    const longLeg = pairPositions.find((position) => position.side === 'long');
+    const closeNotionals = preparedLegs.map((leg) => leg.position.sizeUSD).filter((value) => value > 0);
+    const closeNotionalUSDT = closeNotionals.length > 0 ? Math.min(...closeNotionals) : 0;
+
+    if (pairPositions.some((position) => position.isSnipe)) {
+      tradeEvents.push({
+        timestamp: closeFinishedAt,
+        type: 'snipe_complete',
+        simulation: true,
+        baseAsset: pairPositions[0]?.baseAsset ?? 'UNKNOWN',
+        shortExchange: shortLeg?.exchange,
+        longExchange: longLeg?.exchange,
+        pairId,
+        margin: closeInvestmentUSDT > 0 ? closeInvestmentUSDT / 2 : 0,
+        leverage: pairPositions[0]?.leverage ?? this.config.leverage,
+        notional: closeNotionalUSDT,
+        fundingCollected: closeFundingUSD,
+        pnl: closeNetProfitUSD,
+        pricePnl: closePricePnlUSD,
+        entryFee: closeEntryFeesUSD,
+        exitFee: closeExitFeesUSD,
+        detail: `fundingVerified:true fundingEvents:${fundingEvents.length} pricePnl:${closePricePnlUSD.toFixed(6)} fees:${closeFeesUSD.toFixed(6)} pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
+      });
+    }
 
     if (fundingEvents.length > 0) {
       state.fundingHistory = [...fundingEvents, ...state.fundingHistory]
@@ -2890,21 +2929,12 @@ class ServerSimScheduler {
     if (tradeEvents.length > 0) {
       this.recordTrades(tradeEvents);
     }
-    const shortLeg = pairPositions.find((position) => position.side === 'short');
-    const longLeg = pairPositions.find((position) => position.side === 'long');
-    const closeRoiPercent = closeInvestmentUSDT > 0 ? (closeNetProfitUSD / closeInvestmentUSDT) * 100 : 0;
-    this.notifySimTradeSuccess({
-      phase: '청산',
-      baseAsset: pairPositions[0]?.baseAsset ?? 'UNKNOWN',
-      investmentUSDT: closeInvestmentUSDT,
-      netProfitUSD: closeNetProfitUSD,
-      roiPercent: closeRoiPercent,
-      currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(state),
-      pairId,
-      route: shortLeg && longLeg
-        ? `${shortLeg.exchange.toUpperCase()} -> ${longLeg.exchange.toUpperCase()}`
-        : undefined,
-    });
+    const completedPair = buildTradePairsFromEvents(tradeEvents).find((pair) => pair.pairId === pairId);
+    if (completedPair) {
+      void sendTelegramMessage(formatTradePairTelegramMessage(completedPair, 'close', {
+        currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(state),
+      }));
+    }
   }
 
   private async prepareCloseLeg(position: SimPosition): Promise<PreparedSimCloseLeg> {
@@ -3093,6 +3123,9 @@ class ServerSimScheduler {
       netProfitUSD: netPnl,
       roiPercent: manualCloseRoiPercent,
       currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(state),
+      fundingUSD: actualFunding,
+      pricePnlUSD: pricePnl,
+      feesUSD: (position.entryFee ?? 0) + exitFee,
       pairId: position.pairId,
       route: `${position.exchange.toUpperCase()} ${position.side.toUpperCase()} ${position.symbol}`,
     });
@@ -3272,15 +3305,16 @@ class ServerSimScheduler {
 
       const liveSpread = shortLiveRate.rate - longLiveRate.rate;
       const liveSpreadPercent = liveSpread * 100;
-      if (liveSpread <= 0 || liveSpreadPercent < this.config.minSpreadPercent) {
+      if (liveSpread <= 0) {
         return {
           success: false,
-          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% < ${this.config.minSpreadPercent.toFixed(4)}%`,
+          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% <= 0.0000%`,
           analysis: buildFailureAnalysis({
             attemptedNotionalUSDT: baseNotional,
             extra: {
               liveSpreadPercent,
               minSpreadPercent: this.config.minSpreadPercent,
+              executionGate: 'positive_live_spread_then_ev',
             },
           }),
         };
@@ -3615,9 +3649,8 @@ class ServerSimScheduler {
         notional, shortRateForDecision, longRateForDecision,
         shortDrift, longDrift, roundTripFeeDec, entryImpactDec, entryImpactDec,
       );
-      // Execute-time gate: scheduling already applied full EV filter (passesMinProfit+passesEVRatio).
-      // Here we only abort on actual expected loss to avoid rejecting marginally-positive trades
-      // whose costs moved after scheduling.
+      // Execute-time gate: aggressive mode aborts only on actual expected loss.
+      // This keeps marginally-positive trades eligible after live costs move.
       if (ev.expectedNetUSD <= 0) {
         return {
           success: false,
@@ -3770,39 +3803,31 @@ class ServerSimScheduler {
     };
 
     const savedState = this.setState(nextState);
-    this.recordTrades([
-      {
-        timestamp,
-        type: isSnipe ? 'snipe_entry' : 'entry',
-        simulation: true,
-        baseAsset: opportunity.baseAsset,
-        shortExchange: opportunity.shortExchange,
-        longExchange: opportunity.longExchange,
-        spread: spreadForDecision,
-        spreadPercent: spreadPercentForDecision,
-        margin,
-        leverage,
-        notional,
-        entryFee: shortEntryFee + longEntryFee,
-        netProfit,
-        perFunding,
-        totalRoundTripFees,
-        pairId,
-      },
-    ]);
-    const entryInvestmentUSDT = margin + longMargin;
-    const entryRoiPercent = entryInvestmentUSDT > 0 ? (netProfit / entryInvestmentUSDT) * 100 : 0;
-    this.notifySimTradeSuccess({
-      phase: '진입',
+    const entryTrade: TradeEvent = {
+      timestamp,
+      type: isSnipe ? 'snipe_entry' : 'entry',
+      simulation: true,
       baseAsset: opportunity.baseAsset,
-      investmentUSDT: entryInvestmentUSDT,
-      netProfitUSD: netProfit,
-      roiPercent: entryRoiPercent,
-      currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(savedState),
+      shortExchange: opportunity.shortExchange,
+      longExchange: opportunity.longExchange,
+      spread: spreadForDecision,
+      spreadPercent: spreadPercentForDecision,
+      margin,
+      leverage,
+      notional,
+      entryFee: shortEntryFee + longEntryFee,
+      netProfit,
+      perFunding,
+      totalRoundTripFees,
       pairId,
-      route: `${opportunity.shortExchange.toUpperCase()} -> ${opportunity.longExchange.toUpperCase()}`,
-      extraLine: `spread: +${spreadPercentForDecision.toFixed(4)}%`,
-    });
+    };
+    this.recordTrades([entryTrade]);
+    const entryPair = buildTradePairsFromEvents([entryTrade])[0];
+    if (entryPair) {
+      void sendTelegramMessage(formatTradePairTelegramMessage(entryPair, 'entry', {
+        currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(savedState),
+      }));
+    }
 
     return {
       success: true,

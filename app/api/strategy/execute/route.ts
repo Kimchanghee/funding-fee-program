@@ -384,7 +384,7 @@ export async function POST(req: NextRequest) {
         roundTripFeeDec, entryImpactDec, entryImpactDec,
       );
 
-      if (!ev.passesMinProfit || !ev.passesEVRatio) {
+      if (ev.expectedNetUSD <= 0) {
         console.log(
           `[EXECUTE] ${opportunity.baseAsset} BLOCKED — conservative EV: ` +
           `$${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
@@ -600,4 +600,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-

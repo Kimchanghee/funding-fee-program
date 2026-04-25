@@ -249,17 +249,17 @@ export default function PositionsTable() {
                         borderLeft: `3px solid ${pos.side === 'long' ? '#10b98133' : '#ef444433'}`,
                       }}
                     >
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="거래소" style={{ padding: '10px 14px' }}>
                         <span style={{ fontSize: 11, fontWeight: 700, color, background: `${color}22`, padding: '2px 8px', borderRadius: 6 }}>
                           {EXCHANGE_NAMES[pos.exchange as ExchangeId] || pos.exchange.toUpperCase()}
                         </span>
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="코인" style={{ padding: '10px 14px' }}>
                         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text)' }}>
                           {pos.displaySymbol || pos.symbol.split(':')[0]}
                         </span>
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="방향" style={{ padding: '10px 14px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                           {pos.side === 'long'
                             ? <TrendingUp size={12} color="#10b981" />
@@ -270,33 +270,33 @@ export default function PositionsTable() {
                           </span>
                         </div>
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="레버리지" style={{ padding: '10px 14px' }}>
                         <span className="mono" style={{ fontSize: 12, color: 'var(--color-text)' }}>{pos.leverage}x</span>
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="진입가" style={{ padding: '10px 14px' }}>
                         <span className="mono" style={{ fontSize: 12, color: 'var(--color-text)' }}>
                           ${pos.entryPrice.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="현재가" style={{ padding: '10px 14px' }}>
                         <span className="mono" style={{ fontSize: 12, color: 'var(--color-text)' }}>
                           ${pos.markPrice.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="수량" style={{ padding: '10px 14px' }}>
                         <span className="mono" style={{ fontSize: 12, color: 'var(--color-text)' }}>
                           {fmtNum(pos.size, 4)}
                         </span>
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="마진" style={{ padding: '10px 14px' }}>
                         <span className="mono" style={{ fontSize: 12, color: 'var(--color-text)' }}>
                           ${fmtNum(pos.margin)}
                         </span>
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="미실현 손익" style={{ padding: '10px 14px' }}>
                         <PnlCell value={pos.unrealizedPnl} percent={pos.unrealizedPnlPercent} />
                       </td>
-                      <td style={{ padding: '10px 14px' }}>
+                      <td data-label="청산가" style={{ padding: '10px 14px' }}>
                         <span className="mono" style={{ fontSize: 12, color: '#f59e0b' }}>
                           {pos.liquidationPrice > 0
                             ? `$${pos.liquidationPrice.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -305,14 +305,14 @@ export default function PositionsTable() {
                         </span>
                       </td>
                       {simulationMode && (
-                        <td style={{ padding: '10px 14px' }}>
+                        <td data-label="수령 펀딩" style={{ padding: '10px 14px' }}>
                           <span className="mono" style={{ fontSize: 12, color: simPos && simPos.fundingCollected >= 0 ? '#a78bfa' : '#ef4444', fontWeight: 700 }}>
                             {simPos ? `${simPos.fundingCollected >= 0 ? '+' : ''}$${fmtNum(simPos.fundingCollected, 4)}` : '—'}
                           </span>
                         </td>
                       )}
                       {simulationMode && (
-                        <td style={{ padding: '10px 14px' }}>
+                        <td data-label="스프레드" style={{ padding: '10px 14px' }}>
                           {simPos ? (() => {
                             const liveRate = fundingRates.find(r => r.exchange === pos.exchange && r.symbol === pos.symbol);
                             const currentRate = liveRate?.rate ?? pos.fundingRate;
@@ -337,7 +337,7 @@ export default function PositionsTable() {
                           })() : '—'}
                         </td>
                       )}
-                      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                      <td data-label="청산" style={{ padding: '10px 14px', textAlign: 'right' }}>
                         <button
                           className="btn btn-danger"
                           style={{ padding: '4px 10px', fontSize: 11 }}

@@ -100,12 +100,12 @@ function StatCell(props: {
 }
 
 export default function RuntimeAuditSummary() {
-  const [hours, setHours] = useState<24 | 72>(24);
+  const [hours, setHours] = useState<10 | 24 | 72>(10);
   const [loading, setLoading] = useState(false);
   const [payload, setPayload] = useState<RuntimeAuditResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchAudit = useCallback(async (targetHours: 24 | 72) => {
+  const fetchAudit = useCallback(async (targetHours: 10 | 24 | 72) => {
     setLoading(true);
     try {
       const query = new URLSearchParams({
@@ -175,6 +175,13 @@ export default function RuntimeAuditSummary() {
         <div style={{ flex: 1 }} />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            className="btn btn-ghost"
+            style={{ padding: '4px 8px', fontSize: 11, color: hours === 10 ? '#93c5fd' : 'var(--color-text-muted)' }}
+            onClick={() => setHours(10)}
+          >
+            10H
+          </button>
           <button
             className="btn btn-ghost"
             style={{ padding: '4px 8px', fontSize: 11, color: hours === 24 ? '#93c5fd' : 'var(--color-text-muted)' }}
@@ -310,4 +317,3 @@ export default function RuntimeAuditSummary() {
     </div>
   );
 }
-

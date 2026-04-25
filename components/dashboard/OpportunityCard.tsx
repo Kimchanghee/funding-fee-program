@@ -1348,7 +1348,7 @@ export default function OpportunityCard() {
               const emptyRows = [];
               for (let i = visibleIdx; i < MIN_ROWS; i++) {
                 emptyRows.push(
-                  <div key={`empty-${i}`} style={{
+                  <div key={`empty-${i}`} className="opp-empty-row" style={{
                     display: 'grid',
                     gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px 120px',
                     minWidth: 1060,

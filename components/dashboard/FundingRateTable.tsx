@@ -191,31 +191,31 @@ export default function FundingRateTable() {
                       background: rank === 1 ? 'rgba(16,185,129,0.04)' : 'transparent',
                     }}
                   >
-                    <td style={{ padding: '10px 14px', textAlign: 'center' }}>
+                    <td data-label="#" style={{ padding: '10px 14px', textAlign: 'center' }}>
                       <span className="mono" style={{ fontSize: 11, color: isTop ? '#10b981' : 'var(--color-text-muted)', fontWeight: isTop ? 700 : 400 }}>
                         {rank}
                       </span>
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="코인" style={{ padding: '10px 14px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         {rank === 1 && <span style={{ fontSize: 12 }}>⭐</span>}
                         <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text)' }}>{opp.baseAsset}</span>
                         <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>/USDT</span>
                       </div>
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="숏 거래소" style={{ padding: '10px 14px' }}>
                       <ExchangeTag exchange={opp.shortExchange} />
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="숏 펀딩률" style={{ padding: '10px 14px' }}>
                       <RateBadge rate={opp.shortRate} />
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="롱 거래소" style={{ padding: '10px 14px' }}>
                       <ExchangeTag exchange={opp.longExchange} />
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="롱 펀딩률" style={{ padding: '10px 14px' }}>
                       <RateBadge rate={opp.longRate} />
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="순수익" style={{ padding: '10px 14px' }}>
                       <span className="mono" style={{ fontSize: 13, fontWeight: 800, color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444' }}>
                         {profit.netPerFunding >= 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
                       </span>
@@ -223,12 +223,12 @@ export default function FundingRateTable() {
                         수수료 -${fmtNum(profit.totalFees)}
                       </span>
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="연수익률" style={{ padding: '10px 14px' }}>
                       <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: profit.roiPerYear > 100 ? '#10b981' : profit.roiPerYear > 30 ? '#f59e0b' : 'var(--color-text-muted)' }}>
                         {profit.roiPerYear.toFixed(1)}%
                       </span>
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="8h 수익" style={{ padding: '10px 14px' }}>
                       <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444' }}>
                         ${fmtNum(profit.netPerFunding)}
                       </span>
@@ -236,7 +236,7 @@ export default function FundingRateTable() {
                         수수료 -${fmtNum(profit.totalFees)}
                       </span>
                     </td>
-                    <td style={{ padding: '10px 14px' }}>
+                    <td data-label="다음 펀딩" style={{ padding: '10px 14px' }}>
                       {(() => {
                         const intervalH = opp.fundingIntervalMs ? Math.round(opp.fundingIntervalMs / 3600000) : 8;
                         const isShortInterval = intervalH < 8;

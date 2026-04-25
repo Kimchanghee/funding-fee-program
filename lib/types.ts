@@ -597,7 +597,7 @@ export const MIN_EV_RATIO = 0.6;
 export const MAX_FUNDING_TIMESTAMP_DIFF_MS = 3_000;
 
 /** Minimum free margin percentage to maintain */
-export const MIN_FREE_MARGIN_PCT = 65;
+export const MIN_FREE_MARGIN_PCT = 25;
 
 /** Default funding drift buffer minimum in basis points */
 export const MIN_DRIFT_BUFFER_BPS = 1; // 0.01%

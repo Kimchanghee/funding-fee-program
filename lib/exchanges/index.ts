@@ -65,6 +65,7 @@ const publicExchangeCache = new Map<ExchangeId, any>();
 const MAX_PRIVATE_CACHE = 20;
 const privateExchangeCache = new Map<string, any>();
 const wsFallbackWarnAt = new Map<string, number>();
+const FUNDING_WS_SOFT_TIMEOUT_MS = 1_500;
 
 function warnWsFallback(key: string, message: string): void {
   const now = Date.now();
@@ -72,6 +73,28 @@ function warnWsFallback(key: string, message: string): void {
   if (now - last < 30_000) return;
   wsFallbackWarnAt.set(key, now);
   console.warn(message);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
+}
+
+function normalizeOrderbook(
+  id: ExchangeId,
+  symbol: string,
+  orderbook: { bids?: number[][]; asks?: number[][] },
+): { bids: number[][]; asks: number[][] } {
+  const bids = Array.isArray(orderbook?.bids) ? orderbook.bids : [];
+  const asks = Array.isArray(orderbook?.asks) ? orderbook.asks : [];
+  if (bids.length === 0 || asks.length === 0) {
+    throw new Error(`[${id}] empty orderbook for ${symbol}`);
+  }
+  return { bids, asks };
 }
 
 function getPublicExchange(id: ExchangeId): any {
@@ -243,10 +266,14 @@ export async function fetchFundingRates(
 
   if (hasExplicitSymbols) {
     try {
-      const wsRates = await fetchFundingRatesViaWs(id, symbols);
+      const wsRates = await withTimeout(
+        fetchFundingRatesViaWs(id, symbols),
+        FUNDING_WS_SOFT_TIMEOUT_MS,
+        `[${id}] funding WS soft timeout`,
+      );
       if (wsRates.length > 0) return wsRates;
     } catch (wsErr) {
-      // Symbol-targeted mode: keep REST fallback when WS channel is unavailable.
+      // Symbol-targeted mode: do not wait for a full WS warm-up before REST fallback.
       warnWsFallback(`funding:${id}`, `[WS] ${id} funding fallback to REST: ${(wsErr as Error).message}`);
     }
   }
@@ -548,23 +575,42 @@ export async function fetchOrderbook(
   symbol: string,
   depth = 50,
 ): Promise<{ bids: number[][]; asks: number[][] }> {
-  try {
-    return await fetchOrderbookViaWs(id, symbol, depth);
-  } catch (wsErr) {
-    warnWsFallback(
-      `orderbook:${id}:${symbol}`,
-      `[WS] ${id} orderbook fallback to REST (${symbol}): ${(wsErr as Error).message}`,
-    );
-  }
+  const wsAttempt = fetchOrderbookViaWs(id, symbol, depth)
+    .then((orderbook) => ({
+      source: 'ws' as const,
+      orderbook: normalizeOrderbook(id, symbol, orderbook),
+    }));
 
-  let ex = getPublicExchange(id);
-  ex = await ensureMarkets(ex, id);
-  return await Promise.race([
-    ex.fetchOrderBook(symbol, depth) as Promise<{ bids: number[][]; asks: number[][] }>,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 5000),
-    ),
-  ]);
+  const restAttempt = (async () => {
+    let ex = getPublicExchange(id);
+    ex = await ensureMarkets(ex, id);
+    const orderbook = await Promise.race([
+      ex.fetchOrderBook(symbol, depth) as Promise<{ bids: number[][]; asks: number[][] }>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[${id}] fetchOrderBook timeout`)), 5000),
+      ),
+    ]);
+    return {
+      source: 'rest' as const,
+      orderbook: normalizeOrderbook(id, symbol, orderbook),
+    };
+  })();
+
+  try {
+    const result = await Promise.any([wsAttempt, restAttempt]);
+    if (result.source === 'rest') {
+      warnWsFallback(
+        `orderbook:${id}:${symbol}`,
+        `[WS] ${id} orderbook using REST fallback (${symbol})`,
+      );
+    }
+    return result.orderbook;
+  } catch (error) {
+    const reasons = error instanceof AggregateError
+      ? error.errors.map((item) => (item as Error).message ?? String(item)).join(' | ')
+      : (error as Error).message;
+    throw new Error(`[${id}] orderbook WS/REST failed for ${symbol}: ${reasons}`);
+  }
 }
 
 /**
