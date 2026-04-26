@@ -93,7 +93,7 @@ function buildDiagnosis(args: {
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const hours = parsePositiveInt(url.searchParams.get('hours'), 24, 1, 168);
-  const sampleLimit = parsePositiveInt(url.searchParams.get('sampleLimit'), 30, 1, 200);
+  const sampleLimit = parsePositiveInt(url.searchParams.get('sampleLimit'), 30, 0, 200);
   const now = Date.now();
 
   const report = buildRuntimeAuditReport({
@@ -169,4 +169,3 @@ export async function GET(req: NextRequest) {
     },
   });
 }
-

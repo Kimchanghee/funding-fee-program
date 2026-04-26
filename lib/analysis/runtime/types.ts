@@ -34,12 +34,20 @@ export interface RuntimeAuditSystemLogSection {
   samples: FileLogEntry[];
 }
 
+export interface RuntimeAuditScheduleProbeSection {
+  total: number;
+  byMilestone: RuntimeAuditCountItem[];
+  byStatus: RuntimeAuditCountItem[];
+  byRejectReason: RuntimeAuditCountItem[];
+  latestAt: number | null;
+}
+
 export interface RuntimeAuditResult {
   window: RuntimeAuditWindow;
   tradeEventsTotal: number;
   execution: RuntimeAuditTradeSection;
   guardBlocks: RuntimeAuditGuardSection;
   nonExecutionTradeEvents: RuntimeAuditTradeSection;
+  scheduleProbes: RuntimeAuditScheduleProbeSection;
   systemLogs: RuntimeAuditSystemLogSection;
 }
-

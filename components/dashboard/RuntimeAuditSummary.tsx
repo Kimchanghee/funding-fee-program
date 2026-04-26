@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, RefreshCw } from 'lucide-react';
 
 interface CountItem {
@@ -40,6 +40,12 @@ interface RuntimeAuditResponse {
       total?: number;
       byType?: CountItem[];
       byMode?: CountItem[];
+    };
+    scheduleProbes?: {
+      total?: number;
+      byMilestone?: CountItem[];
+      byStatus?: CountItem[];
+      byRejectReason?: CountItem[];
     };
     systemLogs?: {
       total?: number;
@@ -104,24 +110,35 @@ export default function RuntimeAuditSummary() {
   const [loading, setLoading] = useState(false);
   const [payload, setPayload] = useState<RuntimeAuditResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const consecutiveFailuresRef = useRef(0);
+  const inFlightRef = useRef(false);
+  const hasPayloadRef = useRef(false);
 
   const fetchAudit = useCallback(async (targetHours: 10 | 24 | 72) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setLoading(true);
     try {
       const query = new URLSearchParams({
         hours: String(targetHours),
-        sampleLimit: '30',
+        sampleLimit: '0',
       });
-      const response = await fetch(`/api/analysis/runtime-audit?${query.toString()}`);
+      const response = await fetch(`/api/analysis/runtime-audit?${query.toString()}`, { cache: 'no-store' });
       const json = await response.json() as RuntimeAuditResponse;
       if (!response.ok || !json.success) {
         throw new Error('runtime audit fetch failed');
       }
+      hasPayloadRef.current = true;
       setPayload(json);
+      consecutiveFailuresRef.current = 0;
       setError(null);
     } catch (err) {
-      setError((err as Error).message || 'unknown error');
+      consecutiveFailuresRef.current += 1;
+      if (!hasPayloadRef.current || consecutiveFailuresRef.current >= 3) {
+        setError((err as Error).message || 'unknown error');
+      }
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
   }, []);
@@ -143,7 +160,9 @@ export default function RuntimeAuditSummary() {
   const runtimeSimActive = !!payload?.runtime?.sim?.active;
   const executionTotal = payload?.report?.execution?.total ?? 0;
   const guardTotal = payload?.report?.guardBlocks?.total ?? 0;
-  const nonExecutionTotal = payload?.report?.nonExecutionTradeEvents?.total ?? 0;
+  const scheduleProbeTotal = payload?.report?.scheduleProbes?.total
+    ?? payload?.report?.nonExecutionTradeEvents?.total
+    ?? 0;
   const systemTotal = payload?.report?.systemLogs?.total ?? 0;
   const lastCheckedText = payload?.generatedAtText ?? '-';
   const windowText = useMemo(() => {
@@ -282,10 +301,10 @@ export default function RuntimeAuditSummary() {
           detail={formatTopItems(payload?.report?.guardBlocks?.byReason)}
         />
         <StatCell
-          title="비실행 이벤트"
-          value={nonExecutionTotal}
-          color={nonExecutionTotal > 0 ? '#22d3ee' : '#64748b'}
-          detail={formatTopItems(payload?.report?.nonExecutionTradeEvents?.byType)}
+          title="스케줄 분석"
+          value={scheduleProbeTotal}
+          color={scheduleProbeTotal > 0 ? '#22d3ee' : '#64748b'}
+          detail={formatTopItems(payload?.report?.scheduleProbes?.byStatus)}
         />
         <StatCell
           title="시스템 로그"

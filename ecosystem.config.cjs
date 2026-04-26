@@ -13,7 +13,7 @@ module.exports = {
       restart_delay: 5000,
       exp_backoff_restart_delay: 200,
       kill_timeout: 10000,
-      max_memory_restart: '700M',
+      max_memory_restart: '2G',
       env: {
         NODE_ENV: 'production',
         PORT: '3000',

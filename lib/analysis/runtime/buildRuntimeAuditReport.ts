@@ -9,6 +9,7 @@ import type {
   RuntimeAuditCountItem,
   RuntimeAuditGuardSection,
   RuntimeAuditResult,
+  RuntimeAuditScheduleProbeSection,
   RuntimeAuditSystemLogSection,
   RuntimeAuditTradeSection,
 } from './types';
@@ -117,6 +118,34 @@ function buildSystemLogSection(entries: FileLogEntry[], sampleLimit: number): Ru
   };
 }
 
+function getProbeStatus(event: TradeEvent): string {
+  const analysisStatus = event.analysis && typeof event.analysis.status === 'string'
+    ? event.analysis.status.trim()
+    : '';
+  return analysisStatus || event.reason?.trim() || event.milestone?.trim() || 'unknown';
+}
+
+function getProbeRejectReasons(event: TradeEvent): string[] {
+  const raw = event.analysis && Array.isArray(event.analysis.rejectReasons)
+    ? event.analysis.rejectReasons
+    : [];
+  return raw
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function buildScheduleProbeSection(events: TradeEvent[]): RuntimeAuditScheduleProbeSection {
+  const rejectReasons = events.flatMap(getProbeRejectReasons);
+  return {
+    total: events.length,
+    byMilestone: toCountItems(events.map((event) => event.milestone?.trim() || 'unknown')),
+    byStatus: toCountItems(events.map(getProbeStatus)),
+    byRejectReason: toCountItems(rejectReasons),
+    latestAt: events.length > 0 ? events[0].timestamp : null,
+  };
+}
+
 export function buildRuntimeAuditReport(options?: {
   windowHours?: number;
   now?: number;
@@ -124,7 +153,7 @@ export function buildRuntimeAuditReport(options?: {
 }): RuntimeAuditResult {
   const now = options?.now ?? Date.now();
   const hours = Math.max(1, Math.min(168, Math.floor(options?.windowHours ?? 24)));
-  const sampleLimit = Math.max(1, Math.min(200, Math.floor(options?.sampleLimit ?? 30)));
+  const sampleLimit = Math.max(0, Math.min(200, Math.floor(options?.sampleLimit ?? 30)));
   const from = now - (hours * 60 * 60 * 1000);
 
   const trades = collectTradesInWindow(from, now);
@@ -132,6 +161,7 @@ export function buildRuntimeAuditReport(options?: {
 
   const executionEvents = trades.filter((event) => EXECUTION_EVENT_TYPES.has(event.type));
   const guardBlocks = trades.filter((event) => event.type === 'guard_block');
+  const scheduleProbes = trades.filter((event) => event.type === 'schedule_probe');
   const nonExecutionTradeEvents = trades.filter((event) => (
     !EXECUTION_EVENT_TYPES.has(event.type) && event.type !== 'guard_block'
   ));
@@ -146,7 +176,7 @@ export function buildRuntimeAuditReport(options?: {
     execution: buildTradeSection(executionEvents, sampleLimit),
     guardBlocks: buildGuardSection(guardBlocks, sampleLimit),
     nonExecutionTradeEvents: buildTradeSection(nonExecutionTradeEvents, sampleLimit),
+    scheduleProbes: buildScheduleProbeSection(scheduleProbes),
     systemLogs: buildSystemLogSection(logs, sampleLimit),
   };
 }
-

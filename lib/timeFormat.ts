@@ -40,6 +40,7 @@ export function formatTimestampYmdHmsMs(
   const timeZone = options?.timeZone ?? 'Asia/Seoul';
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone,
+    hourCycle: 'h23',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
