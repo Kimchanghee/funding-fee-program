@@ -1,33 +1,53 @@
-// Simple Telegram Bot API wrapper - no dependency needed, just fetch
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 const TELEGRAM_SEND_ATTEMPTS = 3;
 const TELEGRAM_SEND_TIMEOUT_MS = 8_000;
 const TELEGRAM_RETRY_DELAY_MS = 1_000;
 
-interface TelegramConfig {
+export interface TelegramConfig {
   botToken: string;
   chatId: string;
   enabled: boolean;
 }
 
-// 기본 텔레그램 설정 (하드코딩)
 const DEFAULT_TELEGRAM_CONFIG: TelegramConfig = {
-  botToken: '7753483534:AAEHvlP7lYa2wYL0fv5IwG-tZ6LGgfNR4n4',
-  chatId: '499792971',
-  enabled: true,
+  botToken: '',
+  chatId: '',
+  enabled: false,
 };
+
+function normalizeTelegramConfig(config: Partial<TelegramConfig> | null | undefined): TelegramConfig {
+  return {
+    botToken: typeof config?.botToken === 'string' ? config.botToken.trim() : '',
+    chatId: typeof config?.chatId === 'string' ? config.chatId.trim() : '',
+    enabled: config?.enabled === true,
+  };
+}
+
+export function isTelegramReady(config: TelegramConfig): boolean {
+  return config.enabled && config.botToken.trim().length > 0 && config.chatId.trim().length > 0;
+}
 
 export function getTelegramConfig(): TelegramConfig {
   if (typeof window !== 'undefined') {
-    const saved = localStorage.getItem('telegram_config');
-    if (saved) return JSON.parse(saved);
+    try {
+      const saved = localStorage.getItem('telegram_config');
+      if (saved) return normalizeTelegramConfig(JSON.parse(saved) as Partial<TelegramConfig>);
+    } catch {
+      return DEFAULT_TELEGRAM_CONFIG;
+    }
   }
   return DEFAULT_TELEGRAM_CONFIG;
 }
 
-export function saveTelegramConfig(config: TelegramConfig) {
+export function saveTelegramConfig(config: TelegramConfig): void {
+  const normalized = normalizeTelegramConfig(config);
   if (typeof window !== 'undefined') {
-    localStorage.setItem('telegram_config', JSON.stringify(config));
+    localStorage.setItem('telegram_config', JSON.stringify(normalized));
+    void fetch('/api/telegram/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(normalized),
+    }).catch(() => {});
   }
 }
 
@@ -43,9 +63,12 @@ async function sleep(ms: number): Promise<void> {
   });
 }
 
-export async function sendTelegramMessage(message: string): Promise<boolean> {
-  const config = getTelegramConfig();
-  if (!config.enabled || !config.botToken || !config.chatId) return false;
+export async function sendTelegramMessageWithConfig(
+  config: TelegramConfig,
+  message: string,
+): Promise<boolean> {
+  const normalized = normalizeTelegramConfig(config);
+  if (!isTelegramReady(normalized) || !message.trim()) return false;
 
   let lastError = 'unknown';
   for (let attempt = 1; attempt <= TELEGRAM_SEND_ATTEMPTS; attempt += 1) {
@@ -53,19 +76,22 @@ export async function sendTelegramMessage(message: string): Promise<boolean> {
     const timeout = setTimeout(() => controller.abort(), TELEGRAM_SEND_TIMEOUT_MS);
 
     try {
-      const res = await fetch(`${TELEGRAM_API}${config.botToken}/sendMessage`, {
+      const res = await fetch(`${TELEGRAM_API}${normalized.botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
-          chat_id: config.chatId,
+          chat_id: normalized.chatId,
           text: message,
           parse_mode: 'HTML',
           disable_web_page_preview: true,
         }),
       });
 
-      if (res.ok) return true;
+      if (res.ok) {
+        const data = await res.json().catch(() => null) as { ok?: boolean } | null;
+        if (data?.ok !== false) return true;
+      }
 
       lastError = `HTTP ${res.status}`;
       try {
@@ -89,11 +115,37 @@ export async function sendTelegramMessage(message: string): Promise<boolean> {
   return false;
 }
 
-function formatModePrefix(simulation: boolean): string {
-  return simulation ? '[SIM]실체결 ' : '[REAL]실체결 ';
+export async function sendTelegramMessage(message: string): Promise<boolean> {
+  const config = getTelegramConfig();
+  if (!isTelegramReady(config) || !message.trim()) return false;
+
+  if (typeof window !== 'undefined') {
+    try {
+      const res = await fetch('/api/telegram/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, config }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json().catch(() => null) as { success?: boolean } | null;
+      return data?.success !== false;
+    } catch {
+      return false;
+    }
+  }
+
+  return sendTelegramMessageWithConfig(config, message);
 }
 
-// Pre-formatted alert messages
+function formatModePrefix(simulation: boolean): string {
+  return simulation ? '[SIM] ' : '[REAL] ';
+}
+
+function formatSignedUsd(value: number, digits = 4): string {
+  const abs = Math.abs(value).toFixed(digits);
+  return value >= 0 ? `+$${abs}` : `-$${abs}`;
+}
+
 export function formatTradeAlert(type: 'entry' | 'exit', data: {
   baseAsset: string;
   shortExchange: string;
@@ -102,14 +154,13 @@ export function formatTradeAlert(type: 'entry' | 'exit', data: {
   investmentUSDT: number;
   simulation: boolean;
 }): string {
-  const icon = type === 'entry' ? '🟢' : '🔴';
   const action = type === 'entry' ? '진입' : '청산';
   const mode = formatModePrefix(data.simulation);
   return [
-    `${icon} <b>${mode}${action}: ${data.baseAsset}/USDT</b>`,
-    `숏: ${data.shortExchange.toUpperCase()} ↔ 롱: ${data.longExchange.toUpperCase()}`,
+    `<b>${mode}${action}: ${data.baseAsset}/USDT</b>`,
+    `숏 ${data.shortExchange.toUpperCase()} / 롱 ${data.longExchange.toUpperCase()}`,
     `스프레드: ${data.spreadPercent.toFixed(4)}%`,
-    `투자금: $${data.investmentUSDT.toFixed(0)}`,
+    `증거금: $${data.investmentUSDT.toFixed(0)}`,
   ].join('\n');
 }
 
@@ -122,11 +173,10 @@ export function formatFundingAlert(data: {
   simulation: boolean;
 }): string {
   const mode = formatModePrefix(data.simulation);
-  const icon = data.amount >= 0 ? '💰' : '💸';
   return [
-    `${icon} <b>${mode}펀딩 수령: ${data.baseAsset}/USDT</b>`,
+    `<b>${mode}펀딩 수령: ${data.baseAsset}/USDT</b>`,
     `거래소: ${data.exchange.toUpperCase()} (${data.side})`,
-    `금액: ${data.amount >= 0 ? '+' : ''}$${data.amount.toFixed(4)}`,
+    `금액: ${formatSignedUsd(data.amount)}`,
     `펀딩률: ${(data.rate * 100).toFixed(4)}%`,
   ].join('\n');
 }
@@ -140,8 +190,8 @@ export function formatTransferAlert(data: {
 }): string {
   const mode = formatModePrefix(data.simulation);
   return [
-    `🔄 <b>${mode}잔고 이동</b>`,
-    `${data.from.toUpperCase()} → ${data.to.toUpperCase()}`,
+    `<b>${mode}잔고 이동</b>`,
+    `${data.from.toUpperCase()} -> ${data.to.toUpperCase()}`,
     `금액: $${data.amount.toFixed(2)}`,
     `사유: ${data.reason}`,
   ].join('\n');
@@ -154,14 +204,17 @@ export function formatBalanceWarning(data: {
   exchanges: { name: string; balance: number }[];
   simulation: boolean;
 }): string {
-  const sim = data.simulation ? '[SIM] ' : '[REAL] ';
-  const exList = data.exchanges.map(e => `  ${e.name.toUpperCase()}: $${e.balance.toFixed(0)}`).join('\n');
+  const mode = formatModePrefix(data.simulation);
+  const avgRatio = data.avgBalance > 0 ? (data.lowBalance / data.avgBalance) * 100 : 0;
+  const exList = data.exchanges
+    .map((exchange) => `  ${exchange.name.toUpperCase()}: $${exchange.balance.toFixed(0)}`)
+    .join('\n');
   return [
-    `⚠️ <b>${sim}잔고 부족 경고</b>`,
-    `${data.lowExchange.toUpperCase()}: $${data.lowBalance.toFixed(0)} (평균 대비 ${((data.lowBalance / data.avgBalance) * 100).toFixed(0)}%)`,
+    `<b>${mode}잔고 부족 경고</b>`,
+    `${data.lowExchange.toUpperCase()}: $${data.lowBalance.toFixed(0)} (평균 대비 ${avgRatio.toFixed(0)}%)`,
     `평균 잔고: $${data.avgBalance.toFixed(0)}`,
-    ``,
-    `<b>거래소별 잔고:</b>`,
+    '',
+    '<b>거래소별 잔고:</b>',
     exList,
   ].join('\n');
 }
@@ -176,17 +229,21 @@ export function formatSnipeCompleteAlert(data: {
   note?: string;
 }): string {
   const mode = formatModePrefix(data.simulation);
-  const icon = data.pnl == null ? 'ℹ️' : data.pnl >= 0 ? '✅' : '⚠️';
   const fundingLine = data.fundingCollected == null
-    ? '펀딩 수익: 확인 중'
-    : `펀딩 수익: ${data.fundingCollected >= 0 ? '+' : ''}$${data.fundingCollected.toFixed(4)}`;
+    ? '펀딩: 확인 중'
+    : `펀딩: ${formatSignedUsd(data.fundingCollected)}`;
   const pnlLine = data.pnl == null
-    ? '순손익: 확인 중'
-    : `순손익: ${data.pnl >= 0 ? '+' : ''}$${data.pnl.toFixed(4)}`;
+    ? '최종순손익: 확인 중'
+    : `최종순손익(펀딩 포함): ${formatSignedUsd(data.pnl)}`;
+  const priceFeeLine = data.pnl == null || data.fundingCollected == null
+    ? null
+    : `가격PnL-수수료: ${formatSignedUsd(data.pnl - data.fundingCollected)}`;
+
   return [
-    `${icon} <b>${mode}스나이프 완료: ${data.baseAsset}/USDT</b>`,
-    `${data.shortExchange.toUpperCase()} ↔ ${data.longExchange.toUpperCase()}`,
+    `<b>${mode}스나이프 완료: ${data.baseAsset}/USDT</b>`,
+    `숏 ${data.shortExchange.toUpperCase()} / 롱 ${data.longExchange.toUpperCase()}`,
     fundingLine,
+    ...(priceFeeLine ? [priceFeeLine] : []),
     pnlLine,
     ...(data.note ? [data.note] : []),
   ].join('\n');

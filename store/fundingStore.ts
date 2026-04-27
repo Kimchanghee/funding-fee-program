@@ -316,7 +316,16 @@ function buildExchangeAllocationMap(
   return balances;
 }
 
-/** server state snapshot has real data (not defaults) */
+function simBalancesChangedFromInitial(
+  balances: Partial<Record<ExchangeId, number>>,
+  initialBalances: Partial<Record<ExchangeId, number>>,
+): boolean {
+  return SUPPORTED_EXCHANGES.some((exchange) => (
+    Math.abs((balances[exchange] ?? 0) - (initialBalances[exchange] ?? 0)) > 0.0000001
+  ));
+}
+
+/** server state snapshot has session/accounting data, not just default initial balances */
 function snapshotHasRealData(state: SimStateSnapshot): boolean {
   return state.simPositions.length > 0
     || state.fundingHistory.length > 0
@@ -324,10 +333,17 @@ function snapshotHasRealData(state: SimStateSnapshot): boolean {
     || state.simTotalTopUps !== 0
     || state.simTotalFees !== 0
     || state.simTotalClosedPnl !== 0
-    || SUPPORTED_EXCHANGES.some((exchange) => (
-      (state.simBalances[exchange] ?? 0) > 0
-      || (state.simInitialBalances[exchange] ?? 0) > 0
-    ));
+    || simBalancesChangedFromInitial(state.simBalances, state.simInitialBalances);
+}
+
+function fundingStateHasSimSessionData(state: FundingState): boolean {
+  return state.simPositions.length > 0
+    || state.fundingHistory.length > 0
+    || state.simTotalFundingEarned !== 0
+    || state.simTotalTopUps !== 0
+    || state.simTotalFees !== 0
+    || state.simTotalClosedPnl !== 0
+    || simBalancesChangedFromInitial(state.simBalances, state.simInitialBalances);
 }
 
 function applyServerSimStateSnapshot(
@@ -339,16 +355,7 @@ function applyServerSimStateSnapshot(
 
   if (!options?.force && options?.getState) {
     const local = options.getState();
-    const localHasData = local.simPositions.length > 0
-      || local.fundingHistory.length > 0
-      || local.simTotalFundingEarned !== 0
-      || local.simTotalTopUps !== 0
-      || local.simTotalFees !== 0
-      || local.simTotalClosedPnl !== 0
-      || SUPPORTED_EXCHANGES.some((exchange) => (
-        (local.simBalances[exchange] ?? 0) > 0
-        || (local.simInitialBalances[exchange] ?? 0) > 0
-      ));
+    const localHasData = fundingStateHasSimSessionData(local);
     if (localHasData && !snapshotHasRealData(snapshot)) {
       return;
     }
@@ -425,21 +432,22 @@ function getEffectiveNotional(
 function applySharedSnipeStateSnapshot(
   setState: (partial: Partial<FundingState>) => void,
   snapshot?: SnipeStateSnapshot | null,
-  options?: { includeActives?: boolean },
+  options?: { includeActives?: boolean; includeMode?: boolean },
 ) {
   if (!snapshot) return;
   const includeActives = options?.includeActives ?? true;
-  setState(
-    includeActives
-      ? {
-        simulationMode: snapshot.simulationMode,
-        simSnipeActive: snapshot.simSnipeActive,
-        realSnipeActive: snapshot.realSnipeActive,
-      }
-      : {
-        simulationMode: snapshot.simulationMode,
-      },
-  );
+  const includeMode = options?.includeMode ?? true;
+  const partial: Partial<FundingState> = {};
+  if (includeMode) {
+    partial.simulationMode = snapshot.simulationMode;
+  }
+  if (includeActives) {
+    partial.simSnipeActive = snapshot.simSnipeActive;
+    partial.realSnipeActive = snapshot.realSnipeActive;
+  }
+  if (Object.keys(partial).length > 0) {
+    setState(partial);
+  }
 }
 
 async function fetchSharedSnipeStateSnapshot() {
@@ -1164,6 +1172,24 @@ interface StoredTradeEventFundingShape {
   simulation?: boolean;
 }
 
+interface SimAccountingSnapshot {
+  eventCount: number;
+  entryCount: number;
+  exitCount: number;
+  fundingCount: number;
+  completedCount: number;
+  firstTimestamp: number | null;
+  lastTimestamp: number | null;
+  simTotalFundingEarned: number;
+  simTotalFees: number;
+  simTotalClosedPnl: number;
+  fundingByExchange: Partial<Record<ExchangeId, number>>;
+  closedPnlPerExchange: Partial<Record<ExchangeId, number>>;
+  feesPerExchange: Partial<Record<ExchangeId, number>>;
+  closedFeesPerExchange?: Partial<Record<ExchangeId, number>>;
+  fundingHistory: FundingPayment[];
+}
+
 function makeFundingHistoryKey(payment: FundingPayment): string {
   return [
     payment.exchange,
@@ -1184,40 +1210,252 @@ function mergeFundingHistory(primary: FundingPayment[], fallback: FundingPayment
   return Array.from(merged.values()).sort((a, b) => b.timestamp - a.timestamp);
 }
 
-async function loadFundingHistoryFromTradeLog(simulation: boolean): Promise<FundingPayment[]> {
-  const listRes = await fetch('/api/trades/list?list=true');
-  const listJson = await listRes.json() as { dates?: string[] };
-  const dates = (listJson.dates ?? []).slice(0, 7);
-  if (dates.length === 0) return [];
-
-  const results = await Promise.all(
-    dates.map(async (date) => {
-      const res = await fetch(`/api/trades/list?date=${date}`);
-      return res.json() as Promise<{ events?: StoredTradeEventFundingShape[] }>;
-    }),
-  );
-
+function eventsToFundingHistory(events: StoredTradeEventFundingShape[]): FundingPayment[] {
   const payments: FundingPayment[] = [];
-  for (const result of results) {
-    for (const event of result.events ?? []) {
-      if (event.type !== 'funding') continue;
-      if (!!event.simulation !== simulation) continue;
-      if (!event.exchange || !event.symbol) continue;
-      const amount = event.fundingAmount ?? 0;
-      if (Math.abs(amount) <= 0.0000001) continue;
+  for (const event of events) {
+    if (event.type !== 'funding') continue;
+    if (!event.exchange || !event.symbol) continue;
+    if (!SUPPORTED_EXCHANGES.includes(event.exchange as ExchangeId)) continue;
+    const amount = event.fundingAmount ?? 0;
+    if (Math.abs(amount) <= 0.0000001) continue;
 
-      payments.push({
-        exchange: event.exchange as ExchangeId,
-        symbol: event.symbol,
-        amount,
-        rate: event.fundingRate ?? 0,
-        timestamp: event.timestamp,
-        side: (event.side === 'short' ? 'short' : 'long'),
-      });
-    }
+    payments.push({
+      exchange: event.exchange as ExchangeId,
+      symbol: event.symbol,
+      amount,
+      rate: event.fundingRate ?? 0,
+      timestamp: event.timestamp,
+      side: (event.side === 'short' ? 'short' : 'long'),
+    });
   }
 
   return mergeFundingHistory([], payments);
+}
+
+async function loadFundingHistoryFromTradeLog(simulation: boolean): Promise<FundingPayment[]> {
+  const scope = simulation ? 'sim' : 'real';
+  const receiptRes = await fetch(`/api/analysis/funding-receipts?all=true&scope=${scope}`);
+  const receiptJson = await receiptRes.json() as { success?: boolean; events?: StoredTradeEventFundingShape[] };
+  const receiptPayments = eventsToFundingHistory(receiptJson.success ? (receiptJson.events ?? []) : []);
+  if (receiptPayments.length > 0) return receiptPayments;
+
+  const tradeScope = simulation ? 'sim_executed' : 'real_executed';
+  const tradeRes = await fetch(`/api/trades/list?all=true&scope=${tradeScope}&type=funding`);
+  const tradeJson = await tradeRes.json() as { success?: boolean; events?: StoredTradeEventFundingShape[] };
+  return eventsToFundingHistory(tradeJson.success ? (tradeJson.events ?? []) : []);
+}
+
+async function fetchSimAccountingFromTradeLog(from?: number): Promise<SimAccountingSnapshot | null> {
+  const query = new URLSearchParams();
+  if (from && from > 0) query.set('from', String(from));
+  const res = await fetch(`/api/sim-state/accounting?${query.toString()}`);
+  const json = await res.json() as { success?: boolean; data?: SimAccountingSnapshot };
+  if (!json.success || !json.data) return null;
+  return json.data;
+}
+
+function simAccountingHasData(accounting: SimAccountingSnapshot): boolean {
+  return accounting.eventCount > 0
+    || accounting.fundingHistory.length > 0
+    || Math.abs(accounting.simTotalFundingEarned) > 0.0000001
+    || Math.abs(accounting.simTotalFees) > 0.0000001
+    || Math.abs(accounting.simTotalClosedPnl) > 0.0000001;
+}
+
+function getAccountingNet(accounting: SimAccountingSnapshot): number {
+  return accounting.simTotalFundingEarned + accounting.simTotalClosedPnl - accounting.simTotalFees;
+}
+
+function getStateAccountingNet(state: FundingState): number {
+  return state.simTotalFundingEarned + state.simTotalClosedPnl - state.simTotalFees;
+}
+
+function shouldApplySimAccountingTotals(state: FundingState, accounting: SimAccountingSnapshot): boolean {
+  if (!simAccountingHasData(accounting)) return false;
+  const stateNet = getStateAccountingNet(state);
+  const accountingNet = getAccountingNet(accounting);
+  const stateLooksEmpty = state.fundingHistory.length === 0
+    && Math.abs(state.simTotalFundingEarned) <= 0.0000001
+    && Math.abs(state.simTotalFees) <= 0.0000001
+    && Math.abs(state.simTotalClosedPnl) <= 0.0000001;
+  if (stateLooksEmpty) return true;
+  if (state.simPositions.length > 0) return false;
+  return Math.abs(stateNet - accountingNet) > 0.01
+    || Math.abs(state.simTotalFundingEarned - accounting.simTotalFundingEarned) > 0.01
+    || Math.abs(state.simTotalFees - accounting.simTotalFees) > 0.01
+    || Math.abs(state.simTotalClosedPnl - accounting.simTotalClosedPnl) > 0.01;
+}
+
+function shouldRebuildSimBalancesFromAccounting(state: FundingState, accounting: SimAccountingSnapshot): boolean {
+  if (!simAccountingHasData(accounting) || state.simPositions.length > 0) return false;
+
+  const currentDelta = SUPPORTED_EXCHANGES.reduce(
+    (sum, exchange) => sum + ((state.simBalances[exchange] ?? 0) - (state.simInitialBalances[exchange] ?? 0)),
+    0,
+  );
+  return Math.abs(currentDelta - getAccountingNet(accounting)) > 0.01;
+}
+
+function buildAccountingBalances(
+  initialBalances: Record<ExchangeId, number>,
+  accounting: SimAccountingSnapshot,
+): Record<ExchangeId, number> {
+  const balances = {} as Record<ExchangeId, number>;
+  for (const exchange of SUPPORTED_EXCHANGES) {
+    balances[exchange] = (initialBalances[exchange] ?? 0)
+      + (accounting.fundingByExchange[exchange] ?? 0)
+      + (accounting.closedPnlPerExchange[exchange] ?? 0)
+      - (accounting.feesPerExchange[exchange] ?? 0);
+  }
+  return balances;
+}
+
+function sumExchangeMap(map: Partial<Record<ExchangeId, number>>): number {
+  return SUPPORTED_EXCHANGES.reduce((sum, exchange) => sum + (map[exchange] ?? 0), 0);
+}
+
+function chooseFallbackAccountingExchange(
+  state: FundingState,
+  fundingByExchange: Partial<Record<ExchangeId, number>>,
+): ExchangeId {
+  return SUPPORTED_EXCHANGES.find((exchange) => Math.abs(fundingByExchange[exchange] ?? 0) > 0.0000001)
+    ?? SUPPORTED_EXCHANGES.find((exchange) => (state.simInitialBalances[exchange] ?? 0) > 0)
+    ?? SUPPORTED_EXCHANGES[0];
+}
+
+function buildSimAccountingFromFundingHistory(history: FundingPayment[], state: FundingState): SimAccountingSnapshot | null {
+  if (history.length === 0) return null;
+
+  const fundingByExchange = {} as Record<ExchangeId, number>;
+  const closedPnlPerExchange = {} as Record<ExchangeId, number>;
+  const feesPerExchange = {} as Record<ExchangeId, number>;
+  for (const exchange of SUPPORTED_EXCHANGES) {
+    fundingByExchange[exchange] = 0;
+    closedPnlPerExchange[exchange] = state.simClosedPnlPerExchange[exchange] ?? 0;
+    feesPerExchange[exchange] = state.simClosedFeesPerExchange[exchange] ?? 0;
+  }
+
+  let simTotalFundingEarned = 0;
+  let firstTimestamp: number | null = null;
+  let lastTimestamp: number | null = null;
+  for (const payment of history) {
+    if (!Number.isFinite(payment.amount) || !Number.isFinite(payment.timestamp)) continue;
+    simTotalFundingEarned += payment.amount;
+    fundingByExchange[payment.exchange] = (fundingByExchange[payment.exchange] ?? 0) + payment.amount;
+    firstTimestamp = firstTimestamp == null ? payment.timestamp : Math.min(firstTimestamp, payment.timestamp);
+    lastTimestamp = lastTimestamp == null ? payment.timestamp : Math.max(lastTimestamp, payment.timestamp);
+  }
+
+  if (Math.abs(simTotalFundingEarned) <= 0.0000001) return null;
+
+  const fallbackExchange = chooseFallbackAccountingExchange(state, fundingByExchange);
+  const missingClosedPnl = state.simTotalClosedPnl - sumExchangeMap(closedPnlPerExchange);
+  if (Math.abs(missingClosedPnl) > 0.0000001) {
+    closedPnlPerExchange[fallbackExchange] = (closedPnlPerExchange[fallbackExchange] ?? 0) + missingClosedPnl;
+  }
+  const closedFeesPerExchange = { ...feesPerExchange };
+  const missingFees = state.simTotalFees - sumExchangeMap(feesPerExchange);
+  if (Math.abs(missingFees) > 0.0000001) {
+    feesPerExchange[fallbackExchange] = (feesPerExchange[fallbackExchange] ?? 0) + missingFees;
+  }
+
+  return {
+    eventCount: history.length,
+    entryCount: 0,
+    exitCount: 0,
+    fundingCount: history.length,
+    completedCount: 0,
+    firstTimestamp,
+    lastTimestamp,
+    simTotalFundingEarned,
+    simTotalFees: state.simTotalFees,
+    simTotalClosedPnl: state.simTotalClosedPnl,
+    fundingByExchange,
+    closedPnlPerExchange,
+    feesPerExchange,
+    closedFeesPerExchange,
+    fundingHistory: history,
+  };
+}
+
+function persistCurrentSimState(state: FundingState) {
+  saveFundingHistory(state.fundingHistory);
+  saveSimState({
+    simBalances: state.simBalances,
+    simInitialBalances: state.simInitialBalances,
+    simPositions: state.simPositions,
+    simTotalFundingEarned: state.simTotalFundingEarned,
+    simTotalTopUps: state.simTotalTopUps,
+    simTotalFees: state.simTotalFees,
+    simTotalClosedPnl: state.simTotalClosedPnl,
+    simClosedPnlPerExchange: state.simClosedPnlPerExchange,
+    simClosedFeesPerExchange: state.simClosedFeesPerExchange,
+  });
+}
+
+function syncReconciledSimStateToServer(state: FundingState) {
+  const snapshot: SimStateSnapshot = {
+    simBalances: state.simBalances,
+    simInitialBalances: state.simInitialBalances,
+    simPositions: state.simPositions,
+    simTotalFundingEarned: state.simTotalFundingEarned,
+    simTotalTopUps: state.simTotalTopUps,
+    simTotalFees: state.simTotalFees,
+    simTotalClosedPnl: state.simTotalClosedPnl,
+    simClosedPnlPerExchange: state.simClosedPnlPerExchange,
+    simClosedFeesPerExchange: state.simClosedFeesPerExchange,
+    fundingHistory: state.fundingHistory,
+    updatedAt: Date.now(),
+  };
+  void fetch('/api/sim-state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'replace', state: snapshot }),
+  }).catch(() => {});
+}
+
+async function reconcileSimAccountingFromTradeLog(
+  setState: (partial: Partial<FundingState>) => void,
+  getState: () => FundingState,
+) {
+  const stateBefore = getState();
+  let accounting = await fetchSimAccountingFromTradeLog(
+    stateBefore.tradesClearedAt > 0 ? stateBefore.tradesClearedAt : undefined,
+  );
+  if (!accounting || !simAccountingHasData(accounting)) {
+    accounting = buildSimAccountingFromFundingHistory(stateBefore.fundingHistory, stateBefore);
+  }
+  if (!accounting || !simAccountingHasData(accounting)) return;
+
+  const latest = getState();
+  const applyTotals = shouldApplySimAccountingTotals(latest, accounting);
+  const rebuildBalances = shouldRebuildSimBalancesFromAccounting(latest, accounting);
+  const mergedHistory = mergeFundingHistory(accounting.fundingHistory, latest.fundingHistory);
+
+  if (!applyTotals && !rebuildBalances && mergedHistory.length === latest.fundingHistory.length) return;
+
+  const partial: Partial<FundingState> = {
+    fundingHistory: mergedHistory,
+  };
+
+  if (applyTotals || rebuildBalances) {
+    partial.simTotalFundingEarned = accounting.simTotalFundingEarned;
+    partial.simTotalFees = accounting.simTotalFees;
+    partial.simTotalClosedPnl = accounting.simTotalClosedPnl;
+    partial.simClosedPnlPerExchange = accounting.closedPnlPerExchange;
+    partial.simClosedFeesPerExchange = accounting.closedFeesPerExchange ?? accounting.feesPerExchange;
+  }
+  if (rebuildBalances) {
+    partial.simBalances = buildAccountingBalances(latest.simInitialBalances, accounting);
+  }
+
+  setState(partial);
+
+  const reconciled = getState();
+  persistCurrentSimState(reconciled);
+  if (applyTotals || rebuildBalances) {
+    syncReconciledSimStateToServer(reconciled);
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -1390,8 +1628,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       // 서버에 저장된 자동투자 상태 복원 (PC↔모바일 동기화)
       fetchSharedSnipeStateSnapshot().then(async (sharedState) => {
-        applySharedSnipeStateSnapshot(set, sharedState, { includeActives: false });
-        saveSimMode(sharedState.simulationMode);
+        applySharedSnipeStateSnapshot(set, sharedState, { includeActives: false, includeMode: false });
 
         // REAL: 서버 스케줄러가 실제로 돌고 있는지 확인 후에만 UI 상태를 ON으로
         let realConfirmed = false;
@@ -1466,43 +1703,34 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             snipeAllocations: simScheduler.snipeAllocations ?? {},
           });
         })
-        .catch(() => {
+        .catch(async () => {
           const savedSim = loadSimState();
           if (!savedSim) return;
-          void fetch('/api/sim-state', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              action: 'replace',
-              state: {
-                ...buildEmptySimState(),
-                ...savedSim,
-                fundingHistory: loadFundingHistory() ?? [],
-                updatedAt: Date.now(),
-              },
-            }),
-          })
-            .then(r => r.json())
-            .then((migrated: { success?: boolean; data?: SimStateSnapshot }) => {
-              if (migrated.success && migrated.data) {
-                applyServerSimStateSnapshot(set, migrated.data, { force: true });
-                return;
-              }
-              applyServerSimStateSnapshot(set, {
-                ...buildEmptySimState(),
-                ...savedSim,
-                fundingHistory: loadFundingHistory() ?? [],
-                updatedAt: Date.now(),
-              }, { force: true });
-            })
-            .catch(() => {
-              applyServerSimStateSnapshot(set, {
-                ...buildEmptySimState(),
-                ...savedSim,
-                fundingHistory: loadFundingHistory() ?? [],
-                updatedAt: Date.now(),
-              }, { force: true });
+          const fallbackSnapshot: SimStateSnapshot = {
+            ...buildEmptySimState(),
+            ...savedSim,
+            fundingHistory: loadFundingHistory() ?? [],
+            updatedAt: Date.now(),
+          };
+          try {
+            const response = await fetch('/api/sim-state', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'replace',
+                state: fallbackSnapshot,
+              }),
             });
+            const migrated = await response.json() as { success?: boolean; data?: SimStateSnapshot };
+            applyServerSimStateSnapshot(set, migrated.success && migrated.data ? migrated.data : fallbackSnapshot, { force: true });
+          } catch {
+            applyServerSimStateSnapshot(set, fallbackSnapshot, { force: true });
+          }
+        })
+        .finally(() => {
+          void reconcileSimAccountingFromTradeLog(set, get).catch((err) => {
+            get().addLog('warning', '[SIM] 거래 로그 기반 누적값 복원 실패', undefined, (err as Error).message);
+          });
         });
 
       const enabled = get().enabledExchanges;
@@ -1620,7 +1848,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       saveStrategyConfig(next);
 
       // investmentUSDT 변경 시 시뮬 잔고 동기화 (포지션 없을 때만)
-      if (investmentChanged && s.simPositions.length === 0) {
+      if (investmentChanged && !fundingStateHasSimSessionData(s)) {
         const newBal = buildExchangeAllocationMap(next.investmentUSDT * 2, s.enabledExchanges);
         return {
           strategyConfig: next,
@@ -1646,7 +1874,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       void get().refreshRealSpreads();
     }
 
-    if (investmentChanged && previousState.simPositions.length === 0) {
+    if (investmentChanged && !fundingStateHasSimSessionData(previousState)) {
       void fetch('/api/sim-state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2310,10 +2538,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
       void fetchSharedSnipeStateSnapshot()
         .then((snapshot) => {
-          // Runtime active 상태는 /api/scheduler, /api/sim-scheduler 를 source of truth로 사용.
-          // shared snipe-state는 UI 모드(simulationMode)만 동기화해 상태 경합을 막는다.
-          applySharedSnipeStateSnapshot(set, snapshot, { includeActives: false });
-          saveSimMode(snapshot.simulationMode);
+          applySharedSnipeStateSnapshot(set, snapshot, { includeActives: false, includeMode: false });
         })
         .catch(() => {});
 
@@ -3094,7 +3319,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     set({ simulationMode: next });
     // 모드 상태 영속화
     saveSimMode(next);
-    if (next && get().simPositions.length === 0) {
+    if (next && !fundingStateHasSimSessionData(get())) {
       // Keep SIM balances aligned with config on SIM mode entry when no open positions.
       void fetch('/api/sim-state', {
         method: 'POST',
@@ -3582,19 +3807,23 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     if (get().realSnipeActive) {
       void syncServerSchedulerConfig(get().strategyConfig, next, get().addLog);
     }
-    void fetch('/api/sim-state', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'reconfigure',
-        enabledExchanges: next,
-        investmentUSDT: get().strategyConfig.investmentUSDT,
-      }),
-    }).then(r => r.json()).then((res: { success?: boolean; data?: SimStateSnapshot }) => {
-      if (res.success && res.data) {
-        applyServerSimStateSnapshot(set, res.data, { force: true });
-      }
-    }).catch(() => {});
+    if (fundingStateHasSimSessionData(get())) {
+      syncReconciledSimStateToServer(get());
+    } else {
+      void fetch('/api/sim-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'reconfigure',
+          enabledExchanges: next,
+          investmentUSDT: get().strategyConfig.investmentUSDT,
+        }),
+      }).then(r => r.json()).then((res: { success?: boolean; data?: SimStateSnapshot }) => {
+        if (res.success && res.data) {
+          applyServerSimStateSnapshot(set, res.data, { force: true });
+        }
+      }).catch(() => {});
+    }
     if (get().simSnipeActive) {
       void syncServerSimSchedulerConfig(get().strategyConfig, next, get().addLog);
     }

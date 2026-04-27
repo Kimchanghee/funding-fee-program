@@ -15,7 +15,7 @@ import {
 import { appendLogs, appendTrades, type FileLogEntry, readTrades, type TradeEvent } from './fileLogger';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import { loadAllServerApiConfigs } from './serverKeyStore';
-import { sendTelegramMessage } from './telegram';
+import { sendTelegramMessage } from './telegramServer';
 import { buildTradePairsFromEvents, formatTradePairTelegramMessage } from './tradeEvents';
 import {
   findOpportunities,
@@ -29,11 +29,11 @@ import {
 import { saveOpportunityHourlySnapshot } from './analysisLogger';
 import {
   calcNetSpreadPercent,
-  calcHedgedNetSpreadPercent,
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_ROUND_TRIP_IMPACT_BPS,
   MAX_FUNDING_TIMESTAMP_DIFF_MS,
   MIN_FREE_MARGIN_PCT,
+  SUPPORTED_EXCHANGES,
   HEDGE_RATIO_MIN,
   HEDGE_RATIO_MAX,
   getResolvedTimingConfig,
@@ -275,33 +275,6 @@ function getSimPositionOpportunityKey(
     longExchange,
     position.fundingIntervalMs ?? pair?.fundingIntervalMs,
   );
-}
-
-function flipOpportunityDirection(opportunity: ArbitrageOpportunity): ArbitrageOpportunity {
-  const fundingIntervalMs = opportunity.fundingIntervalMs ?? 8 * 3600000;
-  const flippedSpread = opportunity.longRate - opportunity.shortRate;
-  return {
-    ...opportunity,
-    id: makeOpportunityId(
-      opportunity.baseAsset,
-      opportunity.longExchange,
-      opportunity.shortExchange,
-      fundingIntervalMs,
-    ),
-    shortExchange: opportunity.longExchange,
-    shortSymbol: opportunity.longSymbol,
-    shortRate: opportunity.longRate,
-    shortRatePercent: opportunity.longRatePercent,
-    shortMarkPrice: opportunity.longMarkPrice,
-    longExchange: opportunity.shortExchange,
-    longSymbol: opportunity.shortSymbol,
-    longRate: opportunity.shortRate,
-    longRatePercent: opportunity.shortRatePercent,
-    longMarkPrice: opportunity.shortMarkPrice,
-    spread: flippedSpread,
-    spreadPercent: flippedSpread * 100,
-    annualReturnPercent: opportunity.annualReturnPercent * -1,
-  };
 }
 
 function buildStrategyLikeConfig(config: ServerSimSchedulerConfig): StrategyConfig {
@@ -855,6 +828,22 @@ class ServerSimScheduler {
     ));
   }
 
+  private simBalancesChangedFromInitial(state: SimStateSnapshot): boolean {
+    return SUPPORTED_EXCHANGES.some((exchange) => (
+      Math.abs((state.simBalances[exchange] ?? 0) - (state.simInitialBalances[exchange] ?? 0)) > 0.0000001
+    ));
+  }
+
+  private stateHasSessionData(state: SimStateSnapshot): boolean {
+    return state.simPositions.length > 0
+      || state.fundingHistory.length > 0
+      || state.simTotalFundingEarned !== 0
+      || state.simTotalTopUps !== 0
+      || state.simTotalFees !== 0
+      || state.simTotalClosedPnl !== 0
+      || this.simBalancesChangedFromInitial(state);
+  }
+
   private getState() {
     const state = getOrCreateServerSimState(this.config.enabledExchanges, this.config.investmentUSDT);
     if (!this.shouldRepairEmptySimBalances(state)) {
@@ -995,7 +984,7 @@ class ServerSimScheduler {
     return this.enqueue(async () => {
       const sanitizedEnabledExchanges = sanitizeEnabledExchanges(enabledExchanges);
       const current = loadServerSimState() ?? createDefaultSimState(sanitizedEnabledExchanges, investmentUSDT);
-      if (current.simPositions.length > 0) {
+      if (this.stateHasSessionData(current)) {
         return current;
       }
 
@@ -1062,7 +1051,10 @@ class ServerSimScheduler {
     const logs: FileLogEntry[] = [];
 
     for (const event of events) {
-      const status = (event as { status?: string }).status;
+      const analysisStatus = typeof event.analysis?.status === 'string'
+        ? event.analysis.status
+        : undefined;
+      const status = analysisStatus ?? event.reason;
       if (event.type === 'guard_block') {
         logs.push({
           timestamp: event.timestamp,
@@ -2074,12 +2066,11 @@ class ServerSimScheduler {
     ]);
   }
 
-  /** Orderbook-based schedule revalidation. Only replaces route when flipped direction is better. */
+  /** Orderbook-based schedule revalidation for scheduled route telemetry. */
   private async revalidateScheduledByOrderbook() {
     if (this.scheduledEntries.size === 0) return;
 
     const now = Date.now();
-    const toReplace = new Map<string, ScheduledSimEntry>();
 
     // ????60????곴맒 ??? ??됰튋筌????筌?(筌욊낯??? executeDueEntries?癒?퐣 筌ｌ꼶??
     const candidates = Array.from(this.scheduledEntries.entries())
@@ -2117,7 +2108,7 @@ class ServerSimScheduler {
       }
     }
 
-    await Promise.allSettled(batch.map(async ([opportunityId, entry]) => {
+    await Promise.allSettled(batch.map(async ([, entry]) => {
       try {
         const notional = entry.investmentUSDT * this.config.leverage;
         if (notional <= 0) return;
@@ -2133,55 +2124,11 @@ class ServerSimScheduler {
           this.scheduleProbeStates.set(probeState.probeId, probeState);
         }
 
-        const revalHedgeFeePct = (
-          resolveRuntimeFee(entry.opportunity.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
-          + resolveRuntimeFee(entry.opportunity.longExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
-        ) * 2 * 100;
-        const realNetSpread = calcHedgedNetSpreadPercent(
-          entry.opportunity.spreadPercent,
-          shortFill.slippagePercent,
-          longFill.slippagePercent,
-          revalHedgeFeePct,
-        );
-
-        if (realNetSpread <= 0) {
-          // Keep schedule for due-time adaptive notional retry.
-          // Only flip route when reverse direction is already net-positive.
-          const flipped = flipOpportunityDirection(entry.opportunity);
-          try {
-            const [flipShortFill, flipLongFill] = await Promise.all([
-              fetchMarketFillPrice(flipped.shortExchange, flipped.shortSymbol, 'sell', notional),
-              fetchMarketFillPrice(flipped.longExchange, flipped.longSymbol, 'buy', notional),
-            ]);
-            const flipHedgeFeePct = (
-              resolveRuntimeFee(flipped.shortExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
-              + resolveRuntimeFee(flipped.longExchange, 'taker', this.config.feeOverrides, this.config.paybackOverrides)
-            ) * 2 * 100;
-            const flippedNetSpread = calcHedgedNetSpreadPercent(
-              flipped.spreadPercent,
-              flipShortFill.slippagePercent,
-              flipLongFill.slippagePercent,
-              flipHedgeFeePct,
-            );
-            if (flippedNetSpread > 0) {
-              toReplace.set(opportunityId, {
-                ...entry,
-                opportunity: flipped,
-              });
-            }
-          } catch {
-            // Keep original schedule when flip check fails.
-          }
-        }
       } catch {
         // ??삳쐭??鈺곌퀬????쎈솭 ???醫? (??쎈뻬 ??뽰젎?癒?퐣 ??쇰뻻 野꺜筌?
       }
     }));
 
-    for (const [opportunityId, nextEntry] of toReplace.entries()) {
-      if (!this.scheduledEntries.has(opportunityId)) continue;
-      this.scheduledEntries.set(opportunityId, nextEntry);
-    }
   }
 
   private async refreshRatesAndPlans() {
@@ -2399,6 +2346,7 @@ class ServerSimScheduler {
     });
 
     const nextEntries = new Map<string, ScheduledSimEntry>();
+    const scheduledProbeEvents: TradeEvent[] = [];
     const canceledProbeEvents: TradeEvent[] = [];
     for (const plan of plans) {
       const opportunityId = getOpportunityId(plan.opportunity);
@@ -2417,6 +2365,32 @@ class ServerSimScheduler {
         targetTime,
         investmentUSDT: plan.investmentUSDT,
       });
+      const scheduleChanged = !previousEntry
+        || Math.abs(previousEntry.targetTime - targetTime) > 60_000
+        || Math.abs(previousEntry.investmentUSDT - plan.investmentUSDT) > 0.0001;
+      if (scheduleChanged) {
+        scheduledProbeEvents.push(this.buildScheduleProbeEvent(
+          'scheduled',
+          plan.opportunity,
+          plan.investmentUSDT,
+          now,
+          {
+            status: 'scheduled',
+            reason: 'scheduled',
+            timeToExecutionMs: targetTime - now,
+            analysis: {
+              opportunityId,
+              probeId,
+              scheduleAction: previousEntry ? 'updated' : 'created',
+              targetTimeMs: targetTime,
+              targetTimeInMs: targetTime - now,
+              fundingTimeMs: plan.opportunity.nextFundingTime,
+              entryLeadMs: entryLead,
+              selectedAllocationUSDT: plan.investmentUSDT,
+            },
+          },
+        ));
+      }
     }
 
     // Preserve due/near-due entries that disappeared from opportunities ??executeDueEntries must handle them
@@ -2463,8 +2437,9 @@ class ServerSimScheduler {
     }
 
     this.scheduledEntries = nextEntries;
-    if (canceledProbeEvents.length > 0) {
-      this.recordTrades(canceledProbeEvents);
+    const lifecycleEvents = [...scheduledProbeEvents, ...canceledProbeEvents];
+    if (lifecycleEvents.length > 0) {
+      this.recordTrades(lifecycleEvents);
     }
   }
 
@@ -2554,48 +2529,6 @@ class ServerSimScheduler {
         continue;
       }
 
-      // 筌띾뜆?筌?筌욊쑴??筌욊낯?????뽮쉭揶쎛 ??쇱춿??덈뮉 野껋럩??몴?????쑵鍮?獄쏆꼶? 獄쎻뫚堉????甕?????뺣즲??뺣뼄.
-      const flipped = flipOpportunityDirection(primaryOpportunity);
-      const flippedResult = await this.executeOpportunity(flipped, entry.investmentUSDT, true, scheduledFundingTime);
-      if (flippedResult.success) {
-        const executedAt = Date.now();
-        if (Number.isFinite(flippedResult.shortSlippagePercent)) {
-          probeState.lastShortSlippagePercent = flippedResult.shortSlippagePercent;
-        }
-        if (Number.isFinite(flippedResult.longSlippagePercent)) {
-          probeState.lastLongSlippagePercent = flippedResult.longSlippagePercent;
-        }
-        probeState.executeResultCaptured = true;
-        probeState.status = 'executed';
-        probeState.executedAt = executedAt;
-        probeState.fundingCapturedAt = undefined;
-        probeState.fundingBaseShortMid = undefined;
-        probeState.fundingBaseLongMid = undefined;
-        probeState.fundingBaseBasisBps = undefined;
-        probeState.pairId = flippedResult.pairId;
-        probeState.executedNotional = flippedResult.executedNotional;
-        probeState.postMilestones = [];
-        probeState.postFundingMilestones = [];
-        probeState.lastReason = 'flipped_success';
-        this.scheduleProbeStates.set(probeState.probeId, probeState);
-        this.recordTrades([this.buildScheduleProbeEvent(
-          'execute_success',
-          flipped,
-          entry.investmentUSDT,
-          executedAt,
-          {
-            pairId: probeState.pairId,
-            status: 'executed',
-            reason: 'flipped_success',
-            timeToExecutionMs: entry.targetTime - executedAt,
-            executedNotional: probeState.executedNotional,
-            shortSlippagePercent: probeState.lastShortSlippagePercent,
-            longSlippagePercent: probeState.lastLongSlippagePercent,
-          },
-        )]);
-        continue;
-      }
-
       const failedAt = Date.now();
       const failureReason = mapSimEntryErrorToGuardReason(primaryResult.error);
       if (Number.isFinite(primaryResult.shortSlippagePercent)) {
@@ -2625,9 +2558,7 @@ class ServerSimScheduler {
             analysis: {
               failureReason,
               primaryAnalysis: primaryResult.analysis ?? null,
-              flippedAnalysis: flippedResult.analysis ?? null,
               primaryError: primaryResult.error ?? null,
-              flippedError: flippedResult.error ?? null,
             },
           },
         ),
@@ -2644,9 +2575,8 @@ class ServerSimScheduler {
           analysis: {
             failureReason,
             primaryAnalysis: primaryResult.analysis ?? null,
-            flippedAnalysis: flippedResult.analysis ?? null,
           },
-          detail: `primary:${primaryResult.error ?? 'unknown'} | flipped:${flippedResult.error ?? 'unknown'}`,
+          detail: primaryResult.error ?? 'unknown',
         },
       ]);
     }
@@ -2775,6 +2705,17 @@ class ServerSimScheduler {
     }
     if (tradeEvents.length > 0) {
       this.recordTrades(tradeEvents);
+    }
+    if (fundingEvents.length > 0) {
+      const totalFunding = fundingEvents.reduce((sum, payment) => sum + payment.amount, 0);
+      const lines = fundingEvents.map((payment) =>
+        `  ${payment.exchange.toUpperCase()} ${payment.symbol} (${payment.side}): ${payment.amount >= 0 ? '+' : ''}$${payment.amount.toFixed(4)}`,
+      );
+      void sendTelegramMessage([
+        `${totalFunding >= 0 ? '💰' : '💸'} <b>[SIM] 펀딩 수령: ${fundingEvents.length}건</b>`,
+        ...lines,
+        `합계: ${totalFunding >= 0 ? '+' : ''}$${totalFunding.toFixed(4)}`,
+      ].join('\n'));
     }
   }
 
@@ -2909,6 +2850,30 @@ class ServerSimScheduler {
       state.fundingHistory = [...fundingEvents, ...state.fundingHistory]
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, MAX_FUNDING_HISTORY);
+    }
+    const totalFunding = preparedLegs.reduce((sum, leg) => sum + leg.actualFunding, 0);
+    const totalPnl = preparedLegs.reduce(
+      (sum, leg) => sum + leg.pricePnl + leg.actualFunding - (leg.position.entryFee ?? 0) - leg.exitFee,
+      0,
+    );
+    const firstPosition = preparedLegs[0]?.position;
+    if (firstPosition && preparedLegs.some((leg) => leg.position.isSnipe)) {
+      const shortExchange = preparedLegs.find((leg) => leg.position.side === 'short')?.position.exchange
+        ?? firstPosition.exchange;
+      const longExchange = preparedLegs.find((leg) => leg.position.side === 'long')?.position.exchange
+        ?? firstPosition.exchange;
+      tradeEvents.push({
+        timestamp: closeFinishedAt,
+        type: 'snipe_complete',
+        simulation: true,
+        baseAsset: firstPosition.baseAsset,
+        shortExchange,
+        longExchange,
+        pairId,
+        fundingCollected: totalFunding,
+        pnl: totalPnl,
+        detail: `pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
+      });
     }
 
     this.setState(state);

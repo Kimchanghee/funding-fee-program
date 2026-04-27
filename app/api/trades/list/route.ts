@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  listDates,
-  listExecutedTradeDates,
-  readExecutedTrades,
-  readTrades,
+  listTradeHistoryDates,
+  readTradeHistory,
+  type TradeHistoryScope,
   type TradeEvent,
 } from '@/lib/fileLogger';
-import { EXECUTED_TRADE_EVENT_TYPES } from '@/lib/tradeEvents';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
 function parseTimestamp(value: string | null): number | null {
@@ -24,12 +22,19 @@ function parsePositiveInt(value: string | null): number | null {
   return Math.floor(numeric);
 }
 
+function parseScope(value: string | null): TradeHistoryScope | null {
+  if (value === null || value === 'all') return 'all';
+  if (value === 'sim' || value === 'sim_executed') return value;
+  if (value === 'real' || value === 'real_executed') return value;
+  return null;
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const date = url.searchParams.get('date') || undefined;
   const allDates = url.searchParams.get('all') === 'true';
   const listOnly = url.searchParams.get('list') === 'true';
-  const scope = url.searchParams.get('scope') ?? 'all';
+  const scope = parseScope(url.searchParams.get('scope'));
   const typeFilter = url.searchParams.get('type');
   const simulationFilter = url.searchParams.get('simulation');
   const from = parseTimestamp(url.searchParams.get('from'));
@@ -38,35 +43,12 @@ export async function GET(req: NextRequest) {
   const page = parsePositiveInt(url.searchParams.get('page'));
   const pageSize = parsePositiveInt(url.searchParams.get('pageSize'));
 
-  if (scope !== 'all' && scope !== 'sim_executed' && scope !== 'real_executed') {
-    return NextResponse.json({ success: false, error: 'Invalid scope (all|sim_executed|real_executed)' }, { status: 400 });
+  if (!scope) {
+    return NextResponse.json({ success: false, error: 'Invalid scope (all|sim|real|sim_executed|real_executed)' }, { status: 400 });
   }
 
-  const legacyDates = listDates('trades');
-  const executedDates = scope === 'sim_executed'
-    ? listExecutedTradeDates('sim')
-    : scope === 'real_executed'
-      ? listExecutedTradeDates('real')
-      : [];
-  const listTargetDates = scope === 'all'
-    ? legacyDates
-    : executedDates.length > 0
-      ? executedDates
-      : legacyDates;
-  const readByDate = (targetDate?: string) => {
-    if (scope === 'all') {
-      return readTrades(targetDate);
-    }
-
-    const scopeValue = scope === 'sim_executed' ? 'sim' : 'real';
-    const separated = readExecutedTrades(scopeValue, targetDate);
-    if (separated.length > 0) {
-      return separated;
-    }
-
-    const simulation = scope === 'sim_executed';
-    return readTrades(targetDate).filter((event) => event.simulation === simulation && EXECUTED_TRADE_EVENT_TYPES.has(event.type));
-  };
+  const listTargetDates = listTradeHistoryDates(scope);
+  const readByDate = (targetDate?: string) => readTradeHistory(scope, targetDate);
 
   if (listOnly) {
     return NextResponse.json({ success: true, scope, dates: listTargetDates });
@@ -130,6 +112,7 @@ export async function GET(req: NextRequest) {
     success: true,
     scope,
     date: date || 'today',
+    availableDates: listTargetDates,
     count: events.length,
     total: allEvents.length,
     filteredTotal,

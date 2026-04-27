@@ -633,8 +633,15 @@ export default function OpportunityCard() {
 
   const totalBalanceSummary = useMemo(() => {
     if (simulationMode) {
-      const currentTotal = OPERABLE_EXCHANGES
+      const cashTotal = OPERABLE_EXCHANGES
         .reduce((sum, exchange) => sum + (simBalances[exchange] ?? 0), 0);
+      const hedgePositions = simPositions
+        .filter((position) => position.positionType === 'hedge_long' || position.positionType === 'hedge_short');
+      const openMarginTotal = hedgePositions
+        .reduce((sum, position) => sum + position.margin, 0);
+      const openPricePnlTotal = hedgePositions
+        .reduce((sum, position) => sum + position.unrealizedPnl + position.entryFee, 0);
+      const currentTotal = cashTotal + openMarginTotal + openPricePnlTotal;
       const initialTotal = OPERABLE_EXCHANGES
         .reduce((sum, exchange) => sum + (simInitialBalances[exchange] ?? 0), 0);
       const pnl = currentTotal - initialTotal;
@@ -644,9 +651,9 @@ export default function OpportunityCard() {
         initialTotal,
         pnl,
         roiPercent,
-        availableTotal: currentTotal,
-        usedTotal: 0,
-        unrealizedTotal: 0,
+        availableTotal: cashTotal,
+        usedTotal: openMarginTotal,
+        unrealizedTotal: openPricePnlTotal,
       };
     }
 
@@ -668,7 +675,7 @@ export default function OpportunityCard() {
       usedTotal,
       unrealizedTotal,
     };
-  }, [balances, simBalances, simInitialBalances, simulationMode]);
+  }, [balances, simBalances, simInitialBalances, simPositions, simulationMode]);
 
   // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 전체 펀딩 가능 코인 수
   const intervalStats = useMemo(() => {

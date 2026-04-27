@@ -1,4 +1,4 @@
-import { listDates, listExecutedTradeDates, readExecutedTrades, readTrades, type TradeEvent } from './fileLogger';
+import { listTradeHistoryDates, readTradeHistory, type TradeEvent, type TradeHistoryScope } from './fileLogger';
 
 export type TradeAuditBucket =
   | 'entry'
@@ -34,6 +34,30 @@ export interface TradeAuditSummary {
   };
   normalizedCounts: Record<TradeAuditBucket, number>;
   rawTypeCounts: Record<string, number>;
+  modeBreakdown: Record<'SIM' | 'REAL', {
+    totalEvents: number;
+    entries: number;
+    exits: number;
+    completed: number;
+    fundingEvents: number;
+    scheduleProbes: number;
+    guardBlocks: number;
+    pnlUSD: number;
+    fundingUSD: number;
+    feesUSD: number;
+  }>;
+  diagnostics: {
+    scheduleMilestones: Record<string, number>;
+    scheduleReasons: Record<string, number>;
+    guardReasons: Record<string, number>;
+    scheduledCount: number;
+    selectedCandidateCount: number;
+    rejectedCandidateCount: number;
+    executeCount: number;
+    executeSuccessCount: number;
+    executeFailedCount: number;
+    canceledBeforeExecuteCount: number;
+  };
   realized: {
     fundingUSD: number;
     exitPnlUSD: number;
@@ -49,7 +73,7 @@ export interface TradeAuditSummary {
   }>;
 }
 
-export type TradeAuditScope = 'all' | 'sim_executed' | 'real_executed';
+export type TradeAuditScope = TradeHistoryScope;
 
 export function normalizeTradeBucket(type: TradeEvent['type']): TradeAuditBucket {
   switch (type) {
@@ -104,6 +128,26 @@ function createEmptyCounts(): Record<TradeAuditBucket, number> {
   };
 }
 
+function increment(counts: Record<string, number>, key: string | undefined): void {
+  const normalized = key || 'unknown';
+  counts[normalized] = (counts[normalized] ?? 0) + 1;
+}
+
+function createModeBreakdown() {
+  return {
+    totalEvents: 0,
+    entries: 0,
+    exits: 0,
+    completed: 0,
+    fundingEvents: 0,
+    scheduleProbes: 0,
+    guardBlocks: 0,
+    pnlUSD: 0,
+    fundingUSD: 0,
+    feesUSD: 0,
+  };
+}
+
 export function filterTradeEvents(
   events: TradeEvent[],
   options?: {
@@ -131,6 +175,13 @@ export function summarizeTradeEvents(
 ): TradeAuditSummary {
   const normalizedCounts = createEmptyCounts();
   const rawTypeCounts: Record<string, number> = {};
+  const modeBreakdown: TradeAuditSummary['modeBreakdown'] = {
+    SIM: createModeBreakdown(),
+    REAL: createModeBreakdown(),
+  };
+  const scheduleMilestones: Record<string, number> = {};
+  const scheduleReasons: Record<string, number> = {};
+  const guardReasons: Record<string, number> = {};
   const routeMap = new Map<string, TradeAuditRouteSummary>();
 
   let simulationEvents = 0;
@@ -140,6 +191,8 @@ export function summarizeTradeEvents(
 
   for (const event of events) {
     const bucket = normalizeTradeBucket(event.type);
+    const mode = event.simulation ? 'SIM' : 'REAL';
+    const modeStats = modeBreakdown[mode];
     normalizedCounts[bucket] += 1;
     rawTypeCounts[event.type] = (rawTypeCounts[event.type] ?? 0) + 1;
     if (event.simulation) simulationEvents += 1;
@@ -150,6 +203,26 @@ export function summarizeTradeEvents(
     const funding = typeof event.fundingAmount === 'number' && Number.isFinite(event.fundingAmount)
       ? event.fundingAmount
       : 0;
+    const fees = (typeof event.entryFee === 'number' && Number.isFinite(event.entryFee) ? event.entryFee : 0)
+      + (typeof event.exitFee === 'number' && Number.isFinite(event.exitFee) ? event.exitFee : 0);
+
+    modeStats.totalEvents += 1;
+    modeStats.pnlUSD += pnl;
+    modeStats.fundingUSD += funding;
+    modeStats.feesUSD += fees;
+    if (bucket === 'entry') modeStats.entries += 1;
+    if (bucket === 'exit') modeStats.exits += 1;
+    if (bucket === 'completion') modeStats.completed += 1;
+    if (bucket === 'funding') modeStats.fundingEvents += 1;
+    if (bucket === 'schedule_probe') {
+      modeStats.scheduleProbes += 1;
+      increment(scheduleMilestones, event.milestone);
+      increment(scheduleReasons, event.reason);
+    }
+    if (bucket === 'guard_block') {
+      modeStats.guardBlocks += 1;
+      increment(guardReasons, event.reason);
+    }
 
     if (bucket === 'funding') {
       fundingUSD += funding;
@@ -187,6 +260,19 @@ export function summarizeTradeEvents(
     },
     normalizedCounts,
     rawTypeCounts,
+    modeBreakdown,
+    diagnostics: {
+      scheduleMilestones,
+      scheduleReasons,
+      guardReasons,
+      scheduledCount: scheduleMilestones.scheduled ?? 0,
+      selectedCandidateCount: scheduleReasons.selected ?? 0,
+      rejectedCandidateCount: scheduleReasons.rejected ?? 0,
+      executeCount: scheduleMilestones.execute ?? 0,
+      executeSuccessCount: scheduleMilestones.execute_success ?? 0,
+      executeFailedCount: scheduleMilestones.execute_failed ?? 0,
+      canceledBeforeExecuteCount: scheduleMilestones.canceled_before_execute ?? 0,
+    },
     realized: {
       fundingUSD,
       exitPnlUSD,
@@ -218,18 +304,8 @@ export function loadTradeEventsForAudit(options?: {
   scope?: TradeAuditScope;
 }): { scannedDates: string[]; coveredDates: string[]; events: TradeEvent[] } {
   const scope = options?.scope ?? 'all';
-  const allDates = scope === 'sim_executed'
-    ? listExecutedTradeDates('sim')
-    : scope === 'real_executed'
-      ? listExecutedTradeDates('real')
-      : listDates('trades');
-  const readByDate = (date: string) => (
-    scope === 'sim_executed'
-      ? readExecutedTrades('sim', date)
-      : scope === 'real_executed'
-        ? readExecutedTrades('real', date)
-        : readTrades(date)
-  );
+  const allDates = listTradeHistoryDates(scope);
+  const readByDate = (date: string) => readTradeHistory(scope, date);
   const scannedDates = options?.limitDates != null
     ? allDates.slice(0, Math.max(0, options.limitDates))
     : allDates;

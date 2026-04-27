@@ -80,12 +80,22 @@ async function main() {
     .map(([type, count]) => `- \`${type}\`: \`${count}\``);
   const normalized = Object.entries(summary.normalizedCounts)
     .map(([bucket, count]) => `- \`${bucket}\`: \`${count}\``);
+  const scheduleMilestones = Object.entries(summary.diagnostics.scheduleMilestones)
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count]) => `- \`${key}\`: \`${count}\``);
+  const scheduleReasons = Object.entries(summary.diagnostics.scheduleReasons)
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count]) => `- \`${key}\`: \`${count}\``);
+  const guardReasons = Object.entries(summary.diagnostics.guardReasons)
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count]) => `- \`${key}\`: \`${count}\``);
 
   const notes = [
     '- `snipe_entry` / `snipe_exit` are real trade events and must be counted as entry/exit.',
-    '- `schedule_probe` / `guard_block` are diagnostics, not executed trades.',
+    '- `schedule_probe` includes candidates, selected reservations, scheduled lifecycle, execute attempts, execute success/failure, and cancel-before-execute telemetry.',
+    '- `guard_block` records why a planned or attempted entry did not proceed.',
     '- Current SIM PnL UI includes funding, unrealized PnL, and closed PnL together.',
-    '- Trade log dates are UTC file names; event timestamps below are rendered in KST.',
+    '- Trade log dates are KST file names based on each event timestamp; event timestamps below are rendered in KST.',
     '- Trade files are read from the active fileLogger data dir; SIM state/scheduler state are read from `getDataDir()`.',
   ];
 
@@ -109,6 +119,26 @@ async function main() {
     '## Realized Sums',
     `- Funding total: \`${summary.realized.fundingUSD.toFixed(4)}\``,
     `- Exit pnl total: \`${summary.realized.exitPnlUSD.toFixed(4)}\``,
+    '',
+    '## SIM / REAL Breakdown',
+    `- SIM: events \`${summary.modeBreakdown.SIM.totalEvents}\`, entries \`${summary.modeBreakdown.SIM.entries}\`, exits \`${summary.modeBreakdown.SIM.exits}\`, completed \`${summary.modeBreakdown.SIM.completed}\`, schedule_probe \`${summary.modeBreakdown.SIM.scheduleProbes}\`, guard_block \`${summary.modeBreakdown.SIM.guardBlocks}\`, pnl \`${summary.modeBreakdown.SIM.pnlUSD.toFixed(4)}\`, funding \`${summary.modeBreakdown.SIM.fundingUSD.toFixed(4)}\`, fees \`${summary.modeBreakdown.SIM.feesUSD.toFixed(4)}\``,
+    `- REAL: events \`${summary.modeBreakdown.REAL.totalEvents}\`, entries \`${summary.modeBreakdown.REAL.entries}\`, exits \`${summary.modeBreakdown.REAL.exits}\`, completed \`${summary.modeBreakdown.REAL.completed}\`, schedule_probe \`${summary.modeBreakdown.REAL.scheduleProbes}\`, guard_block \`${summary.modeBreakdown.REAL.guardBlocks}\`, pnl \`${summary.modeBreakdown.REAL.pnlUSD.toFixed(4)}\`, funding \`${summary.modeBreakdown.REAL.fundingUSD.toFixed(4)}\`, fees \`${summary.modeBreakdown.REAL.feesUSD.toFixed(4)}\``,
+    '',
+    '## Schedule Diagnostics',
+    `- scheduled: \`${summary.diagnostics.scheduledCount}\``,
+    `- selected candidates: \`${summary.diagnostics.selectedCandidateCount}\``,
+    `- rejected candidates: \`${summary.diagnostics.rejectedCandidateCount}\``,
+    `- execute / success / failed: \`${summary.diagnostics.executeCount}\` / \`${summary.diagnostics.executeSuccessCount}\` / \`${summary.diagnostics.executeFailedCount}\``,
+    `- canceled before execute: \`${summary.diagnostics.canceledBeforeExecuteCount}\``,
+    '',
+    '### Schedule Milestones',
+    ...(scheduleMilestones.length > 0 ? scheduleMilestones : ['- none']),
+    '',
+    '### Schedule Reasons',
+    ...(scheduleReasons.length > 0 ? scheduleReasons : ['- none']),
+    '',
+    '### Guard Reasons',
+    ...(guardReasons.length > 0 ? guardReasons : ['- none']),
     '',
     '## Current Server SIM State',
     `- Positions: \`${currentSimState?.simPositions.length ?? 0}\``,

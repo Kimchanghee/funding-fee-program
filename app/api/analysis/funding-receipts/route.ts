@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   listFundingReceiptDates,
+  listTradeHistoryDates,
   readFundingReceipts,
+  readTradeHistory,
   type ExecutedTradeScope,
   type TradeEvent,
 } from '@/lib/fileLogger';
@@ -35,6 +37,52 @@ function normalizeScope(event: TradeEvent, scope: ExecutedTradeScope): TradeEven
   return { ...event, executionScope: scope };
 }
 
+function unionDates(...dateLists: string[][]): string[] {
+  return Array.from(new Set(dateLists.flat()))
+    .sort()
+    .reverse();
+}
+
+function receiptEventKey(event: TradeEvent): string {
+  return [
+    event.type,
+    event.timestamp,
+    event.pairId ?? '',
+    event.exchange ?? '',
+    event.symbol ?? '',
+    event.side ?? '',
+    event.fundingAmount ?? '',
+    event.fundingRate ?? '',
+  ].join('|');
+}
+
+function dedupeReceiptEvents(events: TradeEvent[]): TradeEvent[] {
+  const seen = new Set<string>();
+  const deduped: TradeEvent[] = [];
+  for (const event of events) {
+    const key = receiptEventKey(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped;
+}
+
+function listReceiptSourceDates(scope: ExecutedTradeScope): string[] {
+  return unionDates(
+    listFundingReceiptDates(scope),
+    listTradeHistoryDates(scope === 'sim' ? 'sim_executed' : 'real_executed'),
+  );
+}
+
+function readReceiptSourceEvents(scope: ExecutedTradeScope, date?: string): TradeEvent[] {
+  const historyScope = scope === 'sim' ? 'sim_executed' : 'real_executed';
+  return dedupeReceiptEvents([
+    ...readFundingReceipts(scope, date),
+    ...readTradeHistory(historyScope, date).filter((event) => event.type === 'funding'),
+  ]).map((event) => normalizeScope(event, scope));
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const scope = parseScope(url.searchParams.get('scope'));
@@ -55,8 +103,8 @@ export async function GET(req: NextRequest) {
 
   if (listOnly) {
     const datesByScope = {
-      sim: listFundingReceiptDates('sim'),
-      real: listFundingReceiptDates('real'),
+      sim: listReceiptSourceDates('sim'),
+      real: listReceiptSourceDates('real'),
     };
     return NextResponse.json({
       success: true,
@@ -68,16 +116,14 @@ export async function GET(req: NextRequest) {
   const events: TradeEvent[] = [];
   if (allDates) {
     for (const scopeKey of scopes) {
-      const dates = listFundingReceiptDates(scopeKey);
+      const dates = listReceiptSourceDates(scopeKey);
       for (const targetDate of dates) {
-        const rows = readFundingReceipts(scopeKey, targetDate).map((event) => normalizeScope(event, scopeKey));
-        events.push(...rows);
+        events.push(...readReceiptSourceEvents(scopeKey, targetDate));
       }
     }
   } else {
     for (const scopeKey of scopes) {
-      const rows = readFundingReceipts(scopeKey, date).map((event) => normalizeScope(event, scopeKey));
-      events.push(...rows);
+      events.push(...readReceiptSourceEvents(scopeKey, date));
     }
   }
 

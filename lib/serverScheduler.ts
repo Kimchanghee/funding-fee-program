@@ -61,7 +61,7 @@ import {
   removeServerPositionMeta,
   upsertServerPositionMeta,
 } from './serverPositionMeta';
-import { sendTelegramMessage } from './telegram';
+import { sendTelegramMessage } from './telegramServer';
 import { buildTradePairsFromEvents, formatTradePairTelegramMessage } from './tradeEvents';
 import {
   getResolvedTimingConfig,
@@ -1183,6 +1183,34 @@ class ServerScheduler {
       `short=${opportunity.shortExchange} long=${opportunity.longExchange} ` +
       `spread=${opportunity.spreadPercent.toFixed(4)}% entryLead=${entryLeadMs}ms`,
     );
+    this.recordTrades([{
+      timestamp: now,
+      type: 'schedule_probe',
+      simulation: false,
+      baseAsset: asset,
+      shortExchange: opportunity.shortExchange,
+      longExchange: opportunity.longExchange,
+      spread: opportunity.spread,
+      spreadPercent: opportunity.spreadPercent,
+      margin: this.config.investmentUSDT,
+      leverage: this.config.leverage,
+      notional: this.config.investmentUSDT * this.config.leverage,
+      shortRate: opportunity.shortRate,
+      longRate: opportunity.longRate,
+      expectedNetProfit: opportunity.netProfit,
+      milestone: 'scheduled',
+      reason: 'scheduled',
+      timeToExecutionMs: delayMs,
+      detail: `status=scheduled opportunityId=${opportunityId} targetTimeMs=${targetTime} entryLeadMs=${entryLeadMs}`,
+      analysis: {
+        opportunityId,
+        scheduleAction: 'created',
+        targetTimeMs: targetTime,
+        targetTimeInMs: delayMs,
+        fundingTimeMs: opportunity.nextFundingTime,
+        entryLeadMs,
+      },
+    }]);
   }
 
   private scheduleEntryTimer(
@@ -1205,6 +1233,31 @@ class ServerScheduler {
     const asset = opportunity.baseAsset;
     this.scheduledEntries.delete(opportunityId);
     this.saveState();
+    const executeStartedAt = Date.now();
+    this.recordTrades([{
+      timestamp: executeStartedAt,
+      type: 'schedule_probe',
+      simulation: false,
+      baseAsset: asset,
+      shortExchange: opportunity.shortExchange,
+      longExchange: opportunity.longExchange,
+      spread: opportunity.spread,
+      spreadPercent: opportunity.spreadPercent,
+      margin: this.config.investmentUSDT,
+      leverage: this.config.leverage,
+      notional: this.config.investmentUSDT * this.config.leverage,
+      shortRate: opportunity.shortRate,
+      longRate: opportunity.longRate,
+      expectedNetProfit: opportunity.netProfit,
+      milestone: 'execute',
+      reason: 'execute',
+      timeToExecutionMs: targetFundingTime - executeStartedAt,
+      detail: `status=execute opportunityId=${opportunityId} targetFundingTimeMs=${targetFundingTime}`,
+      analysis: {
+        opportunityId,
+        targetFundingTimeMs: targetFundingTime,
+      },
+    }]);
 
     // State machine: create and track
     createExecutionState(
@@ -2119,7 +2172,35 @@ class ServerScheduler {
           this.config.feeOverrides,
           this.config.paybackOverrides,
         ));
+      const executedNotional = Math.min(shortResult.value.filledNotional, longResult.value.filledNotional);
       const expectedNetProfit = expectedPerFunding - expectedTotalRoundTripFees;
+      const scheduleProbeTrade: TradeEvent = {
+        timestamp: entryTime,
+        type: 'schedule_probe',
+        simulation: false,
+        baseAsset: asset,
+        shortExchange: opportunity.shortExchange,
+        longExchange: opportunity.longExchange,
+        spread: spreadForDecision,
+        spreadPercent: spreadPercentForDecision,
+        margin: executedNotional / this.config.leverage,
+        leverage: this.config.leverage,
+        notional: executedNotional,
+        pairId,
+        shortRate: shortRateForDecision,
+        longRate: longRateForDecision,
+        expectedNetProfit,
+        milestone: 'execute_success',
+        reason: 'primary_success',
+        timeToExecutionMs: targetFundingTime - entryTime,
+        detail: `status=executed pairId=${pairId} expectedPerFunding:${expectedPerFunding.toFixed(8)} totalRoundTripFees:${expectedTotalRoundTripFees.toFixed(8)}`,
+        analysis: {
+          opportunityId,
+          pairId,
+          executedNotional,
+          targetFundingTimeMs: targetFundingTime,
+        },
+      };
       const entryTrade: TradeEvent = {
         timestamp: entryTime,
         type: 'snipe_entry',
@@ -2129,9 +2210,9 @@ class ServerScheduler {
         longExchange: opportunity.longExchange,
         spread: spreadForDecision,
         spreadPercent: spreadPercentForDecision,
-        margin: Math.min(shortResult.value.filledNotional, longResult.value.filledNotional) / this.config.leverage,
+        margin: executedNotional / this.config.leverage,
         leverage: this.config.leverage,
-        notional: Math.min(shortResult.value.filledNotional, longResult.value.filledNotional),
+        notional: executedNotional,
         pairId,
         entryFee: shortResult.value.estimatedFee + longResult.value.estimatedFee,
         netProfit: expectedNetProfit,
@@ -2144,7 +2225,7 @@ class ServerScheduler {
         detail: `expectedPerFunding:${expectedPerFunding.toFixed(8)} totalRoundTripFees:${expectedTotalRoundTripFees.toFixed(8)}`,
         success: true,
       };
-      this.recordTrades([entryTrade]);
+      this.recordTrades([scheduleProbeTrade, entryTrade]);
 
       this.log(
         'success',
@@ -2739,12 +2820,41 @@ class ServerScheduler {
 
   private recordTrades(events: TradeEvent[]) {
     if (events.length === 0) return;
-    appendTrades(events);
-    const logs = this.mapEventsToSchedulerLogs(events);
+    const enrichedEvents = this.withGuardBlockProbeEvents(events);
+    appendTrades(enrichedEvents);
+    const logs = this.mapEventsToSchedulerLogs(enrichedEvents);
     if (logs.length > 0) {
       appendLogs(logs);
     }
-    this.routeFailureMemory.ingestEvents(events, { simulation: false });
+    this.routeFailureMemory.ingestEvents(enrichedEvents, { simulation: false });
+  }
+
+  private withGuardBlockProbeEvents(events: TradeEvent[]): TradeEvent[] {
+    const probeEvents: TradeEvent[] = [];
+    for (const event of events) {
+      if (event.type !== 'guard_block') continue;
+      const alreadyHasFailureProbe = events.some((candidate) => (
+        candidate.type === 'schedule_probe'
+        && candidate.milestone === 'execute_failed'
+        && candidate.timestamp === event.timestamp
+        && candidate.baseAsset === event.baseAsset
+        && candidate.shortExchange === event.shortExchange
+        && candidate.longExchange === event.longExchange
+      ));
+      if (alreadyHasFailureProbe) continue;
+      probeEvents.push({
+        ...event,
+        type: 'schedule_probe',
+        milestone: 'execute_failed',
+        reason: event.reason ?? 'guard_block',
+        analysis: {
+          ...(event.analysis ?? {}),
+          failureReason: event.reason ?? 'guard_block',
+          sourceType: 'guard_block',
+        },
+      });
+    }
+    return probeEvents.length > 0 ? [...events, ...probeEvents] : events;
   }
 
   private mapEventsToSchedulerLogs(events: TradeEvent[]): FileLogEntry[] {

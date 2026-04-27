@@ -267,7 +267,11 @@ function TelegramSettings() {
   const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'ok' | 'fail'>('idle');
 
   useEffect(() => {
-    setConfig(getTelegramConfig());
+    const saved = getTelegramConfig();
+    setConfig(saved);
+    if (saved.enabled && saved.botToken && saved.chatId) {
+      saveTelegramConfig(saved);
+    }
   }, []);
 
   const handleSave = (patch: Partial<typeof config>) => {

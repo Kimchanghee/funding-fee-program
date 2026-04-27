@@ -19,7 +19,7 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
     p.exchange === exchange && (p.positionType === 'hedge_long' || p.positionType === 'hedge_short')
   );
   const margin = exPositions.reduce((s, p) => s + p.margin, 0);
-  const unrealizedPnl = exPositions.reduce((s, p) => s + p.unrealizedPnl, 0);
+  const openPricePnl = exPositions.reduce((s, p) => s + p.unrealizedPnl + p.entryFee, 0);
   const openEntryFees = exPositions.reduce((s, p) => s + p.entryFee, 0);
 
   // 청산된 포지션의 가격 PnL 및 수수료 (슬리피지 포함)
@@ -34,11 +34,11 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
   const fundingNet = fundingReceived + fundingPaid;
 
   // 총 자산 = 가용 + 마진
-  const totalAsset = bal + margin;
+  const totalAsset = bal + margin + openPricePnl;
   // 잔고 변동 = 현재 총자산 - 초기자산
   const balanceChange = totalAsset - initialBal;
   // 순입출금 (이체) = 잔고변동 - 펀딩 - 청산PnL + 총수수료
-  const netTransfer = balanceChange - fundingNet - closedPnl + totalFees;
+  const netTransfer = balanceChange - fundingNet - closedPnl - openPricePnl + totalFees;
 
   return (
     <div className="exchange-mini-card" style={{
@@ -109,9 +109,9 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
           </div>
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: '#64748b' }}>PnL</span>
-          <span className="mono" style={{ color: unrealizedPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
-            {unrealizedPnl >= 0 ? '+' : ''}${fmtNum(unrealizedPnl, 4)}
+          <span style={{ color: '#64748b' }}>미실현 가격PnL</span>
+          <span className="mono" style={{ color: openPricePnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+            {openPricePnl >= 0 ? '+' : ''}${fmtNum(openPricePnl, 4)}
           </span>
         </div>
 
@@ -224,8 +224,8 @@ function SimModeColumn({
     p.positionType === 'hedge_long' || p.positionType === 'hedge_short'
   );
   const modeMargin = modePositions.reduce((s, p) => s + p.margin, 0);
-  const modePnl = modePositions.reduce((s, p) => s + p.unrealizedPnl, 0);
-  const netProfit = fundingEarned - fees + modePnl + simTotalClosedPnl;
+  const openPricePnl = modePositions.reduce((s, p) => s + p.unrealizedPnl + p.entryFee, 0);
+  const netProfit = fundingEarned - fees + openPricePnl + simTotalClosedPnl;
   const posCount = modePositions.filter(p => p.positionType === 'hedge_short').length;
 
   return (
@@ -283,9 +283,9 @@ function SimModeColumn({
           </div>
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: '#64748b' }}>PnL</span>
-          <span className="mono" style={{ fontWeight: 700, color: modePnl >= 0 ? '#10b981' : '#ef4444' }}>
-            {modePnl >= 0 ? '+' : ''}${fmtNum(modePnl, 4)}
+          <span style={{ color: '#64748b' }}>미실현 가격PnL</span>
+          <span className="mono" style={{ fontWeight: 700, color: openPricePnl >= 0 ? '#10b981' : '#ef4444' }}>
+            {openPricePnl >= 0 ? '+' : ''}${fmtNum(openPricePnl, 4)}
           </span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: `1px solid ${accentColor}20`, paddingTop: 3 }}>

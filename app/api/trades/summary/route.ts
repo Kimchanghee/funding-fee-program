@@ -9,6 +9,13 @@ function parseTimestamp(value: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseScope(value: string | null): TradeAuditScope {
+  if (value === 'sim' || value === 'real' || value === 'sim_executed' || value === 'real_executed') {
+    return value;
+  }
+  return 'all';
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const from = parseTimestamp(url.searchParams.get('from'));
@@ -27,11 +34,7 @@ export async function GET(req: NextRequest) {
       : simulationParam === 'false'
         ? false
         : null;
-  const scope: TradeAuditScope = scopeParam === 'sim_executed'
-    ? 'sim_executed'
-    : scopeParam === 'real_executed'
-      ? 'real_executed'
-      : 'all';
+  const scope = parseScope(scopeParam);
 
   const effectiveFrom = from ?? (days != null ? Date.now() - (days * 24 * 60 * 60 * 1000) : null);
   const { scannedDates, coveredDates, events } = loadTradeEventsForAudit({

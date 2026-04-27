@@ -17,6 +17,7 @@ import FundingHistory from '@/components/dashboard/FundingHistory';
 import TradeHistory from '@/components/dashboard/TradeHistory';
 
 import { useFundingStore } from '@/store/fundingStore';
+import { getTelegramConfig, isTelegramReady, saveTelegramConfig } from '@/lib/telegram';
 
 export default function DashboardPage() {
   const { init, showApiPanel, showStrategyPanel } = useFundingStore();
@@ -24,6 +25,10 @@ export default function DashboardPage() {
   useEffect(() => {
     console.log('[Page] init() 호출');
     init();
+    const telegramConfig = getTelegramConfig();
+    if (isTelegramReady(telegramConfig)) {
+      saveTelegramConfig(telegramConfig);
+    }
 
     // 10초 후에도 데이터 없으면 강제 재시도
     const recovery = setTimeout(() => {

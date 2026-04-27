@@ -179,6 +179,24 @@ function appendEventsToDailyFile(events: TradeEvent[], dir: string, dateStr: str
   fs.appendFileSync(filePath, lines, 'utf-8');
 }
 
+function appendEventsToDailyFiles(events: TradeEvent[], dir: string): void {
+  if (events.length === 0) return;
+  const byDate = new Map<string, TradeEvent[]>();
+  for (const event of events) {
+    const dateStr = getDateStr(
+      typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+        ? event.timestamp
+        : undefined,
+    );
+    const rows = byDate.get(dateStr) ?? [];
+    rows.push(event);
+    byDate.set(dateStr, rows);
+  }
+  for (const [dateStr, rows] of byDate.entries()) {
+    appendEventsToDailyFile(rows, dir, dateStr);
+  }
+}
+
 export function appendLogs(entries: FileLogEntry[]): void {
   if (entries.length === 0) return;
   try {
@@ -198,38 +216,23 @@ export function appendTrades(events: TradeEvent[]): void {
   try {
     const tradesDir = getTradesDir();
     const normalizedEvents = events.map(normalizeTradeEvent);
-    const appendGroupedByEventDate = (rows: TradeEvent[], dir: string) => {
-      const grouped = new Map<string, TradeEvent[]>();
-      for (const event of rows) {
-        const dateStr = getDateStr(event.timestamp);
-        const dateEvents = grouped.get(dateStr);
-        if (dateEvents) {
-          dateEvents.push(event);
-        } else {
-          grouped.set(dateStr, [event]);
-        }
-      }
-      for (const [dateStr, dateEvents] of grouped.entries()) {
-        appendEventsToDailyFile(dateEvents, dir, dateStr);
-      }
-    };
 
-    appendGroupedByEventDate(normalizedEvents, tradesDir);
-    appendGroupedByEventDate(
+    appendEventsToDailyFiles(normalizedEvents, tradesDir);
+    appendEventsToDailyFiles(
       normalizedEvents.filter((event) => event.executionScope === 'sim'),
       getExecutedTradesDir('sim'),
     );
-    appendGroupedByEventDate(
+    appendEventsToDailyFiles(
       normalizedEvents.filter((event) => event.executionScope === 'real'),
       getExecutedTradesDir('real'),
     );
-    appendGroupedByEventDate(
+    appendEventsToDailyFiles(
       normalizedEvents.filter(
         (event) => event.executionScope === 'sim' && FUNDING_RECEIPT_EVENT_TYPES.has(event.type),
       ),
       getFundingReceiptsDir('sim'),
     );
-    appendGroupedByEventDate(
+    appendEventsToDailyFiles(
       normalizedEvents.filter(
         (event) => event.executionScope === 'real' && FUNDING_RECEIPT_EVENT_TYPES.has(event.type),
       ),
@@ -310,6 +313,67 @@ export function readFundingReceipts(scope: ExecutedTradeScope, dateStr?: string)
   } catch {
     return [];
   }
+}
+
+export type TradeHistoryScope = 'all' | 'sim' | 'real' | 'sim_executed' | 'real_executed';
+
+function scopeSimulation(scope: TradeHistoryScope): boolean | null {
+  if (scope === 'sim' || scope === 'sim_executed') return true;
+  if (scope === 'real' || scope === 'real_executed') return false;
+  return null;
+}
+
+function unionDates(...dateLists: string[][]): string[] {
+  return Array.from(new Set(dateLists.flat()))
+    .sort()
+    .reverse();
+}
+
+function tradeEventDedupeKey(event: TradeEvent): string {
+  return JSON.stringify(event);
+}
+
+function dedupeTradeEvents(events: TradeEvent[]): TradeEvent[] {
+  const seen = new Set<string>();
+  const deduped: TradeEvent[] = [];
+  for (const event of events) {
+    const key = tradeEventDedupeKey(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped;
+}
+
+export function listTradeHistoryDates(scope: TradeHistoryScope): string[] {
+  const legacyDates = listDates('trades');
+  if (scope === 'all') {
+    return unionDates(
+      legacyDates,
+      listExecutedTradeDates('sim'),
+      listExecutedTradeDates('real'),
+    );
+  }
+
+  const executedScope: ExecutedTradeScope = scopeSimulation(scope) ? 'sim' : 'real';
+  return unionDates(legacyDates, listExecutedTradeDates(executedScope));
+}
+
+export function readTradeHistory(scope: TradeHistoryScope, dateStr?: string): TradeEvent[] {
+  if (scope === 'all') {
+    return dedupeTradeEvents([
+      ...readTrades(dateStr),
+      ...readExecutedTrades('sim', dateStr),
+      ...readExecutedTrades('real', dateStr),
+    ]).sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  const simulation = scopeSimulation(scope);
+  const executedScope: ExecutedTradeScope = simulation ? 'sim' : 'real';
+  return dedupeTradeEvents([
+    ...readTrades(dateStr).filter((event) => event.simulation === simulation),
+    ...readExecutedTrades(executedScope, dateStr),
+  ]).sort((a, b) => b.timestamp - a.timestamp);
 }
 
 export function clearData(
