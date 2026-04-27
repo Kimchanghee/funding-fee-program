@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const PUBLIC_PAGE_PATHS = ['/login'];
-const PUBLIC_API_PATHS = new Set([
-  '/api/auth',
+const INTERNAL_API_PATHS = new Set([
   '/api/market-data-health',
   '/api/scheduler',
   '/api/sim-scheduler',
@@ -17,9 +16,13 @@ function isPublicAsset(pathname: string): boolean {
 
 function isPublicApi(request: NextRequest): boolean {
   const { pathname } = request.nextUrl;
-  if (pathname === '/api/auth') return true;
+  return pathname === '/api/auth';
+}
+
+function isInternalApiPath(request: NextRequest): boolean {
+  const { pathname } = request.nextUrl;
   if (request.method !== 'GET') return false;
-  return PUBLIC_API_PATHS.has(pathname) || PUBLIC_EXCHANGE_READ_RE.test(pathname);
+  return INTERNAL_API_PATHS.has(pathname) || PUBLIC_EXCHANGE_READ_RE.test(pathname);
 }
 
 function hex(buffer: ArrayBuffer): string {
@@ -71,6 +74,16 @@ function unauthorizedApi() {
   return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
 }
 
+function isInternalApiRequest(request: NextRequest): boolean {
+  if (!isInternalApiPath(request)) return false;
+
+  const expected = process.env.INTERNAL_API_TOKEN?.trim() || process.env.SITE_PASSWORD?.trim() || '';
+  if (!expected) return false;
+
+  const token = request.headers.get('x-internal-api-token')?.trim() ?? '';
+  return token.length > 0 && safeEqual(token, expected);
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -79,7 +92,7 @@ export async function middleware(request: NextRequest) {
   }
 
   if (pathname.startsWith('/api/')) {
-    if (isPublicApi(request) || await isAuthenticated(request)) {
+    if (isPublicApi(request) || isInternalApiRequest(request) || await isAuthenticated(request)) {
       return NextResponse.next();
     }
     return unauthorizedApi();

@@ -18,6 +18,7 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: '3000',
         SITE_PASSWORD: process.env.SITE_PASSWORD || '9788',
+        INTERNAL_API_TOKEN: process.env.INTERNAL_API_TOKEN || process.env.SITE_PASSWORD || '9788',
       },
     },
     {
@@ -39,6 +40,7 @@ module.exports = {
         WATCHDOG_TARGET_PROCESS: 'funding-fee-program',
         WATCHDOG_INTERVAL_MS: '20000',
         WATCHDOG_HTTP_TIMEOUT_MS: '10000',
+        WATCHDOG_INTERNAL_API_TOKEN: process.env.WATCHDOG_INTERNAL_API_TOKEN || process.env.INTERNAL_API_TOKEN || process.env.SITE_PASSWORD || '9788',
         WATCHDOG_APP_FAIL_THRESHOLD: '3',
         WATCHDOG_DATA_FAIL_THRESHOLD: '6',
         WATCHDOG_STARTUP_GRACE_MS: '90000',

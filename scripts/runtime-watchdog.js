@@ -5,6 +5,10 @@ const execAsync = promisify(exec);
 
 const BASE_URL = process.env.WATCHDOG_BASE_URL || 'http://127.0.0.1:3000';
 const TARGET_PROCESS = process.env.WATCHDOG_TARGET_PROCESS || 'funding-fee-program';
+const INTERNAL_API_TOKEN = process.env.WATCHDOG_INTERNAL_API_TOKEN
+  || process.env.INTERNAL_API_TOKEN
+  || process.env.SITE_PASSWORD
+  || '';
 const CHECK_INTERVAL_MS = Number(process.env.WATCHDOG_INTERVAL_MS || 20000);
 const HTTP_TIMEOUT_MS = Number(process.env.WATCHDOG_HTTP_TIMEOUT_MS || 10000);
 const APP_FAIL_THRESHOLD = Number(process.env.WATCHDOG_APP_FAIL_THRESHOLD || 3);
@@ -87,6 +91,9 @@ async function fetchJson(pathname) {
     const response = await fetch(`${BASE_URL}${pathname}`, {
       signal: controller.signal,
       cache: 'no-store',
+      headers: INTERNAL_API_TOKEN
+        ? { 'x-internal-api-token': INTERNAL_API_TOKEN }
+        : undefined,
     });
 
     if (!response.ok) {
