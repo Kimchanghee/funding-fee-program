@@ -1,4 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  AUTH_MAX_AGE_SECONDS,
+  LEGACY_AUTH_COOKIE_NAME,
+  SIGNED_AUTH_COOKIE_NAME,
+  createSignedAuthCookieValue,
+} from '@/lib/apiAuth';
 
 export async function POST(request: NextRequest) {
   const { password } = await request.json();
@@ -11,14 +17,22 @@ export async function POST(request: NextRequest) {
   }
 
   if (password === sitePassword) {
+    const signedAuth = createSignedAuthCookieValue();
+    if (!signedAuth) {
+      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+    }
+
     const response = NextResponse.json({ success: true });
-    response.cookies.set('site-auth', 'authenticated', {
+    const cookieOptions = {
       httpOnly: true,
       secure: isSecure,
       sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 30, // 30 days
+      maxAge: AUTH_MAX_AGE_SECONDS,
       path: '/',
-    });
+    } as const;
+
+    response.cookies.set(LEGACY_AUTH_COOKIE_NAME, 'authenticated', cookieOptions);
+    response.cookies.set(SIGNED_AUTH_COOKIE_NAME, signedAuth, cookieOptions);
     return response;
   }
 
