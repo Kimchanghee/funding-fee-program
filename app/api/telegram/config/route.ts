@@ -3,8 +3,11 @@ import {
   getMaskedServerTelegramConfig,
   saveServerTelegramConfig,
 } from '@/lib/serverTelegramConfig';
+import { isAuthenticatedRequest, unauthorizedJson } from '@/lib/apiAuth';
 
-export async function GET() {
+export async function GET(req: Request) {
+  if (!isAuthenticatedRequest(req)) return unauthorizedJson();
+
   return NextResponse.json({
     success: true,
     config: getMaskedServerTelegramConfig(),
@@ -12,6 +15,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  if (!isAuthenticatedRequest(req)) return unauthorizedJson();
+
   const body = await req.json().catch(() => null) as {
     botToken?: string;
     chatId?: string;

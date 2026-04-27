@@ -5,8 +5,11 @@ import {
   sendTelegramMessageWithConfig,
   type TelegramConfig,
 } from '@/lib/telegram';
+import { isAuthenticatedRequest, unauthorizedJson } from '@/lib/apiAuth';
 
 export async function POST(req: Request) {
+  if (!isAuthenticatedRequest(req)) return unauthorizedJson();
+
   const body = await req.json().catch(() => null) as {
     message?: string;
     config?: Partial<TelegramConfig>;

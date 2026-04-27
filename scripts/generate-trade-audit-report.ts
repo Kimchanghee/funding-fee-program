@@ -118,7 +118,7 @@ async function main() {
     '',
     '## Realized Sums',
     `- Funding total: \`${summary.realized.fundingUSD.toFixed(4)}\``,
-    `- Exit pnl total: \`${summary.realized.exitPnlUSD.toFixed(4)}\``,
+    `- Realized pnl total: \`${summary.realized.exitPnlUSD.toFixed(4)}\``,
     '',
     '## SIM / REAL Breakdown',
     `- SIM: events \`${summary.modeBreakdown.SIM.totalEvents}\`, entries \`${summary.modeBreakdown.SIM.entries}\`, exits \`${summary.modeBreakdown.SIM.exits}\`, completed \`${summary.modeBreakdown.SIM.completed}\`, schedule_probe \`${summary.modeBreakdown.SIM.scheduleProbes}\`, guard_block \`${summary.modeBreakdown.SIM.guardBlocks}\`, pnl \`${summary.modeBreakdown.SIM.pnlUSD.toFixed(4)}\`, funding \`${summary.modeBreakdown.SIM.fundingUSD.toFixed(4)}\`, fees \`${summary.modeBreakdown.SIM.feesUSD.toFixed(4)}\``,

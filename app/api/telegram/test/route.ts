@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
+import { isAuthenticatedRequest, unauthorizedJson } from '@/lib/apiAuth';
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 
 export async function POST(req: Request) {
+  if (!isAuthenticatedRequest(req)) return unauthorizedJson();
+
   const { botToken, chatId } = await req.json();
 
   if (!botToken || !chatId) {

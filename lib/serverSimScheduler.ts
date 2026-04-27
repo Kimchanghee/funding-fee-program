@@ -2851,30 +2851,6 @@ class ServerSimScheduler {
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, MAX_FUNDING_HISTORY);
     }
-    const totalFunding = preparedLegs.reduce((sum, leg) => sum + leg.actualFunding, 0);
-    const totalPnl = preparedLegs.reduce(
-      (sum, leg) => sum + leg.pricePnl + leg.actualFunding - (leg.position.entryFee ?? 0) - leg.exitFee,
-      0,
-    );
-    const firstPosition = preparedLegs[0]?.position;
-    if (firstPosition && preparedLegs.some((leg) => leg.position.isSnipe)) {
-      const shortExchange = preparedLegs.find((leg) => leg.position.side === 'short')?.position.exchange
-        ?? firstPosition.exchange;
-      const longExchange = preparedLegs.find((leg) => leg.position.side === 'long')?.position.exchange
-        ?? firstPosition.exchange;
-      tradeEvents.push({
-        timestamp: closeFinishedAt,
-        type: 'snipe_complete',
-        simulation: true,
-        baseAsset: firstPosition.baseAsset,
-        shortExchange,
-        longExchange,
-        pairId,
-        fundingCollected: totalFunding,
-        pnl: totalPnl,
-        detail: `pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
-      });
-    }
 
     this.setState(state);
     if (fundedPairIds.size > 0) {

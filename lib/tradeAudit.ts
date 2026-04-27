@@ -148,6 +148,56 @@ function createModeBreakdown() {
   };
 }
 
+function finiteNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function pairFinancialKey(event: TradeEvent): string | null {
+  if (!event.pairId) return null;
+  return `${event.simulation ? 'SIM' : 'REAL'}:${event.pairId}`;
+}
+
+function completionQualityScore(event: TradeEvent): number {
+  let score = 0;
+  if (typeof event.pnl === 'number' && Number.isFinite(event.pnl)) score += 1;
+  if (typeof event.pricePnl === 'number' && Number.isFinite(event.pricePnl)) score += 2;
+  if (typeof event.entryFee === 'number' && Number.isFinite(event.entryFee)) score += 4;
+  if (typeof event.exitFee === 'number' && Number.isFinite(event.exitFee)) score += 4;
+  if (typeof event.fundingCollected === 'number' && Number.isFinite(event.fundingCollected)) score += 1;
+  if (event.detail?.includes('fundingVerified:')) score += 1;
+  return score;
+}
+
+function selectCompletionEvents(events: TradeEvent[]): Map<string, TradeEvent> {
+  const completions = new Map<string, TradeEvent>();
+  for (const event of events) {
+    if (event.type !== 'snipe_complete') continue;
+    const key = pairFinancialKey(event);
+    if (!key) continue;
+
+    const current = completions.get(key);
+    if (
+      !current
+      || completionQualityScore(event) > completionQualityScore(current)
+      || (
+        completionQualityScore(event) === completionQualityScore(current)
+        && event.timestamp > current.timestamp
+      )
+    ) {
+      completions.set(key, event);
+    }
+  }
+  return completions;
+}
+
+function hasFundingAmount(event: TradeEvent): boolean {
+  return typeof event.fundingAmount === 'number' && Number.isFinite(event.fundingAmount);
+}
+
+function eventFees(event: TradeEvent): number {
+  return finiteNumber(event.entryFee) + finiteNumber(event.exitFee);
+}
+
 export function filterTradeEvents(
   events: TradeEvent[],
   options?: {
@@ -183,11 +233,26 @@ export function summarizeTradeEvents(
   const scheduleReasons: Record<string, number> = {};
   const guardReasons: Record<string, number> = {};
   const routeMap = new Map<string, TradeAuditRouteSummary>();
+  const completionByPair = selectCompletionEvents(events);
+  const pairsWithFundingEvents = new Set<string>();
+  const pairsWithExitFunding = new Set<string>();
+
+  for (const event of events) {
+    const key = pairFinancialKey(event);
+    if (!key) continue;
+    const bucket = normalizeTradeBucket(event.type);
+    if (bucket === 'funding' && hasFundingAmount(event)) {
+      pairsWithFundingEvents.add(key);
+    }
+    if (bucket === 'exit' && hasFundingAmount(event)) {
+      pairsWithExitFunding.add(key);
+    }
+  }
 
   let simulationEvents = 0;
   let realEvents = 0;
   let fundingUSD = 0;
-  let exitPnlUSD = 0;
+  let realizedPnlUSD = 0;
 
   for (const event of events) {
     const bucket = normalizeTradeBucket(event.type);
@@ -199,17 +264,43 @@ export function summarizeTradeEvents(
     else realEvents += 1;
 
     const route = buildRouteLabel(event);
-    const pnl = typeof event.pnl === 'number' && Number.isFinite(event.pnl) ? event.pnl : 0;
-    const funding = typeof event.fundingAmount === 'number' && Number.isFinite(event.fundingAmount)
-      ? event.fundingAmount
-      : 0;
-    const fees = (typeof event.entryFee === 'number' && Number.isFinite(event.entryFee) ? event.entryFee : 0)
-      + (typeof event.exitFee === 'number' && Number.isFinite(event.exitFee) ? event.exitFee : 0);
+    const pairKey = pairFinancialKey(event);
+    const rawPnl = finiteNumber(event.pnl);
+    const rawFunding = finiteNumber(event.fundingAmount);
+    const rawFundingCollected = finiteNumber(event.fundingCollected);
+    const rawFees = eventFees(event);
+    let financialPnl = 0;
+    let financialFunding = 0;
+    let financialFees = 0;
+
+    if (bucket === 'completion') {
+      const shouldCountCompletion = pairKey == null || completionByPair.get(pairKey) === event;
+      if (shouldCountCompletion) {
+        financialPnl = rawPnl;
+        financialFees = rawFees;
+        if (
+          !pairKey
+          || (!pairsWithFundingEvents.has(pairKey) && !pairsWithExitFunding.has(pairKey))
+        ) {
+          financialFunding = rawFundingCollected;
+        }
+      }
+    } else if (bucket === 'exit') {
+      if (!pairKey || !completionByPair.has(pairKey)) {
+        financialPnl = rawPnl;
+        financialFees = rawFees;
+      }
+      if (!pairKey || !pairsWithFundingEvents.has(pairKey)) {
+        financialFunding = rawFunding;
+      }
+    } else if (bucket === 'funding') {
+      financialFunding = rawFunding;
+    }
 
     modeStats.totalEvents += 1;
-    modeStats.pnlUSD += pnl;
-    modeStats.fundingUSD += funding;
-    modeStats.feesUSD += fees;
+    modeStats.pnlUSD += financialPnl;
+    modeStats.fundingUSD += financialFunding;
+    modeStats.feesUSD += financialFees;
     if (bucket === 'entry') modeStats.entries += 1;
     if (bucket === 'exit') modeStats.exits += 1;
     if (bucket === 'completion') modeStats.completed += 1;
@@ -224,12 +315,8 @@ export function summarizeTradeEvents(
       increment(guardReasons, event.reason);
     }
 
-    if (bucket === 'funding') {
-      fundingUSD += funding;
-    }
-    if (bucket === 'exit') {
-      exitPnlUSD += pnl;
-    }
+    fundingUSD += financialFunding;
+    realizedPnlUSD += financialPnl;
 
     const summary = routeMap.get(route) ?? {
       route,
@@ -240,8 +327,8 @@ export function summarizeTradeEvents(
     };
     summary.count += 1;
     summary.types[event.type] = (summary.types[event.type] ?? 0) + 1;
-    summary.pnlUSD += pnl;
-    summary.fundingUSD += funding;
+    summary.pnlUSD += financialPnl;
+    summary.fundingUSD += financialFunding;
     routeMap.set(route, summary);
   }
 
@@ -275,7 +362,7 @@ export function summarizeTradeEvents(
     },
     realized: {
       fundingUSD,
-      exitPnlUSD,
+      exitPnlUSD: realizedPnlUSD,
     },
     routeSummaries: Array.from(routeMap.values())
       .sort((a, b) => b.count - a.count || b.fundingUSD - a.fundingUSD || b.pnlUSD - a.pnlUSD)
