@@ -149,6 +149,71 @@ function PairRow({ pair }: { pair: TradePairSummary }) {
   );
 }
 
+function FundingEventRow({ event }: { event: TradeEventLike }) {
+  const amount = typeof event.fundingAmount === 'number' && Number.isFinite(event.fundingAmount)
+    ? event.fundingAmount
+    : 0;
+  const exchange = event.exchange?.toUpperCase() ?? '-';
+  const side = typeof event.side === 'string' ? event.side.toUpperCase() : '-';
+  const baseAsset = event.baseAsset ?? event.symbol?.split('/')[0] ?? '-';
+  const formattedAmount = amount >= 0 ? `+$${fmtNum(amount, 2)}` : `-$${fmtNum(Math.abs(amount), 2)}`;
+
+  return (
+    <div
+      className="trade-pair-row-main"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '50px 80px 1fr 90px 90px 90px 80px 170px 30px',
+        alignItems: 'center',
+        padding: '10px 12px',
+        fontSize: 12,
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+      }}
+    >
+      <span style={{ color: '#22d3ee', fontSize: 10, fontWeight: 700 }}>펀딩</span>
+      <span style={{ fontWeight: 700, color: '#e2e8f0' }}>
+        {baseAsset}
+        <span
+          style={{
+            marginLeft: 6,
+            fontSize: 8,
+            fontWeight: 700,
+            padding: '1px 4px',
+            borderRadius: 3,
+            background: event.simulation ? 'rgba(139,92,246,0.2)' : 'rgba(239,68,68,0.2)',
+            color: event.simulation ? '#a78bfa' : '#ef4444',
+          }}
+        >
+          {getExecutionModeLabel(event.simulation)}
+        </span>
+      </span>
+      <span style={{ color: '#94a3b8', fontSize: 11 }}>
+        {exchange} / {side}
+      </span>
+      <span className="mono" style={{ color: '#64748b', textAlign: 'right' }}>
+        -
+      </span>
+      <span className="mono" style={{ color: amount >= 0 ? '#10b981' : '#ef4444', textAlign: 'right' }}>
+        {formattedAmount}
+      </span>
+      <span className="mono" style={{ color: amount >= 0 ? '#10b981' : '#ef4444', textAlign: 'right', fontWeight: 700 }}>
+        {formattedAmount}
+      </span>
+      <span className="mono" style={{ color: '#64748b', textAlign: 'right', fontWeight: 700 }}>
+        -
+      </span>
+      <span style={{ color: '#64748b', fontSize: 10, textAlign: 'right' }}>
+        {formatTimestampYmdHmsMs(event.timestamp)}
+      </span>
+      <span />
+    </div>
+  );
+}
+
+type HistoryRow =
+  | { kind: 'pair'; key: string; timestamp: number; pair: TradePairSummary }
+  | { kind: 'funding'; key: string; timestamp: number; event: TradeEventLike };
+
 export default function TradeHistory() {
   const [events, setEvents] = useState<TradeEventLike[]>([]);
   const [loading, setLoading] = useState(false);
@@ -156,6 +221,7 @@ export default function TradeHistory() {
   const [page, setPage] = useState(1);
   const simulationMode = useFundingStore((state) => state.simulationMode);
   const tradesClearedAt = useFundingStore((state) => state.tradesClearedAt);
+  const fundingHistory = useFundingStore((state) => state.fundingHistory);
 
   const fetchTrades = useCallback(async () => {
     setLoading(true);
@@ -188,8 +254,61 @@ export default function TradeHistory() {
     void fetchTrades();
   }, [fetchTrades, tradesClearedAt, simulationMode]);
 
-  const pairs = useMemo(() => buildTradePairsFromEvents(events.filter((event) => EXECUTED_TRADE_EVENT_TYPES.has(event.type))), [events]);
-  const reasonEvents = useMemo(() => events.filter((event) => REASON_TRADE_EVENT_TYPES.has(event.type)), [events]);
+  const storeFundingEvents = useMemo<TradeEventLike[]>(() => (
+    simulationMode
+      ? fundingHistory.map((payment) => ({
+        timestamp: payment.timestamp,
+        type: 'funding',
+        simulation: true,
+        baseAsset: payment.symbol?.split('/')[0],
+        exchange: payment.exchange,
+        side: payment.side,
+        symbol: payment.symbol,
+        fundingAmount: payment.amount,
+        fundingRate: payment.rate,
+      }))
+      : []
+  ), [fundingHistory, simulationMode]);
+  const mergedEvents = useMemo(() => {
+    const byKey = new Map<string, TradeEventLike>();
+    for (const event of [...events, ...storeFundingEvents]) {
+      const key = [
+        event.type,
+        event.timestamp,
+        event.pairId ?? '',
+        event.exchange ?? '',
+        event.symbol ?? '',
+        event.side ?? '',
+        event.fundingAmount ?? '',
+      ].join('|');
+      byKey.set(key, event);
+    }
+    return Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
+  }, [events, storeFundingEvents]);
+  const executedEvents = useMemo(
+    () => mergedEvents.filter((event) => EXECUTED_TRADE_EVENT_TYPES.has(event.type)),
+    [mergedEvents],
+  );
+  const pairs = useMemo(() => buildTradePairsFromEvents(executedEvents), [executedEvents]);
+  const fundingOnlyEvents = useMemo(
+    () => executedEvents.filter((event) => event.type === 'funding' && !event.pairId),
+    [executedEvents],
+  );
+  const historyRows = useMemo<HistoryRow[]>(() => ([
+    ...pairs.map((pair): HistoryRow => ({
+      kind: 'pair',
+      key: `pair:${pair.pairId}`,
+      timestamp: pair.entryTime,
+      pair,
+    })),
+    ...fundingOnlyEvents.map((event, index): HistoryRow => ({
+      kind: 'funding',
+      key: `funding:${event.timestamp}:${event.exchange ?? 'na'}:${event.symbol ?? 'na'}:${index}`,
+      timestamp: event.timestamp,
+      event,
+    })),
+  ].sort((a, b) => b.timestamp - a.timestamp)), [fundingOnlyEvents, pairs]);
+  const reasonEvents = useMemo(() => mergedEvents.filter((event) => REASON_TRADE_EVENT_TYPES.has(event.type)), [mergedEvents]);
   const latestReasonEvents = useMemo(() => reasonEvents.slice(0, 40), [reasonEvents]);
   const reasonSummary = useMemo(() => {
     const byReason = new Map<string, number>();
@@ -205,17 +324,17 @@ export default function TradeHistory() {
   const closedPairs = pairs.filter((pair) => pair.status === 'closed');
   const totalPnl = closedPairs.reduce((sum, pair) => sum + pair.totalPnl, 0);
   const totalFunding = closedPairs.reduce((sum, pair) => sum + pair.totalFunding, 0);
-  const totalPages = Math.max(1, Math.ceil(pairs.length / PAGE_SIZE));
-  const pagedPairs = pairs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const fromIndex = pairs.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-  const toIndex = pairs.length === 0 ? 0 : Math.min(page * PAGE_SIZE, pairs.length);
+  const totalPages = Math.max(1, Math.ceil(historyRows.length / PAGE_SIZE));
+  const pagedRows = historyRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const fromIndex = historyRows.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const toIndex = historyRows.length === 0 ? 0 : Math.min(page * PAGE_SIZE, historyRows.length);
   const panelTitle = simulationMode ? '[SIM] 거래 내역' : '[REAL] 거래 내역';
 
   useEffect(() => {
     setPage(1);
-  }, [pairs.length, tradesClearedAt]);
+  }, [historyRows.length, tradesClearedAt]);
 
-  if (pairs.length === 0 && reasonEvents.length === 0 && !loading) return null;
+  if (historyRows.length === 0 && reasonEvents.length === 0 && !loading) return null;
 
   return (
     <div className="glass-card trade-history-panel" style={{ padding: 0, overflow: 'hidden' }}>
@@ -234,8 +353,11 @@ export default function TradeHistory() {
         <History size={16} color="#f59e0b" />
         <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>{panelTitle}</span>
         <span style={{ fontSize: 11, color: '#64748b' }}>{closedPairs.length}건 완료</span>
+        {fundingOnlyEvents.length > 0 && (
+          <span style={{ fontSize: 11, color: '#64748b' }}>{fundingOnlyEvents.length} funding</span>
+        )}
         <span style={{ fontSize: 11, color: '#64748b' }}>{reasonEvents.length} reason</span>
-        <span style={{ fontSize: 10, color: '#64748b' }}>{fromIndex}-{toIndex} / {pairs.length}</span>
+        <span style={{ fontSize: 10, color: '#64748b' }}>{fromIndex}-{toIndex} / {historyRows.length}</span>
         {closedPairs.length > 0 && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 4 }}>
             <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: totalPnl >= 0 ? '#10b981' : '#ef4444' }}>
@@ -342,11 +464,13 @@ export default function TradeHistory() {
               <span />
             </div>
 
-            {pagedPairs.map((pair) => (
-              <PairRow key={pair.pairId} pair={pair} />
+            {pagedRows.map((row) => (
+              row.kind === 'pair'
+                ? <PairRow key={row.key} pair={row.pair} />
+                : <FundingEventRow key={row.key} event={row.event} />
             ))}
 
-            {pairs.length === 0 && (
+            {historyRows.length === 0 && (
               <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 12 }}>
                 거래 내역이 없습니다
               </div>

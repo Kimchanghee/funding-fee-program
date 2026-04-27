@@ -29,6 +29,10 @@ interface FundingReceiptResponse {
   events?: FundingReceiptEvent[];
 }
 
+function formatSignedUsd(value: number): string {
+  return value >= 0 ? `+$${value.toFixed(4)}` : `-$${Math.abs(value).toFixed(4)}`;
+}
+
 const thStyle: React.CSSProperties = {
   padding: '8px 10px',
   fontSize: 10,
@@ -76,7 +80,7 @@ function ReceiptRow({ event }: { event: FundingReceiptEvent }) {
       </td>
       <td data-label="수령금액" style={{ padding: '8px 10px', textAlign: 'right' }}>
         <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: amount >= 0 ? '#10b981' : '#ef4444' }}>
-          {amount >= 0 ? '+' : ''}${Math.abs(amount).toFixed(4)}
+          {formatSignedUsd(amount)}
         </span>
       </td>
     </tr>
@@ -84,7 +88,7 @@ function ReceiptRow({ event }: { event: FundingReceiptEvent }) {
 }
 
 export default function FundingHistory() {
-  const { simulationMode, strategyConfig, tradesClearedAt } = useFundingStore();
+  const { simulationMode, strategyConfig, tradesClearedAt, fundingHistory, simTotalFundingEarned } = useFundingStore();
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [events, setEvents] = useState<FundingReceiptEvent[]>([]);
@@ -96,8 +100,28 @@ export default function FundingHistory() {
 
   const scope = simulationMode ? 'sim' : 'real';
   const notional = strategyConfig.investmentUSDT * strategyConfig.leverage;
+  const storeSimEvents = useMemo<FundingReceiptEvent[]>(() => (
+    fundingHistory.map((payment) => ({
+      timestamp: payment.timestamp,
+      exchange: payment.exchange,
+      symbol: payment.symbol,
+      side: payment.side,
+      fundingRate: payment.rate,
+      fundingAmount: payment.amount,
+      executionScope: 'sim',
+    }))
+  ), [fundingHistory]);
+  const useStoreSimHistory = simulationMode && storeSimEvents.length > 0;
+  const storeTotalPages = Math.max(1, Math.ceil(storeSimEvents.length / PAGE_SIZE));
+  const resolvedStorePage = Math.min(Math.max(page, 1), storeTotalPages);
+  const storePageStart = (resolvedStorePage - 1) * PAGE_SIZE;
+  const storePagedEvents = storeSimEvents.slice(storePageStart, storePageStart + PAGE_SIZE);
 
   const fetchPage = useCallback(async (targetPage: number) => {
+    if (useStoreSimHistory) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const query = new URLSearchParams({
@@ -139,11 +163,11 @@ export default function FundingHistory() {
     } finally {
       setLoading(false);
     }
-  }, [scope, tradesClearedAt]);
+  }, [scope, tradesClearedAt, useStoreSimHistory]);
 
   useEffect(() => {
     setPage(1);
-  }, [scope]);
+  }, [scope, storeSimEvents.length]);
 
   useEffect(() => {
     void fetchPage(page);
@@ -151,11 +175,24 @@ export default function FundingHistory() {
 
   const panelTitle = simulationMode ? '[SIM] 펀딩피 수령 내역' : '[REAL] 펀딩피 수령 내역';
   const emptyMessage = loading ? '조회 중...' : '수령 내역이 없습니다';
+  const displayEvents = useStoreSimHistory ? storePagedEvents : events;
+  const displayTotal = useStoreSimHistory ? storeSimEvents.length : total;
+  const displayTotalPages = useStoreSimHistory ? storeTotalPages : totalPages;
+  const displayFromIndex = useStoreSimHistory
+    ? (storeSimEvents.length === 0 ? 0 : storePageStart + 1)
+    : fromIndex;
+  const displayToIndex = useStoreSimHistory
+    ? (storeSimEvents.length === 0 ? 0 : Math.min(storePageStart + PAGE_SIZE, storeSimEvents.length))
+    : toIndex;
+  const displayTotalFundingAmount = simulationMode && Math.abs(simTotalFundingEarned) > 0.0000001
+    ? simTotalFundingEarned
+    : totalFundingAmount;
+  const displayPage = useStoreSimHistory ? resolvedStorePage : page;
 
   const avgYieldPercent = useMemo(() => {
-    if (notional <= 0 || total === 0) return 0;
-    return (totalFundingAmount / notional) * 100;
-  }, [notional, total, totalFundingAmount]);
+    if (notional <= 0 || (displayTotal === 0 && Math.abs(displayTotalFundingAmount) <= 0.0000001)) return 0;
+    return (displayTotalFundingAmount / notional) * 100;
+  }, [displayTotal, displayTotalFundingAmount, notional]);
 
   return (
     <div className="glass-card funding-history-panel" style={{ overflow: 'hidden' }}>
@@ -166,8 +203,8 @@ export default function FundingHistory() {
           <div style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{panelTitle}</div>
         </div>
         <div style={{ flex: 1 }} />
-        <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: totalFundingAmount >= 0 ? '#10b981' : '#ef4444' }}>
-          {totalFundingAmount >= 0 ? '+' : ''}${totalFundingAmount.toFixed(4)}
+        <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: displayTotalFundingAmount >= 0 ? '#10b981' : '#ef4444' }}>
+          {formatSignedUsd(displayTotalFundingAmount)}
         </div>
         <button
           className="btn btn-ghost"
@@ -182,7 +219,7 @@ export default function FundingHistory() {
 
       <div className="funding-history-summary" style={{ padding: '8px 12px', borderBottom: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
-          페이지: {fromIndex}-{toIndex} / {total}
+          페이지: {displayFromIndex}-{displayToIndex} / {displayTotal}
         </span>
         <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
           기준 노셔널: ${notional.toLocaleString()}
@@ -205,14 +242,14 @@ export default function FundingHistory() {
             </tr>
           </thead>
           <tbody>
-            {events.length === 0 ? (
+            {displayEvents.length === 0 ? (
               <tr>
                 <td colSpan={6} style={{ padding: '24px 14px', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 11 }}>
                   {emptyMessage}
                 </td>
               </tr>
             ) : (
-              events.map((event, index) => (
+              displayEvents.map((event, index) => (
                 <ReceiptRow
                   key={`${event.timestamp}-${event.exchange ?? 'na'}-${event.symbol ?? 'na'}-${index}`}
                   event={event}
@@ -223,15 +260,15 @@ export default function FundingHistory() {
         </table>
       </div>
 
-      {totalPages > 1 && (
+      {displayTotalPages > 1 && (
         <div className="funding-history-pagination" style={{ padding: '10px 12px', borderTop: '1px solid rgba(30,45,66,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
           <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-            {page} / {totalPages}
+            {displayPage} / {displayTotalPages}
           </span>
-          <button className="btn btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} disabled={page <= 1 || loading} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>
+          <button className="btn btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} disabled={displayPage <= 1 || loading} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>
             이전
           </button>
-          <button className="btn btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} disabled={page >= totalPages || loading} onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}>
+          <button className="btn btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} disabled={displayPage >= displayTotalPages || loading} onClick={() => setPage((prev) => Math.min(displayTotalPages, prev + 1))}>
             다음
           </button>
         </div>

@@ -37,6 +37,7 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
   const totalAsset = bal + margin + openPricePnl;
   // 잔고 변동 = 현재 총자산 - 초기자산
   const balanceChange = totalAsset - initialBal;
+  const netPnl = fundingNet + closedPnl + openPricePnl - totalFees;
   // 순입출금 (이체) = 잔고변동 - 펀딩 - 청산PnL + 총수수료
   const netTransfer = balanceChange - fundingNet - closedPnl - openPricePnl + totalFees;
 
@@ -118,11 +119,19 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
         <div style={{ height: 1, background: `${color}22`, margin: '2px 0' }} />
 
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color, fontWeight: 700 }}>잔고 변동</span>
-          <span className="mono" style={{ color: balanceChange >= 0 ? '#10b981' : '#ef4444', fontWeight: 800 }}>
-            {balanceChange >= 0 ? '+' : ''}${fmtNum(balanceChange, 2)}
+          <span style={{ color, fontWeight: 700 }}>PnL</span>
+          <span className="mono" style={{ color: netPnl >= 0 ? '#10b981' : '#ef4444', fontWeight: 800 }}>
+            {netPnl >= 0 ? '+' : ''}${fmtNum(netPnl, 4)}
           </span>
         </div>
+        {Math.abs(balanceChange - netPnl) > 0.01 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: '#64748b' }}>잔고 변동</span>
+            <span className="mono" style={{ color: balanceChange >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
+              {balanceChange >= 0 ? '+' : ''}${fmtNum(balanceChange, 2)}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

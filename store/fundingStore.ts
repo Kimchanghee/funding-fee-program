@@ -346,6 +346,30 @@ function fundingStateHasSimSessionData(state: FundingState): boolean {
     || simBalancesChangedFromInitial(state.simBalances, state.simInitialBalances);
 }
 
+function savedSimStateHasSessionData(
+  savedSim: {
+    simPositions?: SimPosition[];
+    simTotalFundingEarned?: number;
+    simTotalTopUps?: number;
+    simTotalFees?: number;
+    simTotalClosedPnl?: number;
+    simBalances?: Record<string, number>;
+    simInitialBalances?: Record<string, number>;
+  },
+  savedHistory: FundingPayment[] | null,
+): boolean {
+  return (savedSim.simPositions?.length ?? 0) > 0
+    || (savedHistory?.length ?? 0) > 0
+    || (savedSim.simTotalFundingEarned ?? 0) !== 0
+    || (savedSim.simTotalTopUps ?? 0) !== 0
+    || (savedSim.simTotalFees ?? 0) !== 0
+    || (savedSim.simTotalClosedPnl ?? 0) !== 0
+    || simBalancesChangedFromInitial(
+      (savedSim.simBalances ?? {}) as Partial<Record<ExchangeId, number>>,
+      (savedSim.simInitialBalances ?? {}) as Partial<Record<ExchangeId, number>>,
+    );
+}
+
 function applyServerSimStateSnapshot(
   setState: (partial: Partial<FundingState>) => void,
   snapshot?: SimStateSnapshot | null,
@@ -1324,7 +1348,17 @@ function chooseFallbackAccountingExchange(
 }
 
 function buildSimAccountingFromFundingHistory(history: FundingPayment[], state: FundingState): SimAccountingSnapshot | null {
-  if (history.length === 0) return null;
+  const stateFundingTotal = state.simTotalFundingEarned;
+  const stateFeesTotal = state.simTotalFees;
+  const stateClosedPnlTotal = state.simTotalClosedPnl;
+  if (
+    history.length === 0
+    && Math.abs(stateFundingTotal) <= 0.0000001
+    && Math.abs(stateFeesTotal) <= 0.0000001
+    && Math.abs(stateClosedPnlTotal) <= 0.0000001
+  ) {
+    return null;
+  }
 
   const fundingByExchange = {} as Record<ExchangeId, number>;
   const closedPnlPerExchange = {} as Record<ExchangeId, number>;
@@ -1346,17 +1380,31 @@ function buildSimAccountingFromFundingHistory(history: FundingPayment[], state: 
     lastTimestamp = lastTimestamp == null ? payment.timestamp : Math.max(lastTimestamp, payment.timestamp);
   }
 
-  if (Math.abs(simTotalFundingEarned) <= 0.0000001) return null;
+  const targetFundingTotal = Math.abs(stateFundingTotal) > 0.0000001
+    ? stateFundingTotal
+    : simTotalFundingEarned;
+  if (
+    Math.abs(targetFundingTotal) <= 0.0000001
+    && Math.abs(stateFeesTotal) <= 0.0000001
+    && Math.abs(stateClosedPnlTotal) <= 0.0000001
+  ) {
+    return null;
+  }
 
   const fallbackExchange = chooseFallbackAccountingExchange(state, fundingByExchange);
-  const missingClosedPnl = state.simTotalClosedPnl - sumExchangeMap(closedPnlPerExchange);
+  const missingFunding = targetFundingTotal - sumExchangeMap(fundingByExchange);
+  if (Math.abs(missingFunding) > 0.0000001) {
+    fundingByExchange[fallbackExchange] = (fundingByExchange[fallbackExchange] ?? 0) + missingFunding;
+  }
+  const missingClosedPnl = stateClosedPnlTotal - sumExchangeMap(closedPnlPerExchange);
   if (Math.abs(missingClosedPnl) > 0.0000001) {
     closedPnlPerExchange[fallbackExchange] = (closedPnlPerExchange[fallbackExchange] ?? 0) + missingClosedPnl;
   }
   const closedFeesPerExchange = { ...feesPerExchange };
-  const missingFees = state.simTotalFees - sumExchangeMap(feesPerExchange);
+  const missingFees = stateFeesTotal - sumExchangeMap(feesPerExchange);
   if (Math.abs(missingFees) > 0.0000001) {
     feesPerExchange[fallbackExchange] = (feesPerExchange[fallbackExchange] ?? 0) + missingFees;
+    closedFeesPerExchange[fallbackExchange] = (closedFeesPerExchange[fallbackExchange] ?? 0) + missingFees;
   }
 
   return {
@@ -1367,9 +1415,9 @@ function buildSimAccountingFromFundingHistory(history: FundingPayment[], state: 
     completedCount: 0,
     firstTimestamp,
     lastTimestamp,
-    simTotalFundingEarned,
-    simTotalFees: state.simTotalFees,
-    simTotalClosedPnl: state.simTotalClosedPnl,
+    simTotalFundingEarned: targetFundingTotal,
+    simTotalFees: stateFeesTotal,
+    simTotalClosedPnl: stateClosedPnlTotal,
     fundingByExchange,
     closedPnlPerExchange,
     feesPerExchange,
@@ -1663,16 +1711,20 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       if (savedSim) {
         // 잔고가 거래소당 기준(투자금×2)보다 낮으면 보정 (숏/롱 양쪽 참여 가능하도록)
         const minBal = get().strategyConfig.investmentUSDT * 2;
-        const restoredBal = savedSim.simBalances as Record<ExchangeId, number>;
+        const restoredBal = { ...(savedSim.simBalances as Record<ExchangeId, number>) };
         const restoredInitial = (savedSim.simInitialBalances as Record<ExchangeId, number> | undefined)
-          ?? savedSim.simBalances as Record<ExchangeId, number>;
+          ? { ...(savedSim.simInitialBalances as Record<ExchangeId, number>) }
+          : { ...(savedSim.simBalances as Record<ExchangeId, number>) };
         const enabled = get().enabledExchanges;
-        for (const ex of enabled) {
-          if ((restoredBal[ex] ?? 0) < minBal) {
-            restoredBal[ex] = minBal;
-          }
-          if ((restoredInitial[ex] ?? 0) < minBal) {
-            restoredInitial[ex] = minBal;
+        const savedHasSessionData = savedSimStateHasSessionData(savedSim, savedHistory);
+        if (!savedHasSessionData) {
+          for (const ex of enabled) {
+            if ((restoredBal[ex] ?? 0) < minBal) {
+              restoredBal[ex] = minBal;
+            }
+            if ((restoredInitial[ex] ?? 0) < minBal) {
+              restoredInitial[ex] = minBal;
+            }
           }
         }
         set({

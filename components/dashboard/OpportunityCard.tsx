@@ -210,7 +210,8 @@ export default function OpportunityCard() {
     snipeTargets, snipeAllocations, cancelSnipe,
     closeSimPosition, ratesStatus, ratesError, isLoadingRates,
     lastRatesUpdate, strategyRunning, realSpreads,
-    simBalances, simInitialBalances, balances, fundingRates, enabledExchanges,
+    simBalances, simInitialBalances, simTotalFundingEarned, simTotalFees, simTotalClosedPnl, simTotalTopUps,
+    balances, fundingRates, enabledExchanges,
   } = useFundingStore();
 
   const snipeActive = simulationMode
@@ -644,10 +645,17 @@ export default function OpportunityCard() {
       const currentTotal = cashTotal + openMarginTotal + openPricePnlTotal;
       const initialTotal = OPERABLE_EXCHANGES
         .reduce((sum, exchange) => sum + (simInitialBalances[exchange] ?? 0), 0);
-      const pnl = currentTotal - initialTotal;
+      const accountingPnl = simTotalFundingEarned + simTotalClosedPnl - simTotalFees + openPricePnlTotal;
+      const hasAccounting = Math.abs(simTotalFundingEarned) > 0.0000001
+        || Math.abs(simTotalFees) > 0.0000001
+        || Math.abs(simTotalClosedPnl) > 0.0000001;
+      const resolvedCurrentTotal = hasAccounting
+        ? initialTotal + simTotalTopUps + accountingPnl
+        : currentTotal;
+      const pnl = hasAccounting ? accountingPnl : currentTotal - initialTotal - simTotalTopUps;
       const roiPercent = initialTotal > 0 ? (pnl / initialTotal) * 100 : 0;
       return {
-        currentTotal,
+        currentTotal: resolvedCurrentTotal,
         initialTotal,
         pnl,
         roiPercent,
@@ -675,7 +683,17 @@ export default function OpportunityCard() {
       usedTotal,
       unrealizedTotal,
     };
-  }, [balances, simBalances, simInitialBalances, simPositions, simulationMode]);
+  }, [
+    balances,
+    simBalances,
+    simInitialBalances,
+    simPositions,
+    simTotalClosedPnl,
+    simTotalFees,
+    simTotalFundingEarned,
+    simTotalTopUps,
+    simulationMode,
+  ]);
 
   // 펀딩 주기별 현황 (1h, 4h, 8h) — 예약+활성 vs 전체 펀딩 가능 코인 수
   const intervalStats = useMemo(() => {
