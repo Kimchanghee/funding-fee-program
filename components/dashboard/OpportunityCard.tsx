@@ -161,6 +161,9 @@ function NextTradeCountdown({ targetMs, asset, shortEx, longEx }: {
         : 'linear-gradient(135deg, rgba(16,185,129,0.10), rgba(59,130,246,0.06))',
       border: `1px solid ${urgent ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.2)'}`,
       minWidth: 200,
+      width: 220,
+      minHeight: 142,
+      flexShrink: 0,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <Clock size={13} color={urgent ? '#ef4444' : '#10b981'} />
@@ -235,13 +238,9 @@ export default function OpportunityCard() {
     return () => clearTimeout(t);
   }, [toastMsg]);
 
-  // Keep button state pinned to server runtime, even if a tab is stale.
+  // Initial runtime check only; the store-level polling loop keeps this fresh.
   useEffect(() => {
     void refreshSchedulerRuntime();
-    const timer = setInterval(() => {
-      void refreshSchedulerRuntime();
-    }, 5000);
-    return () => clearInterval(timer);
   }, [refreshSchedulerRuntime]);
 
   const resolveRuntimeModeActive = useCallback(async () => {
@@ -466,6 +465,9 @@ export default function OpportunityCard() {
   );
 
   const perExchangeInvestment = strategyConfig.investmentUSDT;
+  const hedgeMarginUSDT = perExchangeInvestment * 2;
+  const matchedNotionalUSDT = perExchangeInvestment * strategyConfig.leverage;
+  const grossHedgeNotionalUSDT = matchedNotionalUSDT * 2;
   const best = opportunities[0];
   const configuredRealExchangeCount = enabledExchanges.filter((exchange) => {
     return hasRequiredApiCredentials(exchange, apiConfigs[exchange]);
@@ -634,7 +636,8 @@ export default function OpportunityCard() {
 
   const totalBalanceSummary = useMemo(() => {
     if (simulationMode) {
-      const cashTotal = OPERABLE_EXCHANGES
+      const activeExchanges = enabledExchanges.length > 0 ? enabledExchanges : OPERABLE_EXCHANGES;
+      const cashTotal = activeExchanges
         .reduce((sum, exchange) => sum + (simBalances[exchange] ?? 0), 0);
       const hedgePositions = simPositions
         .filter((position) => position.positionType === 'hedge_long' || position.positionType === 'hedge_short');
@@ -643,19 +646,16 @@ export default function OpportunityCard() {
       const openPricePnlTotal = hedgePositions
         .reduce((sum, position) => sum + position.unrealizedPnl + position.entryFee, 0);
       const currentTotal = cashTotal + openMarginTotal + openPricePnlTotal;
-      const initialTotal = OPERABLE_EXCHANGES
+      const initialTotal = activeExchanges
         .reduce((sum, exchange) => sum + (simInitialBalances[exchange] ?? 0), 0);
       const accountingPnl = simTotalFundingEarned + simTotalClosedPnl - simTotalFees + openPricePnlTotal;
       const hasAccounting = Math.abs(simTotalFundingEarned) > 0.0000001
         || Math.abs(simTotalFees) > 0.0000001
         || Math.abs(simTotalClosedPnl) > 0.0000001;
-      const resolvedCurrentTotal = hasAccounting
-        ? initialTotal + simTotalTopUps + accountingPnl
-        : currentTotal;
       const pnl = hasAccounting ? accountingPnl : currentTotal - initialTotal - simTotalTopUps;
       const roiPercent = initialTotal > 0 ? (pnl / initialTotal) * 100 : 0;
       return {
-        currentTotal: resolvedCurrentTotal,
+        currentTotal,
         initialTotal,
         pnl,
         roiPercent,
@@ -685,6 +685,7 @@ export default function OpportunityCard() {
     };
   }, [
     balances,
+    enabledExchanges,
     simBalances,
     simInitialBalances,
     simPositions,
@@ -757,6 +758,9 @@ export default function OpportunityCard() {
               gap: 4, padding: '16px 24px', borderRadius: 14,
               background: 'linear-gradient(135deg, rgba(100,116,139,0.08), rgba(100,116,139,0.03))',
               border: '1px solid rgba(100,116,139,0.2)', minWidth: 200,
+              width: 220,
+              minHeight: 142,
+              flexShrink: 0,
             }}>
               <Clock size={13} color="var(--color-text-muted)" />
               <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>예약된 거래 없음</span>
@@ -764,15 +768,15 @@ export default function OpportunityCard() {
           )}
 
           {/* Quick Stats */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8, minWidth: 180 }}>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8, minWidth: 360, minHeight: 142 }}>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', minHeight: 32 }}>
               <StatPill label="예약/기회" value={`${scheduledCount + activeCount} / ${opportunities.length}`} color="#3b82f6" active={scheduledCount + activeCount > 0} />
               <StatPill label="활성" value={`${activeCount}개`} color="#f59e0b" active={activeCount > 0} />
               <StatPill label="예약" value={`${scheduledCount}개`} color="#10b981" active={scheduledCount > 0} />
               <StatPill label="후보" value={`${candidateCount}개`} color="#64748b" active={candidateCount > 0} />
             </div>
             {/* Config summary */}
-            <div style={{ display: 'flex', gap: 10, fontSize: 11, color: 'var(--color-text-muted)', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 10, fontSize: 11, color: 'var(--color-text-muted)', flexWrap: 'wrap', alignItems: 'center', minHeight: 26 }}>
               <span style={{
                 color: '#3b82f6',
                 fontWeight: 700,
@@ -783,8 +787,10 @@ export default function OpportunityCard() {
               }}>
                 헷징
               </span>
-              <span>포지션당 <strong style={{ color: 'var(--color-text)' }}>${perExchangeInvestment.toLocaleString()}</strong></span>
-              <span>거래소당 <strong style={{ color: '#f59e0b' }}>${(perExchangeInvestment * 2).toLocaleString()}</strong> <span style={{ fontSize: 9, color: 'var(--color-text-muted)' }}>(롱+숏)</span></span>
+              <span>레그당 <strong style={{ color: 'var(--color-text)' }}>${perExchangeInvestment.toLocaleString()}</strong></span>
+              <span>헤지 1건 <strong style={{ color: '#f59e0b' }}>${hedgeMarginUSDT.toLocaleString()}</strong></span>
+              <span>매칭 노셔널 <strong style={{ color: 'var(--color-text)' }}>${matchedNotionalUSDT.toLocaleString()}</strong></span>
+              <span>양방향 노셔널 <strong style={{ color: 'var(--color-text)' }}>${grossHedgeNotionalUSDT.toLocaleString()}</strong></span>
               <span>레버리지 <strong style={{ color: 'var(--color-text)' }}>{strategyConfig.leverage}x</strong></span>
               <span style={{ color: strategyConfig.compoundInvesting ? '#a78bfa' : '#10b981', fontWeight: 700 }}>
                 {strategyConfig.compoundInvesting ? '복리' : '단리'}
@@ -806,8 +812,9 @@ export default function OpportunityCard() {
               background: 'linear-gradient(135deg, rgba(56,189,248,0.08), rgba(16,185,129,0.06))',
               border: '1px solid rgba(56,189,248,0.25)',
               flexWrap: 'wrap',
+              minHeight: 66,
             }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 160 }}>
                 <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 700, letterSpacing: '0.03em' }}>
                   TOTAL BALANCE
                 </span>
@@ -816,9 +823,9 @@ export default function OpportunityCard() {
                 </span>
               </div>
               {simulationMode ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'right' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'right', minWidth: 180 }}>
                   <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-                    Initial ${fmtNum(totalBalanceSummary.initialTotal, 2)}
+                    PnL Basis ${fmtNum(totalBalanceSummary.initialTotal, 2)}
                   </span>
                   <span className="mono" style={{
                     fontSize: 13,
@@ -831,7 +838,7 @@ export default function OpportunityCard() {
                   </span>
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'right', fontSize: 11, color: 'var(--color-text-muted)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'right', fontSize: 11, color: 'var(--color-text-muted)', minWidth: 220 }}>
                   <span>Avail ${fmtNum(totalBalanceSummary.availableTotal, 2)} / Used ${fmtNum(totalBalanceSummary.usedTotal, 2)}</span>
                   <span className="mono" style={{ color: totalBalanceSummary.unrealizedTotal >= 0 ? '#10b981' : '#ef4444', fontWeight: 700 }}>
                     Unrealized {totalBalanceSummary.unrealizedTotal >= 0 ? '+' : ''}${fmtNum(totalBalanceSummary.unrealizedTotal, 2)}
@@ -842,7 +849,7 @@ export default function OpportunityCard() {
           </div>
 
           {/* Action Button */}
-          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, minWidth: 180 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, width: 240, minWidth: 240, flexShrink: 0 }}>
             {isRunning ? (
               <button
                 className="btn btn-danger"
@@ -855,6 +862,7 @@ export default function OpportunityCard() {
                   boxShadow: '0 0 12px rgba(245,158,11,0.3)',
                   animation: 'pulse-glow 2s ease-in-out infinite',
                   display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
+                  width: '100%', minHeight: 48,
                 }}
                 disabled={isProcessing}
                 onClick={handleToggle}
@@ -884,6 +892,7 @@ export default function OpportunityCard() {
                   border: `1px solid ${snipeActive ? 'rgba(16,185,129,0.5)' : 'rgba(16,185,129,0.5)'}`,
                   color: snipeActive ? '#10b981' : '#fff',
                   display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
+                  width: '100%', minHeight: 48,
                 }}
                 disabled={false}
                 onClick={handleSnipe}
@@ -910,21 +919,21 @@ export default function OpportunityCard() {
         </div>
 
         {/* Status banner */}
-        {statusMsg && (
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            padding: '8px 16px', marginBottom: 12, borderRadius: 8,
-            background: ratesStatus === 'error' && !lastRatesUpdate ? 'rgba(239,68,68,0.08)' : 'rgba(59,130,246,0.08)',
-            border: `1px solid ${ratesStatus === 'error' && !lastRatesUpdate ? 'rgba(239,68,68,0.2)' : 'rgba(59,130,246,0.2)'}`,
-          }}>
-            {(!lastRatesUpdate && ratesStatus !== 'error') && (
-              <div style={{ width: 14, height: 14, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite', flexShrink: 0 }} />
-            )}
-            <span style={{ fontSize: 12, color: ratesStatus === 'error' && !lastRatesUpdate ? '#ef4444' : 'var(--color-text-muted)' }}>
-              {statusMsg}
-            </span>
-          </div>
-        )}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          padding: '8px 16px', marginBottom: 12, borderRadius: 8,
+          minHeight: 38,
+          visibility: statusMsg ? 'visible' : 'hidden',
+          background: ratesStatus === 'error' && !lastRatesUpdate ? 'rgba(239,68,68,0.08)' : 'rgba(59,130,246,0.08)',
+          border: `1px solid ${ratesStatus === 'error' && !lastRatesUpdate ? 'rgba(239,68,68,0.2)' : 'rgba(59,130,246,0.2)'}`,
+        }}>
+          {(!lastRatesUpdate && ratesStatus !== 'error') && (
+            <div style={{ width: 14, height: 14, border: '2px solid var(--color-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+          )}
+          <span style={{ fontSize: 12, color: ratesStatus === 'error' && !lastRatesUpdate ? '#ef4444' : 'var(--color-text-muted)' }}>
+            {statusMsg ?? 'status'}
+          </span>
+        </div>
 
         {/* ═══ Funding Interval Dashboard ═══ */}
         {snipeActive && (
@@ -1653,6 +1662,8 @@ function StatPill({ label, value, color, active }: { label: string; value: strin
     <div style={{
       display: 'flex', alignItems: 'center', gap: 6,
       padding: '4px 10px', borderRadius: 8,
+      minWidth: 104,
+      minHeight: 30,
       background: active ? `${color}15` : 'var(--bg-accent)',
       border: `1px solid ${active ? `${color}30` : 'var(--color-border)'}`,
     }}>

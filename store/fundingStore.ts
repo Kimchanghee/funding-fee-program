@@ -63,6 +63,22 @@ import {
 // ─────────────────────────────────────────────
 const TAKER_FEE_FALLBACK = 0.00048; // 0.048% referral-max worst-case fallback (bitget taker)
 let _lastScheduleDiagAt = 0; // 진단 로그 스팸 방지
+const RUNTIME_INACTIVE_CONFIRM_MS = 10_000;
+const runtimeInactiveSince: Partial<Record<'real' | 'sim', number>> = {};
+
+function resolveRuntimeActiveWithGrace(
+  mode: 'real' | 'sim',
+  previousActive: boolean,
+  runtimeActive: boolean,
+  now: number,
+) {
+  if (runtimeActive || !previousActive) {
+    runtimeInactiveSince[mode] = undefined;
+    return runtimeActive;
+  }
+  runtimeInactiveSince[mode] ??= now;
+  return now - runtimeInactiveSince[mode]! >= RUNTIME_INACTIVE_CONFIRM_MS ? false : true;
+}
 
 /** 서버 스케줄러 정지 — 재시도 2회, 실패 시 경고 로그 */
 async function stopServerScheduler(addLog?: (level: LogLevel, msg: string, exchange?: ExchangeId, detail?: string) => void): Promise<boolean> {
@@ -300,6 +316,7 @@ function buildEmptySimState(): SimStateSnapshot {
     simClosedPnlPerExchange: {},
     simClosedFeesPerExchange: {},
     fundingHistory: [],
+    tradesClearedAt: 0,
     updatedAt: Date.now(),
   };
 }
@@ -333,6 +350,7 @@ function snapshotHasRealData(state: SimStateSnapshot): boolean {
     || state.simTotalTopUps !== 0
     || state.simTotalFees !== 0
     || state.simTotalClosedPnl !== 0
+    || state.tradesClearedAt > 0
     || simBalancesChangedFromInitial(state.simBalances, state.simInitialBalances);
 }
 
@@ -343,6 +361,7 @@ function fundingStateHasSimSessionData(state: FundingState): boolean {
     || state.simTotalTopUps !== 0
     || state.simTotalFees !== 0
     || state.simTotalClosedPnl !== 0
+    || state.tradesClearedAt > 0
     || simBalancesChangedFromInitial(state.simBalances, state.simInitialBalances);
 }
 
@@ -385,6 +404,11 @@ function applyServerSimStateSnapshot(
     }
   }
 
+  const nextTradesClearedAt = Math.max(
+    options?.getState?.().tradesClearedAt ?? 0,
+    snapshot.tradesClearedAt ?? 0,
+  );
+
   setState({
     simBalances: snapshot.simBalances,
     simInitialBalances: snapshot.simInitialBalances,
@@ -396,7 +420,11 @@ function applyServerSimStateSnapshot(
     simClosedPnlPerExchange: snapshot.simClosedPnlPerExchange as Partial<Record<ExchangeId, number>>,
     simClosedFeesPerExchange: snapshot.simClosedFeesPerExchange as Partial<Record<ExchangeId, number>>,
     fundingHistory: snapshot.fundingHistory,
+    tradesClearedAt: nextTradesClearedAt,
   });
+  if (nextTradesClearedAt > 0) {
+    saveSimHistoryResetAt(nextTradesClearedAt);
+  }
 }
 
 async function fetchServerSimStateSnapshot() {
@@ -902,6 +930,7 @@ let ratesRefreshStartedAt = 0;
 const RATE_FETCH_TIMEOUT_MS = 20_000;
 const RATE_RETRY_DELAY_MS = 1_500;
 const RATE_RETRY_TIMEOUT_MS = 15_000;
+const RATE_SNAPSHOT_HYDRATE_TIMEOUT_MS = 2_500;
 const EXCHANGE_STATUS_STALE_OK_MS = 90_000;
 const RATE_REFRESH_STUCK_MS = 70_000;
 
@@ -916,7 +945,7 @@ let ratesAutoRecoveryAttempts = 0;
 let ratesLastAutoRecoveryAt = 0;
 let ratesAutoRecoveryEscalated = false;
 
-async function fetchJsonWithDeadline<T>(url: string, timeoutMs: number): Promise<T> {
+async function fetchJsonWithDeadline<T>(url: string, timeoutMs: number, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
   let hardTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -929,7 +958,7 @@ async function fetchJsonWithDeadline<T>(url: string, timeoutMs: number): Promise
     });
 
     const response = await Promise.race([
-      fetch(url, { signal: controller.signal }),
+      fetch(url, { ...init, signal: controller.signal }),
       hardTimeout,
     ]) as Response;
 
@@ -1214,6 +1243,13 @@ interface SimAccountingSnapshot {
   fundingHistory: FundingPayment[];
 }
 
+interface CachedOpportunitySnapshot {
+  lastCapturedAt?: number;
+  exchanges?: ExchangeId[];
+  rates?: FundingRate[];
+  opportunities?: ArbitrageOpportunity[];
+}
+
 function makeFundingHistoryKey(payment: FundingPayment): string {
   return [
     payment.exchange,
@@ -1267,6 +1303,66 @@ async function loadFundingHistoryFromTradeLog(simulation: boolean): Promise<Fund
   const tradeRes = await fetch(`/api/trades/list?all=true&scope=${tradeScope}&type=funding`);
   const tradeJson = await tradeRes.json() as { success?: boolean; events?: StoredTradeEventFundingShape[] };
   return eventsToFundingHistory(tradeJson.success ? (tradeJson.events ?? []) : []);
+}
+
+async function hydrateRatesFromLatestSnapshot(
+  setState: (partial: Partial<FundingState> | ((state: FundingState) => Partial<FundingState>)) => void,
+  getState: () => FundingState,
+): Promise<boolean> {
+  const json = await fetchJsonWithDeadline<{
+    success?: boolean;
+    snapshots?: CachedOpportunitySnapshot[];
+  }>(
+    '/api/analysis/opportunities-hourly?source=api_funding_rates&limit=1',
+    RATE_SNAPSHOT_HYDRATE_TIMEOUT_MS,
+    { cache: 'no-store' },
+  );
+  const snapshot = json.success ? json.snapshots?.[0] : null;
+  const capturedAt = snapshot?.lastCapturedAt;
+  const snapshotRates = snapshot?.rates ?? [];
+  if (!capturedAt || snapshotRates.length === 0) return false;
+
+  const current = getState();
+  const enabled = current.enabledExchanges;
+  const enabledSet = new Set(enabled);
+  const rates = snapshotRates.filter((rate) => enabledSet.has(rate.exchange));
+  if (rates.length === 0) return false;
+
+  const opportunities = findOpportunities(
+    rates,
+    (current.simSnipeActive || current.realSnipeActive) ? 200 : 20,
+    current.strategyConfig.investmentUSDT,
+    current.strategyConfig.leverage,
+    current.strategyConfig.feeOverrides,
+    current.strategyConfig.paybackOverrides,
+    current.strategyConfig.minVolume24hUSD,
+  );
+  const exchangesWithRates = new Set(rates.map((rate) => rate.exchange));
+
+  setState((state) => {
+    if (state.lastRatesUpdate && state.lastRatesUpdate >= capturedAt) return {};
+
+    const exchangeFetchStatus = { ...state.exchangeFetchStatus };
+    const exchangeFetchErrors = { ...state.exchangeFetchErrors };
+    for (const exchange of enabled) {
+      if (!exchangesWithRates.has(exchange)) continue;
+      exchangeFetchStatus[exchange] = 'ok';
+      exchangeFetchErrors[exchange] = undefined;
+    }
+
+    return {
+      fundingRates: rates,
+      opportunities,
+      lastRatesUpdate: capturedAt,
+      ratesStatus: 'success',
+      ratesError: null,
+      isLoadingRates: false,
+      exchangeFetchStatus,
+      exchangeFetchErrors,
+    };
+  });
+
+  return true;
 }
 
 async function fetchSimAccountingFromTradeLog(from?: number): Promise<SimAccountingSnapshot | null> {
@@ -1453,6 +1549,7 @@ function syncReconciledSimStateToServer(state: FundingState) {
     simClosedPnlPerExchange: state.simClosedPnlPerExchange,
     simClosedFeesPerExchange: state.simClosedFeesPerExchange,
     fundingHistory: state.fundingHistory,
+    tradesClearedAt: state.tradesClearedAt,
     updatedAt: Date.now(),
   };
   void fetch('/api/sim-state', {
@@ -1788,11 +1885,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const enabled = get().enabledExchanges;
       get().addLog('info', '펀딩피 프로그램 초기화 완료', undefined,
         `활성 거래소: ${enabled.map(e => e.toUpperCase()).join(', ')} (${enabled.length}개)`);
-      set({ ratesStatus: 'loading' });
-      get().refreshRates().catch((err) => {
-        console.error('[init] refreshRates failed:', err);
-        set({ ratesStatus: 'error', ratesError: (err as Error).message, isLoadingRates: false });
-      });
+      set({ ratesStatus: get().lastRatesUpdate ? get().ratesStatus : 'loading' });
+      void hydrateRatesFromLatestSnapshot(set, get)
+        .catch(() => false)
+        .finally(() => {
+          void get().refreshRates({ silent: true }).catch((err) => {
+            console.error('[init] refreshRates failed:', err);
+            set({ ratesStatus: 'error', ratesError: (err as Error).message, isLoadingRates: false });
+          });
+        });
       get().startPolling();
       void get().refreshSchedulerRuntime();
     } catch (err) {
@@ -1961,8 +2062,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       void fetchServerSimSchedulerStatus()
         .then((status) => {
           applyServerSimStateSnapshot(set, status.state, { getState: get });
+          const state = get();
+          const simActive = resolveRuntimeActiveWithGrace('sim', state.simSnipeActive, !!status.active, Date.now());
           set({
-            simSnipeActive: !!status.active,
+            simSnipeActive: simActive,
             snipeTargets: status.snipeTargets ?? {},
             snipeAllocations: status.snipeAllocations ?? {},
           });
@@ -2353,30 +2456,36 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     try {
       const snapshot = await fetchSchedulerRuntimeActives();
       const state = get();
-      const statusChanged = state.realSnipeActive !== snapshot.realActive || state.simSnipeActive !== snapshot.simActive;
+      const now = Date.now();
+      const realActive = resolveRuntimeActiveWithGrace('real', state.realSnipeActive, snapshot.realActive, now);
+      const simActive = resolveRuntimeActiveWithGrace('sim', state.simSnipeActive, snapshot.simActive, now);
+      const appliedSnapshot: SchedulerRuntimeActiveSnapshot = {
+        ...snapshot,
+        realActive,
+        simActive,
+      };
+      const statusChanged = state.realSnipeActive !== realActive || state.simSnipeActive !== simActive;
       set({
-        schedulerRuntime: snapshot,
-        realSnipeActive: snapshot.realActive,
-        simSnipeActive: snapshot.simActive,
+        schedulerRuntime: appliedSnapshot,
+        realSnipeActive: realActive,
+        simSnipeActive: simActive,
       });
       if (statusChanged) {
         get().addLog(
           'warning',
-          `[상태동기화] 런타임 기준으로 정정 real=${snapshot.realActive ? 'ON' : 'OFF'} sim=${snapshot.simActive ? 'ON' : 'OFF'}`,
+          `[상태동기화] 런타임 기준으로 정정 real=${realActive ? 'ON' : 'OFF'} sim=${simActive ? 'ON' : 'OFF'}`,
         );
       }
     } catch {
-      // 통신 실패 시에도 ON 잔상으로 남지 않도록 OFF 스냅샷으로 정정.
+      // Runtime status is advisory. A transient fetch failure must not flip an
+      // already-running scheduler to OFF in the UI.
+      const state = get();
       const fallback: SchedulerRuntimeActiveSnapshot = {
-        realActive: false,
-        simActive: false,
+        realActive: state.schedulerRuntime?.realActive ?? state.realSnipeActive,
+        simActive: state.schedulerRuntime?.simActive ?? state.simSnipeActive,
         fetchedAt: Date.now(),
       };
-      set({
-        schedulerRuntime: fallback,
-        realSnipeActive: false,
-        simSnipeActive: false,
-      });
+      set({ schedulerRuntime: fallback });
     }
   },
 
@@ -2613,8 +2722,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         void fetchServerSimSchedulerStatus()
           .then((status) => {
             applyServerSimStateSnapshot(set, status.state, { getState: get });
+            const state = get();
+            const simActive = resolveRuntimeActiveWithGrace('sim', state.simSnipeActive, !!status.active, Date.now());
             set({
-              simSnipeActive: !!status.active,
+              simSnipeActive: simActive,
               snipeTargets: {
                 ...Object.fromEntries(
                   Object.entries(get().snipeTargets).filter(([key]) => !key.startsWith('sim:')),
@@ -3434,6 +3545,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       body: JSON.stringify({
         enabledExchanges: enabled,
         investmentUSDT: get().strategyConfig.investmentUSDT,
+        tradesClearedAt: clearedAt,
       }),
     }).then(r => r.json()).then((res: { success?: boolean; data?: SimStateSnapshot }) => {
       if (res.success && res.data) {
@@ -4048,8 +4160,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       void fetchServerSimSchedulerStatus()
         .then((status) => {
           applyServerSimStateSnapshot(set, status.state, { getState: get });
+          const state = get();
+          const simActive = resolveRuntimeActiveWithGrace('sim', state.simSnipeActive, !!status.active, Date.now());
           set({
-            simSnipeActive: !!status.active,
+            simSnipeActive: simActive,
             snipeTargets: {
               ...Object.fromEntries(
                 Object.entries(get().snipeTargets).filter(([key]) => !key.startsWith('sim:')),

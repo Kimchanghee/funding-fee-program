@@ -21,7 +21,7 @@ export interface BalanceEqualizationPlan {
 const DEFAULT_MIN_TRANSFER_USDT = 25;
 
 function sanitizeBalance(value: number | undefined): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
   return value;
 }
 

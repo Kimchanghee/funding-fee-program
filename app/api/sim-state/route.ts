@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
         action: 'reset' | 'reconfigure';
         enabledExchanges: ExchangeId[];
         investmentUSDT: number;
+        tradesClearedAt?: number;
       }
       | {
         action: 'clearFundingHistory';
@@ -49,8 +50,11 @@ export async function POST(req: NextRequest) {
     }
 
     const enabledExchanges = sanitizeEnabledExchanges(body.enabledExchanges);
+    const tradesClearedAt = typeof body.tradesClearedAt === 'number' && Number.isFinite(body.tradesClearedAt)
+      ? Math.max(0, body.tradesClearedAt)
+      : 0;
     const data = body.action === 'reset'
-      ? await scheduler.resetState(enabledExchanges, body.investmentUSDT)
+      ? await scheduler.resetState(enabledExchanges, body.investmentUSDT, tradesClearedAt)
       : await scheduler.reconfigureState(enabledExchanges, body.investmentUSDT);
 
     return NextResponse.json({ success: true, data });
@@ -64,7 +68,7 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
-    const body = await req.json() as { enabledExchanges: ExchangeId[]; investmentUSDT: number };
+    const body = await req.json() as { enabledExchanges: ExchangeId[]; investmentUSDT: number; tradesClearedAt?: number };
     if (!validateEnabledExchanges(body.enabledExchanges)) {
       return NextResponse.json({ success: false, error: 'Invalid enabledExchanges' }, { status: 400 });
     }
@@ -73,7 +77,10 @@ export async function DELETE(req: NextRequest) {
     }
 
     const enabledExchanges = sanitizeEnabledExchanges(body.enabledExchanges);
-    const data = await getServerSimScheduler().resetState(enabledExchanges, body.investmentUSDT);
+    const tradesClearedAt = typeof body.tradesClearedAt === 'number' && Number.isFinite(body.tradesClearedAt)
+      ? Math.max(0, body.tradesClearedAt)
+      : 0;
+    const data = await getServerSimScheduler().resetState(enabledExchanges, body.investmentUSDT, tradesClearedAt);
     return NextResponse.json({ success: true, data });
   } catch (error) {
     return NextResponse.json(

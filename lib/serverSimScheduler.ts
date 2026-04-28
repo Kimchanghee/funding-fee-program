@@ -965,10 +965,10 @@ class ServerSimScheduler {
     });
   }
 
-  resetState(enabledExchanges: ExchangeId[], investmentUSDT: number) {
+  resetState(enabledExchanges: ExchangeId[], investmentUSDT: number, tradesClearedAt = 0) {
     return this.enqueue(async () => {
       const sanitizedEnabledExchanges = sanitizeEnabledExchanges(enabledExchanges);
-      const nextState = resetServerSimState(sanitizedEnabledExchanges, investmentUSDT);
+      const nextState = resetServerSimState(sanitizedEnabledExchanges, investmentUSDT, tradesClearedAt);
       this.scheduledEntries.clear();
       this.scheduleProbeStates.clear();
       this.pendingAutoCloses.clear();

@@ -167,6 +167,7 @@ export interface SimStateSnapshot {
   simClosedPnlPerExchange: Partial<Record<ExchangeId, number>>;
   simClosedFeesPerExchange: Partial<Record<ExchangeId, number>>;
   fundingHistory: FundingPayment[];
+  tradesClearedAt: number;
   updatedAt: number;
 }
 

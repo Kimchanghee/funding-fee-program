@@ -99,6 +99,7 @@ function sanitizeSimPositions(positions: unknown): SimPosition[] {
 export function createDefaultSimState(
   enabledExchanges: ExchangeId[],
   investmentUSDT: number,
+  tradesClearedAt = 0,
 ): SimStateSnapshot {
   const sanitizedEnabledExchanges = sanitizeEnabledExchanges(enabledExchanges);
   const perExchange = Math.max(0, investmentUSDT * 2);
@@ -122,6 +123,7 @@ export function createDefaultSimState(
     simClosedPnlPerExchange: {},
     simClosedFeesPerExchange: {},
     fundingHistory: [],
+    tradesClearedAt: Number.isFinite(tradesClearedAt) && tradesClearedAt > 0 ? tradesClearedAt : 0,
     updatedAt: Date.now(),
   };
 }
@@ -149,6 +151,9 @@ export function sanitizeSimStateSnapshot(raw: unknown): SimStateSnapshot | null 
     simClosedPnlPerExchange: buildExchangeNumberMap(snapshot.simClosedPnlPerExchange as Partial<Record<string, unknown>> | undefined),
     simClosedFeesPerExchange: buildExchangeNumberMap(snapshot.simClosedFeesPerExchange as Partial<Record<string, unknown>> | undefined),
     fundingHistory: sanitizeFundingHistory(snapshot.fundingHistory),
+    tradesClearedAt: typeof snapshot.tradesClearedAt === 'number' && Number.isFinite(snapshot.tradesClearedAt)
+      ? Math.max(0, snapshot.tradesClearedAt)
+      : 0,
     updatedAt: typeof snapshot.updatedAt === 'number' && Number.isFinite(snapshot.updatedAt)
       ? snapshot.updatedAt
       : Date.now(),
@@ -280,6 +285,7 @@ export function getOrCreateServerSimState(
 export function resetServerSimState(
   enabledExchanges: ExchangeId[],
   investmentUSDT: number,
+  tradesClearedAt = 0,
 ): SimStateSnapshot {
-  return saveServerSimState(createDefaultSimState(enabledExchanges, investmentUSDT));
+  return saveServerSimState(createDefaultSimState(enabledExchanges, investmentUSDT, tradesClearedAt));
 }
