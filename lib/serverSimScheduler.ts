@@ -3222,40 +3222,70 @@ class ServerSimScheduler {
     };
 
     try {
-      const [shortRates, longRates] = await retryTransientFetch(() => Promise.all([
-        fetchFundingRates(opportunity.shortExchange, undefined, [opportunity.shortSymbol]),
-        fetchFundingRates(opportunity.longExchange, undefined, [opportunity.longSymbol]),
-      ]));
-      const shortLiveRate = shortRates.find((rate) => rate.symbol === opportunity.shortSymbol)
-        ?? shortRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
-      const longLiveRate = longRates.find((rate) => rate.symbol === opportunity.longSymbol)
-        ?? longRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+      // Live spread revalidation with one re-measurement on failure.
+      // Rationale (2026-04-28 review): out of 14 live_spread_reverted blocks in 24h,
+      // a handful (~2-3) showed -0.001% ~ -0.01% which is within rate-feed measurement noise.
+      // A single 200ms re-fetch gives those a chance to settle to a real positive spread
+      // before we discard the opportunity. Clearly inverted spreads (e.g. -0.7%) will fail
+      // the same way on retry and remain blocked — this is intentional.
+      const LIVE_SPREAD_RECHECK_DELAY_MS = 200;
+      const LIVE_SPREAD_RECHECK_ATTEMPTS = 2;
+      let shortLiveRate: FundingRate | undefined;
+      let longLiveRate: FundingRate | undefined;
+      let shortRatesCount = 0;
+      let longRatesCount = 0;
+      let liveSpread = 0;
+      let liveSpreadPercent = 0;
+      let liveSpreadAttempts = 0;
+      for (let attempt = 0; attempt < LIVE_SPREAD_RECHECK_ATTEMPTS; attempt += 1) {
+        if (attempt > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, LIVE_SPREAD_RECHECK_DELAY_MS));
+        }
+        liveSpreadAttempts = attempt + 1;
+        const [shortRates, longRates] = await retryTransientFetch(() => Promise.all([
+          fetchFundingRates(opportunity.shortExchange, undefined, [opportunity.shortSymbol]),
+          fetchFundingRates(opportunity.longExchange, undefined, [opportunity.longSymbol]),
+        ]));
+        shortRatesCount = shortRates.length;
+        longRatesCount = longRates.length;
+        shortLiveRate = shortRates.find((rate) => rate.symbol === opportunity.shortSymbol)
+          ?? shortRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+        longLiveRate = longRates.find((rate) => rate.symbol === opportunity.longSymbol)
+          ?? longRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+        if (!shortLiveRate || !longLiveRate) {
+          // Missing rate is not a noise condition — fail immediately, no retry.
+          break;
+        }
+        liveSpread = shortLiveRate.rate - longLiveRate.rate;
+        liveSpreadPercent = liveSpread * 100;
+        if (liveSpread > 0) break;
+      }
       if (!shortLiveRate || !longLiveRate) {
         return {
           success: false,
-          error: `funding revalidate missing: short=${shortRates.length} long=${longRates.length}`,
+          error: `funding revalidate missing: short=${shortRatesCount} long=${longRatesCount}`,
           analysis: buildFailureAnalysis({
             attemptedNotionalUSDT: baseNotional,
             extra: {
-              shortRevalidateCount: shortRates.length,
-              longRevalidateCount: longRates.length,
+              shortRevalidateCount: shortRatesCount,
+              longRevalidateCount: longRatesCount,
+              liveSpreadAttempts,
             },
           }),
         };
       }
 
-      const liveSpread = shortLiveRate.rate - longLiveRate.rate;
-      const liveSpreadPercent = liveSpread * 100;
       if (liveSpread <= 0) {
         return {
           success: false,
-          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% <= 0.0000%`,
+          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% <= 0.0000% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
           analysis: buildFailureAnalysis({
             attemptedNotionalUSDT: baseNotional,
             extra: {
               liveSpreadPercent,
               minSpreadPercent: this.config.minSpreadPercent,
               executionGate: 'positive_live_spread_then_ev',
+              liveSpreadAttempts,
             },
           }),
         };
