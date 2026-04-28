@@ -629,7 +629,16 @@ export interface ConfirmedSnipeConfig {
   useStrictHedge: boolean;
 }
 
-/** All OFF by default — opt-in per feature */
+/**
+ * Defaults updated 2026-04-28 based on 24h SIM trade review:
+ * - useConfirmedClose: 1s close-delay was too aggressive; the executed ORCA trade lost
+ *   -$31.88 of price PnL in the 1ms window right after funding settlement. Enabling
+ *   confirmed close uses per-exchange settlement wait (Binance 20s / Bybit 12s via
+ *   getPairMaxSettlementWaitMs) so price PnL recovers most of the post-funding noise.
+ * - useIocLimitOnly: market-order exits were taking full taker fee + slippage on both legs.
+ *   IOC limit gives maker-side pricing with a 5bps buffer.
+ * Other toggles stay OFF until explicitly opted in.
+ */
 export const DEFAULT_CONFIRMED_SNIPE_CONFIG: ConfirmedSnipeConfig = {
   useImpactGuards: false,
   targetImpactBps: TARGET_IMPACT_BPS,
@@ -637,8 +646,8 @@ export const DEFAULT_CONFIRMED_SNIPE_CONFIG: ConfirmedSnipeConfig = {
   useDynamicNotional: false,
   dynamicNotionalCap: 2200,
   useDriftBuffer: false,
-  useConfirmedClose: false,
-  useIocLimitOnly: false,
+  useConfirmedClose: true,
+  useIocLimitOnly: true,
   useStrictHedge: false,
 };
 
