@@ -59,10 +59,19 @@ export interface ConservativeEVResult {
   entryImpactUSD: number;
   exitImpactUSD: number;
   timingReserveUSD: number;
+  basisConvergenceReserveUSD: number;
+  volumeLiquidityReserveUSD: number;
+  dataHealthPenaltyUSD: number;
   expectedNetUSD: number;
   passesMinProfit: boolean;
   passesEVRatio: boolean;
   evRatio: number;
+}
+
+export interface ConservativeEVOptions {
+  basisConvergenceReservePct?: number;
+  volumeLiquidityReservePct?: number;
+  dataHealthPenaltyUSD?: number;
 }
 
 /**
@@ -87,6 +96,7 @@ export function calcConservativeEV(
   roundTripFeePct: number,
   entryImpactPct: number,
   exitImpactPct: number,
+  options: ConservativeEVOptions = {},
 ): ConservativeEVResult {
   const shortFR_eff = shortRate - shortDriftBuffer;
   const longFR_eff = longRate + longDriftBuffer;
@@ -96,14 +106,26 @@ export function calcConservativeEV(
   const exitImpactUSD = notionalUSD * exitImpactPct;
   // Timing reserve: 0.5bp flat for rounding/latency
   const timingReserveUSD = notionalUSD * 0.00005;
+  const basisConvergenceReserveUSD = notionalUSD * Math.max(0, options.basisConvergenceReservePct ?? 0);
+  const volumeLiquidityReserveUSD = notionalUSD * Math.max(0, options.volumeLiquidityReservePct ?? 0);
+  const dataHealthPenaltyUSD = Math.max(0, options.dataHealthPenaltyUSD ?? 0);
 
   const expectedNetUSD = expectedFundingUSD
     - roundTripFeeUSD
     - entryImpactUSD
     - exitImpactUSD
-    - timingReserveUSD;
+    - timingReserveUSD
+    - basisConvergenceReserveUSD
+    - volumeLiquidityReserveUSD
+    - dataHealthPenaltyUSD;
 
-  const worstCaseExitUSD = roundTripFeeUSD + entryImpactUSD + exitImpactUSD + timingReserveUSD;
+  const worstCaseExitUSD = roundTripFeeUSD
+    + entryImpactUSD
+    + exitImpactUSD
+    + timingReserveUSD
+    + basisConvergenceReserveUSD
+    + volumeLiquidityReserveUSD
+    + dataHealthPenaltyUSD;
   const evRatio = worstCaseExitUSD > 0 ? expectedNetUSD / worstCaseExitUSD : 0;
 
   return {
@@ -112,6 +134,9 @@ export function calcConservativeEV(
     entryImpactUSD,
     exitImpactUSD,
     timingReserveUSD,
+    basisConvergenceReserveUSD,
+    volumeLiquidityReserveUSD,
+    dataHealthPenaltyUSD,
     expectedNetUSD,
     passesMinProfit: expectedNetUSD >= MIN_PROFIT_USD,
     passesEVRatio: evRatio >= MIN_EV_RATIO,
@@ -372,6 +397,12 @@ export interface EstimateProfitOptions {
   entryImpactPercent?: number;
   /** Exit impact percent (defaults to entryImpactPercent when omitted) */
   exitImpactPercent?: number;
+  /** Reserve for post-funding basis convergence risk, percent (e.g. 0.05 for 5bps) */
+  basisConvergenceReservePercent?: number;
+  /** Reserve for volume/orderbook capacity risk, percent */
+  volumeLiquidityReservePercent?: number;
+  /** Flat data-health/API penalty in USD */
+  dataHealthPenaltyUSD?: number;
 }
 
 /**
@@ -390,6 +421,9 @@ export function estimateProfit(
     useDriftBuffer,
     entryImpactPercent,
     exitImpactPercent,
+    basisConvergenceReservePercent,
+    volumeLiquidityReservePercent,
+    dataHealthPenaltyUSD,
   } = typeof options === 'boolean'
     ? {
       skipFees: options,
@@ -398,6 +432,9 @@ export function estimateProfit(
       useDriftBuffer: false,
       entryImpactPercent: 0,
       exitImpactPercent: 0,
+      basisConvergenceReservePercent: 0,
+      volumeLiquidityReservePercent: 0,
+      dataHealthPenaltyUSD: 0,
     }
     : {
       skipFees: options.skipFees ?? false,
@@ -406,6 +443,9 @@ export function estimateProfit(
       useDriftBuffer: options.useDriftBuffer ?? false,
       entryImpactPercent: Math.max(0, options.entryImpactPercent ?? 0),
       exitImpactPercent: Math.max(0, options.exitImpactPercent ?? options.entryImpactPercent ?? 0),
+      basisConvergenceReservePercent: Math.max(0, options.basisConvergenceReservePercent ?? 0),
+      volumeLiquidityReservePercent: Math.max(0, options.volumeLiquidityReservePercent ?? 0),
+      dataHealthPenaltyUSD: Math.max(0, options.dataHealthPenaltyUSD ?? 0),
     };
   const totalCapital = investmentUSDT * 2;
   const notional = investmentUSDT * leverage;
@@ -447,6 +487,11 @@ export function estimateProfit(
   const conservativeEV = calcConservativeEV(
     notional, opportunity.shortRate, opportunity.longRate,
     shortDrift, longDrift, roundTripFeeDec, entryImpactDec, exitImpactDec,
+    {
+      basisConvergenceReservePct: basisConvergenceReservePercent / 100,
+      volumeLiquidityReservePct: volumeLiquidityReservePercent / 100,
+      dataHealthPenaltyUSD,
+    },
   );
 
   // Use conservative EV as the base for all profit projections

@@ -204,12 +204,23 @@ export function filterTradeEvents(
     from?: number | null;
     to?: number | null;
     simulation?: boolean | null;
+    engineIds?: string[] | null;
+    eventSources?: string[] | null;
   },
 ): TradeEvent[] {
+  const engineIdSet = options?.engineIds && options.engineIds.length > 0
+    ? new Set(options.engineIds)
+    : null;
+  const eventSourceSet = options?.eventSources && options.eventSources.length > 0
+    ? new Set(options.eventSources)
+    : null;
+
   return events.filter((event) => {
     if (options?.from != null && event.timestamp < options.from) return false;
     if (options?.to != null && event.timestamp > options.to) return false;
     if (options?.simulation != null && event.simulation !== options.simulation) return false;
+    if (engineIdSet && !engineIdSet.has(event.engineId ?? '')) return false;
+    if (eventSourceSet && !eventSourceSet.has(event.eventSource ?? '')) return false;
     return true;
   });
 }
@@ -389,6 +400,8 @@ export function loadTradeEventsForAudit(options?: {
   simulation?: boolean | null;
   limitDates?: number | null;
   scope?: TradeAuditScope;
+  engineIds?: string[] | null;
+  eventSources?: string[] | null;
 }): { scannedDates: string[]; coveredDates: string[]; events: TradeEvent[] } {
   const scope = options?.scope ?? 'all';
   const allDates = listTradeHistoryDates(scope);
@@ -403,6 +416,8 @@ export function loadTradeEventsForAudit(options?: {
         from: options?.from,
         to: options?.to,
         simulation: options?.simulation,
+        engineIds: options?.engineIds,
+        eventSources: options?.eventSources,
       });
       if (filteredForDate.length > 0) {
         coveredDates.push(date);

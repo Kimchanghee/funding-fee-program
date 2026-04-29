@@ -21,6 +21,7 @@ import {
   findOpportunities,
   getOpportunityId,
   getOpportunityIntervalHours,
+  getOpportunityTimeGroupKey,
   getOpportunityLegKeys,
   makeOpportunityId,
   calcConservativeEV,
@@ -138,6 +139,11 @@ const ANALYTICS_BASE_INTERVAL_MS = 5 * 60 * 1000;
 const ANALYTICS_NEAR_DUE_INTERVAL_MS = 60 * 1000;
 const ANALYTICS_NEAR_DUE_WINDOW_MS = 30 * 60 * 1000;
 const ANALYTICS_MAX_CANDIDATES = 200;
+const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 5;
+const MAX_BASIS_CONVERGENCE_RESERVE_BPS = 200;
+const UNKNOWN_VOLUME_RESERVE_BPS = 5;
+const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 80;
+const STALE_DATA_PENALTY_BPS = 10;
 
 function isSingleCycleFundingRolloverShift(
   shiftMs: number,
@@ -158,6 +164,20 @@ function formatSignedUsd(value: number, digits = 4): string {
 function formatSignedPercent(value: number, digits = 4): string {
   const sign = value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(digits)}%`;
+}
+
+function formatPersistenceTelegramNote(events: TradeEvent[], pairId?: string): string | undefined {
+  const event = events.find((candidate) => (
+    pairId ? candidate.pairId === pairId : candidate.eventId
+  )) ?? events[0];
+  if (!event) return undefined;
+  return [
+    event.eventId ? `eventId: ${event.eventId}` : null,
+    event.engineId ? `engineId: ${event.engineId}` : null,
+    event.persistedTradeFile ? `tradeFile: ${event.persistedTradeFile}` : null,
+    event.persistedExecutedFile ? `executedFile: ${event.persistedExecutedFile}` : null,
+    event.persistedFundingReceiptFile ? `fundingReceiptFile: ${event.persistedFundingReceiptFile}` : null,
+  ].filter(Boolean).join('\n') || undefined;
 }
 
 function sumDepthUsd(levels: number[][] | undefined, depth: number): number {
@@ -182,6 +202,55 @@ function calcBasisBps(shortMid: number, longMid: number): number {
   const reference = (shortMid + longMid) / 2;
   if (!Number.isFinite(reference) || reference <= 0) return 0;
   return ((shortMid - longMid) / reference) * 10000;
+}
+
+function clampBps(value: number, minBps: number, maxBps: number): number {
+  if (!Number.isFinite(value)) return minBps;
+  return Math.max(minBps, Math.min(maxBps, value));
+}
+
+function basisReservePctFromEntryGap(entryGapDriftPercent: number): number {
+  const driftBps = Math.abs(entryGapDriftPercent) * 100;
+  return clampBps(
+    Math.max(MIN_BASIS_CONVERGENCE_RESERVE_BPS, driftBps),
+    MIN_BASIS_CONVERGENCE_RESERVE_BPS,
+    MAX_BASIS_CONVERGENCE_RESERVE_BPS,
+  ) / 10000;
+}
+
+function volumeLiquidityReservePct(params: {
+  notionalUSDT: number;
+  shortQuoteVolume24h?: number;
+  longQuoteVolume24h?: number;
+  marketSnapshot?: ProbeMarketSnapshot;
+}): number {
+  const { notionalUSDT, shortQuoteVolume24h, longQuoteVolume24h, marketSnapshot } = params;
+  if (!Number.isFinite(notionalUSDT) || notionalUSDT <= 0) return 0;
+
+  let reserveBps = 0;
+  const knownVolumes = [shortQuoteVolume24h, longQuoteVolume24h]
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
+  if (knownVolumes.length < 2) {
+    reserveBps += UNKNOWN_VOLUME_RESERVE_BPS;
+  } else {
+    const minVolume = Math.min(...knownVolumes);
+    const participation = notionalUSDT / minVolume;
+    reserveBps += Math.min(40, participation * 20_000);
+  }
+
+  if (marketSnapshot) {
+    const minCapacity = Math.min(marketSnapshot.entryCapacityUsd5, marketSnapshot.exitCapacityUsd5);
+    if (Number.isFinite(minCapacity) && minCapacity > 0) {
+      const capacityRatio = minCapacity / notionalUSDT;
+      if (capacityRatio < 2) {
+        reserveBps += (2 - capacityRatio) * 12;
+      }
+    } else {
+      reserveBps += 20;
+    }
+  }
+
+  return Math.min(MAX_VOLUME_LIQUIDITY_RESERVE_BPS, Math.max(0, reserveBps)) / 10000;
 }
 
 function calcMoveBps(current: number, baseline: number): number {
@@ -369,6 +438,10 @@ function estimatePreEntryConservativeEV(
     roundTripFeeDec,
     impactDec,
     impactDec,
+    {
+      basisConvergenceReservePct: MIN_BASIS_CONVERGENCE_RESERVE_BPS / 10000,
+      volumeLiquidityReservePct: UNKNOWN_VOLUME_RESERVE_BPS / 10000,
+    },
   );
 }
 
@@ -410,7 +483,7 @@ function getOpportunityYieldScore(
 ): number {
   const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig);
   if (!ev) return 0;
-  if (ev.expectedNetUSD <= 0) return 0;
+  if (!ev.passesMinProfit || !ev.passesEVRatio) return 0;
   return Math.max(0, ev.expectedNetUSD / getOpportunityIntervalHours(opportunity));
 }
 
@@ -446,8 +519,12 @@ function planWindowAllocations(
   if (selected.length === 0) return [];
 
   const allocations = new Map<string, number>();
+  const assetWindowAllocations = new Map<string, number>();
   const allocationStep = Math.max(25, Math.min(strategyConfig.investmentUSDT / 5, 250));
   const minAllocation = Math.min(Math.max(10, strategyConfig.investmentUSDT * 0.1), allocationStep);
+  const assetWindowCap = Math.max(minAllocation, strategyConfig.investmentUSDT);
+  const getAssetWindowKey = (opportunity: ArbitrageOpportunity) =>
+    `${opportunity.baseAsset}:${getOpportunityTimeGroupKey(opportunity.nextFundingTime)}`;
   const getCostFactor = (exchange: ExchangeId) => (
     1 + (strategyConfig.leverage * resolveRuntimeFee(
       exchange,
@@ -474,8 +551,11 @@ function planWindowAllocations(
   let totalAllocated = 0;
   while (true) {
     const eligible = selected.filter((candidate) => {
-      const allocated = allocations.get(getOpportunityId(candidate.opportunity)) ?? 0;
-      return getCap(candidate.opportunity) - allocated >= minAllocation;
+      const opportunity = candidate.opportunity;
+      const allocated = allocations.get(getOpportunityId(opportunity)) ?? 0;
+      const groupAllocated = assetWindowAllocations.get(getAssetWindowKey(opportunity)) ?? 0;
+      return getCap(opportunity) - allocated >= minAllocation
+        && assetWindowCap - groupAllocated >= minAllocation;
     });
     if (eligible.length === 0) break;
 
@@ -498,7 +578,9 @@ function planWindowAllocations(
 
     const opportunity = bestCandidate.opportunity;
     const opportunityId = getOpportunityId(opportunity);
+    const assetWindowKey = getAssetWindowKey(opportunity);
     const allocated = allocations.get(opportunityId) ?? 0;
+    const groupAllocated = assetWindowAllocations.get(assetWindowKey) ?? 0;
     const shortAvail = availableBalance[opportunity.shortExchange] ?? 0;
     const longAvail = availableBalance[opportunity.longExchange] ?? 0;
     const effectiveShortAvail = effectiveBalance[opportunity.shortExchange] ?? 0;
@@ -508,6 +590,7 @@ function planWindowAllocations(
     const chunk = Math.min(
       allocationStep,
       getCap(opportunity) - allocated,
+      assetWindowCap - groupAllocated,
     );
 
     if (chunk < minAllocation) break;
@@ -515,6 +598,7 @@ function planWindowAllocations(
     const shortCost = chunk * shortFactor;
     const longCost = chunk * longFactor;
     allocations.set(opportunityId, allocated + chunk);
+    assetWindowAllocations.set(assetWindowKey, groupAllocated + chunk);
     availableBalance[opportunity.shortExchange] = Math.max(0, shortAvail - shortCost);
     availableBalance[opportunity.longExchange] = Math.max(0, longAvail - longCost);
     effectiveBalance[opportunity.shortExchange] = Math.max(0, effectiveShortAvail - shortCost);
@@ -649,12 +733,15 @@ type ProbeMarketSnapshot = {
 type PreparedSimCloseLeg = {
   position: SimPosition;
   exitPrice: number;
+  exitMidPrice: number;
+  exitWorstPrice: number;
+  exitSlippagePercent: number;
   exitFee: number;
   pricePnl: number;
   actualFunding: number;
   fundingBalanceCredit: number;
   fundingPayment?: FundingPayment;
-  fillSource: 'orderbook' | 'mark';
+  fillSource: 'orderbook';
   fillCapturedAt: number;
 };
 
@@ -1038,13 +1125,21 @@ class ServerSimScheduler {
   }
 
   private recordTrades(events: TradeEvent[]) {
-    if (events.length === 0) return;
-    appendTrades(events);
-    const logs = this.mapEventsToSchedulerLogs(events);
+    if (events.length === 0) return appendTrades([], {
+      engineId: 'server-sim-scheduler',
+      eventSource: 'server-sim-scheduler',
+    });
+    const persisted = appendTrades(events, {
+      engineId: 'server-sim-scheduler',
+      eventSource: 'server-sim-scheduler',
+    });
+    const persistedEvents = persisted.events;
+    const logs = this.mapEventsToSchedulerLogs(persistedEvents);
     if (logs.length > 0) {
       appendLogs(logs);
     }
-    this.routeFailureMemory.ingestEvents(events, { simulation: true });
+    this.routeFailureMemory.ingestEvents(persistedEvents, { simulation: true });
+    return persisted;
   }
 
   private mapEventsToSchedulerLogs(events: TradeEvent[]): FileLogEntry[] {
@@ -1426,7 +1521,7 @@ class ServerSimScheduler {
         strategyConfig,
         analysisInvestmentUSDT,
       );
-      const evPositive = (preEntryEv?.expectedNetUSD ?? Number.NEGATIVE_INFINITY) > 0;
+      const evPasses = !!preEntryEv?.passesMinProfit && !!preEntryEv?.passesEVRatio;
       const rejectReasons: string[] = [];
       if (!this.config.enabledExchanges.includes(opportunity.shortExchange)
         || !this.config.enabledExchanges.includes(opportunity.longExchange)) {
@@ -1438,7 +1533,7 @@ class ServerSimScheduler {
           rejectReasons.push('tier_c_disabled');
         }
       }
-      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent) && !evPositive) {
+      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent) && !evPasses) {
         rejectReasons.push('spread_below_threshold');
       }
       if (volumeStatus.belowMin) {
@@ -1465,7 +1560,7 @@ class ServerSimScheduler {
       }
       if (!preEntryEv) {
         rejectReasons.push('profitability_calculation_failed');
-      } else if (preEntryEv.expectedNetUSD <= 0) {
+      } else if (!preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) {
         rejectReasons.push('profitability_scan_failed');
       }
       if (rejectReasons.length === 0 && !candidateIds.has(opportunityId)) {
@@ -1706,9 +1801,33 @@ class ServerSimScheduler {
       ? (((options?.shortSlippagePercent ?? 0) + (options?.longSlippagePercent ?? 0)) / 100)
       : null;
     const entryImpactDec = measuredImpactDec ?? impactCapDec;
+    const timeToExecutionMs = options?.timeToExecutionMs;
+    const timeFromFundingMs = options?.timeFromFundingMs;
+    const marketSnapshot = options?.marketSnapshot;
+    const shortMidMoveBps = options?.shortMidMoveBps;
+    const longMidMoveBps = options?.longMidMoveBps;
+    const basisMoveBps = options?.basisMoveBps;
+    const analysis = options?.analysis;
+    const basisConvergenceReservePct = basisMoveBps == null
+      ? MIN_BASIS_CONVERGENCE_RESERVE_BPS / 10000
+      : clampBps(Math.abs(basisMoveBps), MIN_BASIS_CONVERGENCE_RESERVE_BPS, MAX_BASIS_CONVERGENCE_RESERVE_BPS) / 10000;
+    const volumeReservePct = volumeLiquidityReservePct({
+      notionalUSDT: notional,
+      shortQuoteVolume24h: shortLive?.quoteVolume24h,
+      longQuoteVolume24h: longLive?.quoteVolume24h,
+      marketSnapshot,
+    });
+    const dataHealthPenaltyUSD = now - this.lastRatesUpdate > RATES_REFRESH_INTERVAL_MS * 3
+      ? notional * (STALE_DATA_PENALTY_BPS / 10000)
+      : 0;
     const ev = calcConservativeEV(
       notional, shortRate, longRate,
       shortDrift, longDrift, roundTripFeePct, entryImpactDec, entryImpactDec,
+      {
+        basisConvergenceReservePct,
+        volumeLiquidityReservePct: volumeReservePct,
+        dataHealthPenaltyUSD,
+      },
     );
     const expectedNetProfit = ev.expectedNetUSD;
     const hedgedNetSpreadPercent = calcNetSpreadPercent(
@@ -1721,14 +1840,6 @@ class ServerSimScheduler {
       investmentUSDT,
       this.config.leverage,
     );
-    const timeToExecutionMs = options?.timeToExecutionMs;
-    const timeFromFundingMs = options?.timeFromFundingMs;
-    const marketSnapshot = options?.marketSnapshot;
-    const shortMidMoveBps = options?.shortMidMoveBps;
-    const longMidMoveBps = options?.longMidMoveBps;
-    const basisMoveBps = options?.basisMoveBps;
-    const analysis = options?.analysis;
-
     return {
       timestamp: now,
       type: 'schedule_probe',
@@ -1789,6 +1900,9 @@ class ServerSimScheduler {
         `passEV=${ev.passesMinProfit && ev.passesEVRatio}`,
         `impactSrc=${hasMeasuredImpact ? 'measured' : 'cap'}`,
         `impactUsed=${(entryImpactDec * 100).toFixed(4)}%`,
+        `basisReserve=${(basisConvergenceReservePct * 100).toFixed(4)}%`,
+        `liqReserve=${(volumeReservePct * 100).toFixed(4)}%`,
+        dataHealthPenaltyUSD > 0 ? `dataPenalty=${dataHealthPenaltyUSD.toFixed(4)}` : null,
         marketSnapshot == null ? null : `basis=${marketSnapshot.basisBps.toFixed(2)}bps`,
         marketSnapshot == null ? null : `liqIn=${marketSnapshot.entryCapacityUsd5.toFixed(2)}`,
         marketSnapshot == null ? null : `liqOut=${marketSnapshot.exitCapacityUsd5.toFixed(2)}`,
@@ -2703,17 +2817,17 @@ class ServerSimScheduler {
         }
       }
     }
-    if (tradeEvents.length > 0) {
-      this.recordTrades(tradeEvents);
-    }
+    const persisted = tradeEvents.length > 0 ? this.recordTrades(tradeEvents) : null;
     if (fundingEvents.length > 0) {
       const totalFunding = fundingEvents.reduce((sum, payment) => sum + payment.amount, 0);
       const lines = fundingEvents.map((payment) =>
         `  ${payment.exchange.toUpperCase()} ${payment.symbol} (${payment.side}): ${payment.amount >= 0 ? '+' : ''}$${payment.amount.toFixed(4)}`,
       );
+      const persistenceNote = persisted ? formatPersistenceTelegramNote(persisted.events) : undefined;
       void sendTelegramMessage([
         `${totalFunding >= 0 ? '💰' : '💸'} <b>[SIM] 펀딩 수령: ${fundingEvents.length}건</b>`,
         ...lines,
+        ...(persistenceNote ? [persistenceNote] : []),
         `합계: ${totalFunding >= 0 ? '+' : ''}$${totalFunding.toFixed(4)}`,
       ].join('\n'));
     }
@@ -2738,9 +2852,27 @@ class ServerSimScheduler {
     const closeInvestmentUSDT = pairPositions.reduce((sum, position) => sum + Math.max(0, position.margin), 0);
 
     const closeStartedAt = Date.now();
-    const preparedLegs = await Promise.all(
-      pairPositions.map((position) => this.prepareCloseLeg(position)),
-    );
+    let preparedLegs: PreparedSimCloseLeg[];
+    try {
+      preparedLegs = await Promise.all(
+        pairPositions.map((position) => this.prepareCloseLeg(position)),
+      );
+    } catch (err) {
+      const failedAt = Date.now();
+      this.pendingAutoCloses.set(pairId, failedAt + 5_000);
+      this.recordTrades([{
+        timestamp: failedAt,
+        type: 'exit_failed',
+        simulation: true,
+        baseAsset: pairPositions[0]?.baseAsset ?? 'UNKNOWN',
+        shortExchange: pairPositions.find((position) => position.side === 'short')?.exchange,
+        longExchange: pairPositions.find((position) => position.side === 'long')?.exchange,
+        pairId,
+        reason: 'close_orderbook_unavailable',
+        detail: getErrorMessage(err),
+      }]);
+      return;
+    }
     const closeFinishedAt = Date.now();
     const fillCapturedAts = preparedLegs.map((leg) => leg.fillCapturedAt);
     const pairCloseGapMs = fillCapturedAts.length > 1
@@ -2809,7 +2941,13 @@ class ServerSimScheduler {
         entryFee: leg.position.entryFee ?? 0,
         pricePnl: leg.pricePnl,
         exitPrice: leg.exitPrice,
-        detail: `fill:${leg.fillSource} pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
+        analysis: {
+          exitMidPrice: leg.exitMidPrice,
+          exitWorstPrice: leg.exitWorstPrice,
+          exitSlippagePercent: leg.exitSlippagePercent,
+          fillSource: leg.fillSource,
+        },
+        detail: `fill:${leg.fillSource} exitSlip:${leg.exitSlippagePercent.toFixed(6)}% pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
       });
     }
     const closeNetProfitUSD = preparedLegs.reduce((sum, leg) => (
@@ -2820,6 +2958,7 @@ class ServerSimScheduler {
     const closeEntryFeesUSD = preparedLegs.reduce((sum, leg) => sum + (leg.position.entryFee ?? 0), 0);
     const closeExitFeesUSD = preparedLegs.reduce((sum, leg) => sum + leg.exitFee, 0);
     const closeFeesUSD = closeEntryFeesUSD + closeExitFeesUSD;
+    const closeImpactPercent = preparedLegs.reduce((sum, leg) => sum + leg.exitSlippagePercent, 0);
     const shortLeg = pairPositions.find((position) => position.side === 'short');
     const longLeg = pairPositions.find((position) => position.side === 'long');
     const closeNotionals = preparedLegs.map((leg) => leg.position.sizeUSD).filter((value) => value > 0);
@@ -2842,7 +2981,18 @@ class ServerSimScheduler {
         pricePnl: closePricePnlUSD,
         entryFee: closeEntryFeesUSD,
         exitFee: closeExitFeesUSD,
-        detail: `fundingVerified:true fundingEvents:${fundingEvents.length} pricePnl:${closePricePnlUSD.toFixed(6)} fees:${closeFeesUSD.toFixed(6)} pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
+        analysis: {
+          closeImpactPercent,
+          legs: preparedLegs.map((leg) => ({
+            exchange: leg.position.exchange,
+            side: leg.position.side,
+            exitSlippagePercent: leg.exitSlippagePercent,
+            exitMidPrice: leg.exitMidPrice,
+            exitWorstPrice: leg.exitWorstPrice,
+            exitPrice: leg.exitPrice,
+          })),
+        },
+        detail: `fundingVerified:true fundingEvents:${fundingEvents.length} pricePnl:${closePricePnlUSD.toFixed(6)} fees:${closeFeesUSD.toFixed(6)} closeImpact:${closeImpactPercent.toFixed(6)}% pairCloseGapMs:${pairCloseGapMs} closeWindowMs:${closeWindowMs}`,
       });
     }
 
@@ -2867,20 +3017,23 @@ class ServerSimScheduler {
       }
     }
     this.pendingAutoCloses.delete(pairId);
-    if (tradeEvents.length > 0) {
-      this.recordTrades(tradeEvents);
-    }
-    const completedPair = buildTradePairsFromEvents(tradeEvents).find((pair) => pair.pairId === pairId);
+    const persisted = tradeEvents.length > 0 ? this.recordTrades(tradeEvents) : null;
+    const persistedEvents = persisted?.events ?? tradeEvents;
+    const completedPair = buildTradePairsFromEvents(persistedEvents).find((pair) => pair.pairId === pairId);
     if (completedPair) {
       void sendTelegramMessage(formatTradePairTelegramMessage(completedPair, 'close', {
         currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(state),
+        note: formatPersistenceTelegramNote(persistedEvents, pairId),
       }));
     }
   }
 
   private async prepareCloseLeg(position: SimPosition): Promise<PreparedSimCloseLeg> {
     let exitPrice = position.markPrice;
-    let fillSource: 'orderbook' | 'mark' = 'mark';
+    let exitMidPrice = position.markPrice;
+    let exitWorstPrice = position.markPrice;
+    let exitSlippagePercent = 0;
+    const fillSource = 'orderbook' as const;
     try {
       const fill = await fetchMarketFillPrice(
         position.exchange,
@@ -2889,9 +3042,11 @@ class ServerSimScheduler {
         position.sizeUSD,
       );
       exitPrice = fill.fillPrice;
-      fillSource = 'orderbook';
-    } catch {
-      // Use mark price fallback.
+      exitMidPrice = fill.midPrice;
+      exitWorstPrice = fill.worstPrice;
+      exitSlippagePercent = fill.slippagePercent;
+    } catch (err) {
+      throw new Error(`close orderbook unavailable for ${position.exchange} ${position.symbol} ${position.side}: ${getErrorMessage(err)}`);
     }
     const fillCapturedAt = Date.now();
 
@@ -2928,6 +3083,9 @@ class ServerSimScheduler {
     return {
       position,
       exitPrice,
+      exitMidPrice,
+      exitWorstPrice,
+      exitSlippagePercent,
       exitFee,
       pricePnl,
       actualFunding,
@@ -2944,6 +3102,7 @@ class ServerSimScheduler {
     if (!position) return null;
 
     let exitPrice = position.markPrice;
+    let exitSlippagePercent = 0;
     try {
       const fill = await fetchMarketFillPrice(
         position.exchange,
@@ -2952,8 +3111,21 @@ class ServerSimScheduler {
         position.sizeUSD,
       );
       exitPrice = fill.fillPrice;
-    } catch {
-      // Use mark price fallback.
+      exitSlippagePercent = fill.slippagePercent;
+    } catch (err) {
+      this.recordTrades([{
+        timestamp: Date.now(),
+        type: 'exit_failed',
+        simulation: true,
+        baseAsset: position.baseAsset,
+        exchange: position.exchange,
+        side: position.side,
+        symbol: position.symbol,
+        pairId: position.pairId,
+        reason: 'close_orderbook_unavailable',
+        detail: getErrorMessage(err),
+      }]);
+      return null;
     }
 
     const exitNotional = position.size * exitPrice;
@@ -3051,6 +3223,7 @@ class ServerSimScheduler {
         exitFee,
         entryFee: position.entryFee ?? 0,
         pricePnl,
+        detail: `fill:orderbook exitSlip:${exitSlippagePercent.toFixed(6)}%`,
       },
     ]);
     const manualCloseInvestmentUSDT = Math.max(0, position.margin);
@@ -3180,6 +3353,10 @@ class ServerSimScheduler {
           roundTripFeeDec,
           shortImpactDec,
           longImpactDec,
+          {
+            basisConvergenceReservePct: MIN_BASIS_CONVERGENCE_RESERVE_BPS / 10000,
+            volumeLiquidityReservePct: UNKNOWN_VOLUME_RESERVE_BPS / 10000,
+          },
         );
         out[`evNetUSD_${Math.round(factor * 100)}pct`] = ev.expectedNetUSD;
         out[`evRatio_${Math.round(factor * 100)}pct`] = ev.evRatio;
@@ -3439,6 +3616,9 @@ class ServerSimScheduler {
     let longFillPrice = opportunity.longMarkPrice;
     let shortSlippagePercent = 0;
     let longSlippagePercent = 0;
+    let shortExitSlippagePercent = 0;
+    let longExitSlippagePercent = 0;
+    let executionMarketSnapshot: ProbeMarketSnapshot | undefined;
     const maxSlippagePct = this.config.maxSlippagePercent ?? 1.5;
     const impactCapBps = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
     const minAdaptiveNotional = 100;
@@ -3580,6 +3760,29 @@ class ServerSimScheduler {
       longFillPrice = longFill.fillPrice;
       shortSlippagePercent = shortFill.slippagePercent;
       longSlippagePercent = longFill.slippagePercent;
+      try {
+        const [shortExitFill, longExitFill] = await retryTransientFetch(() => Promise.all([
+          fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'buy', notional),
+          fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'sell', notional),
+        ]));
+        shortExitSlippagePercent = shortExitFill.slippagePercent;
+        longExitSlippagePercent = longExitFill.slippagePercent;
+      } catch (err) {
+        return {
+          success: false,
+          error: `exit orderbook fetch failed; cannot estimate close cost: ${(err as Error).message ?? err}`,
+          analysis: buildFailureAnalysis({
+            attemptedNotionalUSDT: baseNotional,
+            effectiveNotionalUSDT: notional,
+            shortSlippagePercent: shortFill.slippagePercent,
+            longSlippagePercent: longFill.slippagePercent,
+            extra: {
+              exitOrderbookError: (err as Error).message ?? String(err),
+            },
+          }),
+        };
+      }
+      executionMarketSnapshot = await this.captureProbeMarketSnapshot(opportunity, notional);
       fillsValidated = true;
       break;
     }
@@ -3602,6 +3805,8 @@ class ServerSimScheduler {
     });
     const entryGapPercent = entryGap.liveGapPercent;
     const execHedgeFeePct = (shortFeeInfo.fee + longFeeInfo.fee) * 2 * 100;
+    let conservativeExpectedNetProfit = 0;
+    let conservativeEvDecision: Record<string, unknown> = {};
 
     // Conservative EV ??always forced ON (matches REAL fail-safe policy)
     {
@@ -3616,13 +3821,51 @@ class ServerSimScheduler {
         : 0;
       const roundTripFeeDec = execHedgeFeePct / 100;
       const entryImpactDec = (shortSlippagePercent + longSlippagePercent) / 100;
+      const exitImpactDec = (shortExitSlippagePercent + longExitSlippagePercent) / 100;
+      const shortQuoteVolume24h = this.latestRates.find((rate) => (
+        rate.exchange === opportunity.shortExchange && rate.symbol === opportunity.shortSymbol
+      ))?.quoteVolume24h;
+      const longQuoteVolume24h = this.latestRates.find((rate) => (
+        rate.exchange === opportunity.longExchange && rate.symbol === opportunity.longSymbol
+      ))?.quoteVolume24h;
+      const basisConvergenceReservePct = basisReservePctFromEntryGap(entryGap.driftPercent);
+      const volumeReservePct = volumeLiquidityReservePct({
+        notionalUSDT: notional,
+        shortQuoteVolume24h,
+        longQuoteVolume24h,
+        marketSnapshot: executionMarketSnapshot,
+      });
+      const dataHealthPenaltyUSD = Date.now() - this.lastRatesUpdate > RATES_REFRESH_INTERVAL_MS * 3
+        ? notional * (STALE_DATA_PENALTY_BPS / 10000)
+        : 0;
       const ev = calcConservativeEV(
         notional, shortRateForDecision, longRateForDecision,
-        shortDrift, longDrift, roundTripFeeDec, entryImpactDec, entryImpactDec,
+        shortDrift, longDrift, roundTripFeeDec, entryImpactDec, exitImpactDec,
+        {
+          basisConvergenceReservePct,
+          volumeLiquidityReservePct: volumeReservePct,
+          dataHealthPenaltyUSD,
+        },
       );
-      // Execute-time gate: aggressive mode aborts only on actual expected loss.
-      // This keeps marginally-positive trades eligible after live costs move.
-      if (ev.expectedNetUSD <= 0) {
+      conservativeExpectedNetProfit = ev.expectedNetUSD;
+      conservativeEvDecision = {
+        expectedFundingUSD: ev.expectedFundingUSD,
+        roundTripFeeUSD: ev.roundTripFeeUSD,
+        entryImpactUSD: ev.entryImpactUSD,
+        exitImpactUSD: ev.exitImpactUSD,
+        timingReserveUSD: ev.timingReserveUSD,
+        basisConvergenceReserveUSD: ev.basisConvergenceReserveUSD,
+        volumeLiquidityReserveUSD: ev.volumeLiquidityReserveUSD,
+        dataHealthPenaltyUSD: ev.dataHealthPenaltyUSD,
+        evRatio: ev.evRatio,
+        passesMinProfit: ev.passesMinProfit,
+        passesEVRatio: ev.passesEVRatio,
+        shortEntrySlippagePercent: shortSlippagePercent,
+        longEntrySlippagePercent: longSlippagePercent,
+        shortExitSlippagePercent,
+        longExitSlippagePercent,
+      };
+      if (!ev.passesMinProfit || !ev.passesEVRatio) {
         return {
           success: false,
           error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
@@ -3638,6 +3881,19 @@ class ServerSimScheduler {
               conservativeEvRatio: ev.evRatio,
               passesMinProfit: ev.passesMinProfit,
               passesEVRatio: ev.passesEVRatio,
+              expectedFundingUSD: ev.expectedFundingUSD,
+              roundTripFeeUSD: ev.roundTripFeeUSD,
+              entryImpactUSD: ev.entryImpactUSD,
+              exitImpactUSD: ev.exitImpactUSD,
+              timingReserveUSD: ev.timingReserveUSD,
+              basisConvergenceReserveUSD: ev.basisConvergenceReserveUSD,
+              volumeLiquidityReserveUSD: ev.volumeLiquidityReserveUSD,
+              dataHealthPenaltyUSD: ev.dataHealthPenaltyUSD,
+              shortExitSlippagePercent,
+              longExitSlippagePercent,
+              shortQuoteVolume24h: shortQuoteVolume24h ?? null,
+              longQuoteVolume24h: longQuoteVolume24h ?? null,
+              executionMarketSnapshot: executionMarketSnapshot ?? null,
             },
           }),
         };
@@ -3760,7 +4016,7 @@ class ServerSimScheduler {
     const perFunding = notional * shortRateForDecision - notional * longRateForDecision;
     const totalRoundTripFees = notional * shortFeeRate * 2
       + notional * longFeeRate * 2;
-    const netProfit = perFunding - totalRoundTripFees;
+    const netProfit = conservativeExpectedNetProfit;
 
     const nextState: SimStateSnapshot = {
       ...state,
@@ -3791,12 +4047,19 @@ class ServerSimScheduler {
       perFunding,
       totalRoundTripFees,
       pairId,
+      analysis: {
+        conservativeEvDecision,
+        perFundingBeforeReserves: perFunding,
+        totalRoundTripFees,
+      },
     };
-    this.recordTrades([entryTrade]);
-    const entryPair = buildTradePairsFromEvents([entryTrade])[0];
+    const persisted = this.recordTrades([entryTrade]);
+    const persistedEntryEvents = persisted.events;
+    const entryPair = buildTradePairsFromEvents(persistedEntryEvents)[0];
     if (entryPair) {
       void sendTelegramMessage(formatTradePairTelegramMessage(entryPair, 'entry', {
         currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(savedState),
+        note: formatPersistenceTelegramNote(persistedEntryEvents, pairId),
       }));
     }
 

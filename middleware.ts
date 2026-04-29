@@ -7,6 +7,10 @@ const INTERNAL_API_PATHS = new Set([
   '/api/sim-scheduler',
   '/api/funding-rates',
 ]);
+const TRUSTED_CLIENT_WRITE_API_PATHS = new Set([
+  '/api/logs/save',
+  '/api/trades/save',
+]);
 const PUBLIC_EXCHANGE_READ_RE = /^\/api\/exchanges\/[^/]+\/(funding-rates|orderbook)$/;
 const SIGNED_AUTH_COOKIE_NAME = 'site-auth-token';
 
@@ -84,6 +88,25 @@ function isInternalApiRequest(request: NextRequest): boolean {
   return token.length > 0 && safeEqual(token, expected);
 }
 
+function isTrustedClientWriteApiRequest(request: NextRequest): boolean {
+  const { pathname } = request.nextUrl;
+  if (request.method !== 'POST' || !TRUSTED_CLIENT_WRITE_API_PATHS.has(pathname)) {
+    return false;
+  }
+
+  const origin = request.headers.get('origin')?.trim();
+  if (origin) {
+    try {
+      return new URL(origin).host === request.nextUrl.host;
+    } catch {
+      return false;
+    }
+  }
+
+  const fetchSite = request.headers.get('sec-fetch-site')?.trim().toLowerCase();
+  return fetchSite === 'same-origin' || fetchSite === 'same-site';
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -92,7 +115,12 @@ export async function middleware(request: NextRequest) {
   }
 
   if (pathname.startsWith('/api/')) {
-    if (isPublicApi(request) || isInternalApiRequest(request) || await isAuthenticated(request)) {
+    if (
+      isPublicApi(request)
+      || isInternalApiRequest(request)
+      || isTrustedClientWriteApiRequest(request)
+      || await isAuthenticated(request)
+    ) {
       return NextResponse.next();
     }
     return unauthorizedApi();

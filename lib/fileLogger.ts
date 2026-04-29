@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import { getDataDir } from './dataDir';
 import { EXECUTED_TRADE_EVENT_TYPES } from './tradeEvents';
 import { formatDateYmd } from './timeFormat';
@@ -154,6 +155,14 @@ export interface TradeEvent {
   probeBasisMoveBps?: number;
   analysis?: Record<string, unknown>;
   detail?: string;
+  eventId?: string;
+  engineId?: string;
+  eventSource?: string;
+  persistedAt?: number;
+  persistedDataDir?: string;
+  persistedTradeFile?: string;
+  persistedExecutedFile?: string;
+  persistedFundingReceiptFile?: string;
   executionLabel?: '[SIM]실체결' | '[REAL]실체결';
   executionScope?: ExecutedTradeScope;
 }
@@ -171,16 +180,95 @@ function normalizeTradeEvent(event: TradeEvent): TradeEvent {
   };
 }
 
-function appendEventsToDailyFile(events: TradeEvent[], dir: string, dateStr: string): void {
-  if (events.length === 0) return;
+export interface AppendTradesContext {
+  engineId?: string;
+  eventSource?: string;
+}
+
+export interface AppendTradesResult {
+  count: number;
+  persistedAt: number;
+  dataDir: string;
+  tradeFiles: string[];
+  executedFiles: Partial<Record<ExecutedTradeScope, string[]>>;
+  fundingReceiptFiles: Partial<Record<ExecutedTradeScope, string[]>>;
+  events: TradeEvent[];
+}
+
+function stableTradeEventId(event: TradeEvent): string {
+  const basis = {
+    timestamp: event.timestamp,
+    type: event.type,
+    simulation: event.simulation,
+    pairId: event.pairId,
+    baseAsset: event.baseAsset,
+    shortExchange: event.shortExchange,
+    longExchange: event.longExchange,
+    exchange: event.exchange,
+    side: event.side,
+    symbol: event.symbol,
+    milestone: event.milestone,
+    reason: event.reason,
+  };
+  const hash = createHash('sha1').update(JSON.stringify(basis)).digest('hex').slice(0, 20);
+  return `trade_${hash}`;
+}
+
+function normalizeTradeEventForAppend(
+  event: TradeEvent,
+  context: AppendTradesContext | undefined,
+  persistedAt: number,
+  dataDir: string,
+  tradesDir: string,
+): TradeEvent {
+  const dateStr = getDateStr(
+    typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)
+      ? event.timestamp
+      : undefined,
+  );
+  const executionScope = EXECUTED_TRADE_EVENT_TYPES.has(event.type)
+    ? (event.simulation ? 'sim' : 'real')
+    : event.executionScope;
+  const persistedTradeFile = path.join(tradesDir, `${dateStr}.jsonl`);
+  const persistedExecutedFile = executionScope
+    ? path.join(getExecutedTradesDir(executionScope), `${dateStr}.jsonl`)
+    : undefined;
+  const persistedFundingReceiptFile = executionScope && FUNDING_RECEIPT_EVENT_TYPES.has(event.type)
+    ? path.join(getFundingReceiptsDir(executionScope), `${dateStr}.jsonl`)
+    : undefined;
+  const normalized: TradeEvent = normalizeTradeEvent({
+    ...event,
+    eventId: event.eventId ?? stableTradeEventId(event),
+    engineId: event.engineId ?? context?.engineId ?? (event.simulation ? 'unknown-sim-engine' : 'unknown-real-engine'),
+    eventSource: event.eventSource ?? context?.eventSource ?? 'unknown',
+    persistedAt,
+    persistedDataDir: dataDir,
+    persistedTradeFile,
+    persistedExecutedFile,
+    persistedFundingReceiptFile,
+  });
+
+  if (!EXECUTED_TRADE_EVENT_TYPES.has(event.type)) {
+    return normalized;
+  }
+  return {
+    ...normalized,
+    executionLabel: event.simulation ? '[SIM]실체결' : '[REAL]실체결',
+    executionScope,
+  };
+}
+
+function appendEventsToDailyFile(events: TradeEvent[], dir: string, dateStr: string): string | null {
+  if (events.length === 0) return null;
   ensureDir(dir);
   const filePath = path.join(dir, `${dateStr}.jsonl`);
   const lines = events.map((event) => JSON.stringify(event)).join('\n') + '\n';
   fs.appendFileSync(filePath, lines, 'utf-8');
+  return filePath;
 }
 
-function appendEventsToDailyFiles(events: TradeEvent[], dir: string): void {
-  if (events.length === 0) return;
+function appendEventsToDailyFiles(events: TradeEvent[], dir: string): string[] {
+  if (events.length === 0) return [];
   const byDate = new Map<string, TradeEvent[]>();
   for (const event of events) {
     const dateStr = getDateStr(
@@ -192,9 +280,12 @@ function appendEventsToDailyFiles(events: TradeEvent[], dir: string): void {
     rows.push(event);
     byDate.set(dateStr, rows);
   }
+  const files: string[] = [];
   for (const [dateStr, rows] of byDate.entries()) {
-    appendEventsToDailyFile(rows, dir, dateStr);
+    const filePath = appendEventsToDailyFile(rows, dir, dateStr);
+    if (filePath) files.push(filePath);
   }
+  return files;
 }
 
 export function appendLogs(entries: FileLogEntry[]): void {
@@ -211,35 +302,69 @@ export function appendLogs(entries: FileLogEntry[]): void {
   }
 }
 
-export function appendTrades(events: TradeEvent[]): void {
-  if (events.length === 0) return;
+export function appendTrades(events: TradeEvent[], context?: AppendTradesContext): AppendTradesResult {
+  const persistedAt = Date.now();
+  const dataDir = getLoggerDataDir();
+  if (events.length === 0) {
+    return {
+      count: 0,
+      persistedAt,
+      dataDir,
+      tradeFiles: [],
+      executedFiles: {},
+      fundingReceiptFiles: {},
+      events: [],
+    };
+  }
   try {
     const tradesDir = getTradesDir();
-    const normalizedEvents = events.map(normalizeTradeEvent);
+    const normalizedEvents = events.map((event) => normalizeTradeEventForAppend(
+      event,
+      context,
+      persistedAt,
+      dataDir,
+      tradesDir,
+    ));
 
-    appendEventsToDailyFiles(normalizedEvents, tradesDir);
-    appendEventsToDailyFiles(
+    const tradeFiles = appendEventsToDailyFiles(normalizedEvents, tradesDir);
+    const simExecutedFiles = appendEventsToDailyFiles(
       normalizedEvents.filter((event) => event.executionScope === 'sim'),
       getExecutedTradesDir('sim'),
     );
-    appendEventsToDailyFiles(
+    const realExecutedFiles = appendEventsToDailyFiles(
       normalizedEvents.filter((event) => event.executionScope === 'real'),
       getExecutedTradesDir('real'),
     );
-    appendEventsToDailyFiles(
+    const simFundingReceiptFiles = appendEventsToDailyFiles(
       normalizedEvents.filter(
         (event) => event.executionScope === 'sim' && FUNDING_RECEIPT_EVENT_TYPES.has(event.type),
       ),
       getFundingReceiptsDir('sim'),
     );
-    appendEventsToDailyFiles(
+    const realFundingReceiptFiles = appendEventsToDailyFiles(
       normalizedEvents.filter(
         (event) => event.executionScope === 'real' && FUNDING_RECEIPT_EVENT_TYPES.has(event.type),
       ),
       getFundingReceiptsDir('real'),
     );
+    return {
+      count: normalizedEvents.length,
+      persistedAt,
+      dataDir,
+      tradeFiles,
+      executedFiles: {
+        sim: simExecutedFiles,
+        real: realExecutedFiles,
+      },
+      fundingReceiptFiles: {
+        sim: simFundingReceiptFiles,
+        real: realFundingReceiptFiles,
+      },
+      events: normalizedEvents,
+    };
   } catch (err) {
     console.error('[fileLogger] appendTrades failed:', err);
+    throw err;
   }
 }
 

@@ -16,6 +16,15 @@ function parseScope(value: string | null): TradeAuditScope {
   return 'all';
 }
 
+function parseCsvFilter(value: string | null): string[] | null {
+  if (!value) return null;
+  const items = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : null;
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const from = parseTimestamp(url.searchParams.get('from'));
@@ -24,6 +33,8 @@ export async function GET(req: NextRequest) {
   const simulationParam = url.searchParams.get('simulation');
   const limitDatesRaw = Number(url.searchParams.get('limitDates'));
   const scopeParam = url.searchParams.get('scope');
+  const engineIds = parseCsvFilter(url.searchParams.get('engineId') ?? url.searchParams.get('engineIds'));
+  const eventSources = parseCsvFilter(url.searchParams.get('eventSource') ?? url.searchParams.get('eventSources'));
 
   const days = Number.isFinite(daysRaw) && daysRaw > 0 ? daysRaw : null;
   const limitDates = Number.isFinite(limitDatesRaw) && limitDatesRaw > 0 ? Math.floor(limitDatesRaw) : null;
@@ -43,11 +54,17 @@ export async function GET(req: NextRequest) {
     simulation,
     limitDates,
     scope,
+    engineIds,
+    eventSources,
   });
 
   return NextResponse.json({
     success: true,
     scope,
+    filters: {
+      engineIds,
+      eventSources,
+    },
     summary: summarizeTradeEvents(events, {
       from: effectiveFrom,
       to,

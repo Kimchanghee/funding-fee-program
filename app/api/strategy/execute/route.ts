@@ -42,6 +42,38 @@ function getErrorMessage(error: unknown): string {
   return 'unknown';
 }
 
+const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 5;
+const MAX_BASIS_CONVERGENCE_RESERVE_BPS = 200;
+const UNKNOWN_VOLUME_RESERVE_BPS = 5;
+
+function clampBps(value: number, minBps: number, maxBps: number): number {
+  if (!Number.isFinite(value)) return minBps;
+  return Math.max(minBps, Math.min(maxBps, value));
+}
+
+function basisReservePctFromEntryGap(entryGapDriftPercent: number): number {
+  const driftBps = Math.abs(entryGapDriftPercent) * 100;
+  return clampBps(
+    Math.max(MIN_BASIS_CONVERGENCE_RESERVE_BPS, driftBps),
+    MIN_BASIS_CONVERGENCE_RESERVE_BPS,
+    MAX_BASIS_CONVERGENCE_RESERVE_BPS,
+  ) / 10000;
+}
+
+function volumeLiquidityReservePct(
+  notionalUSDT: number,
+  shortQuoteVolume24h?: number,
+  longQuoteVolume24h?: number,
+): number {
+  if (!Number.isFinite(notionalUSDT) || notionalUSDT <= 0) return 0;
+  const knownVolumes = [shortQuoteVolume24h, longQuoteVolume24h]
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
+  if (knownVolumes.length < 2) return UNKNOWN_VOLUME_RESERVE_BPS / 10000;
+  const minVolume = Math.min(...knownVolumes);
+  const participation = notionalUSDT / minVolume;
+  return Math.min(80, Math.max(0, participation * 20_000)) / 10000;
+}
+
 async function rollbackExecutedLegs(legs: Array<{
   label: string;
   exchange: ExchangeId;
@@ -93,6 +125,16 @@ export async function POST(req: NextRequest) {
     const normalizedPaybackOverrides = sanitizePaybackOverrides(paybackOverrides);
     let shortRateForDecision = opportunity?.shortRate ?? 0;
     let longRateForDecision = opportunity?.longRate ?? 0;
+    let shortQuoteVolume24h: number | undefined;
+    let longQuoteVolume24h: number | undefined;
+    let conservativeEV: ReturnType<typeof calcConservativeEV> | null = null;
+    let conservativeEVInputs: {
+      shortDrift: number;
+      longDrift: number;
+      entryImpactDec: number;
+      exitImpactDec: number;
+      basisConvergenceReservePct: number;
+    } | null = null;
     const pairId = typeof body.pairId === 'string' && body.pairId.trim()
       ? body.pairId.trim()
       : `api-${Date.now()}-${opportunity?.baseAsset ?? 'pair'}`;
@@ -275,6 +317,8 @@ export async function POST(req: NextRequest) {
 
       shortRateForDecision = shortLiveRate.rate;
       longRateForDecision = longLiveRate.rate;
+      shortQuoteVolume24h = shortLiveRate.quoteVolume24h;
+      longQuoteVolume24h = longLiveRate.quoteVolume24h;
     } catch (revalidateErr) {
       return NextResponse.json({
         success: false,
@@ -360,6 +404,11 @@ export async function POST(req: NextRequest) {
     }
 
     // 2c. Pre-execution profitability gate — conservative EV (always forced ON)
+    const [shortExitFill, longExitFill] = await Promise.all([
+      fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'buy', targetNotional),
+      fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'sell', targetNotional),
+    ]);
+
     const execHedgeFeePct = (
       resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides, normalizedPaybackOverrides)
       + resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides, normalizedPaybackOverrides)
@@ -377,14 +426,29 @@ export async function POST(req: NextRequest) {
         : 0;
       const roundTripFeeDec = execHedgeFeePct / 100;
       const entryImpactDec = (shortFill.slippagePercent + longFill.slippagePercent) / 100;
+      const exitImpactDec = (shortExitFill.slippagePercent + longExitFill.slippagePercent) / 100;
+      const basisConvergenceReservePct = basisReservePctFromEntryGap(entryGap.driftPercent);
+      const volumeReservePct = volumeLiquidityReservePct(targetNotional, shortQuoteVolume24h, longQuoteVolume24h);
+      conservativeEVInputs = {
+        shortDrift,
+        longDrift,
+        entryImpactDec,
+        exitImpactDec,
+        basisConvergenceReservePct,
+      };
       const ev = calcConservativeEV(
         targetNotional,
         shortRateForDecision, longRateForDecision,
         shortDrift, longDrift,
-        roundTripFeeDec, entryImpactDec, entryImpactDec,
+        roundTripFeeDec, entryImpactDec, exitImpactDec,
+        {
+          basisConvergenceReservePct,
+          volumeLiquidityReservePct: volumeReservePct,
+        },
       );
+      conservativeEV = ev;
 
-      if (ev.expectedNetUSD <= 0) {
+      if (!ev.passesMinProfit || !ev.passesEVRatio) {
         console.log(
           `[EXECUTE] ${opportunity.baseAsset} BLOCKED — conservative EV: ` +
           `$${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
@@ -395,6 +459,14 @@ export async function POST(req: NextRequest) {
           reason: 'profitability_insufficient',
           expectedNetUSD: ev.expectedNetUSD,
           evRatio: ev.evRatio,
+          passesMinProfit: ev.passesMinProfit,
+          passesEVRatio: ev.passesEVRatio,
+          expectedFundingUSD: ev.expectedFundingUSD,
+          roundTripFeeUSD: ev.roundTripFeeUSD,
+          entryImpactUSD: ev.entryImpactUSD,
+          exitImpactUSD: ev.exitImpactUSD,
+          basisConvergenceReserveUSD: ev.basisConvergenceReserveUSD,
+          volumeLiquidityReserveUSD: ev.volumeLiquidityReserveUSD,
         });
       }
       console.log(
@@ -538,6 +610,14 @@ export async function POST(req: NextRequest) {
         });
         if (trimResult.trimmed) {
           hedgeTrimNote = trimResult.detail;
+          if (trimResult.trimFee !== undefined) {
+            if (trimResult.trimmedSide === 'short') shortResult.value.estimatedFee += trimResult.trimFee;
+            if (trimResult.trimmedSide === 'long') longResult.value.estimatedFee += trimResult.trimFee;
+          }
+          if (trimResult.shortAmount !== undefined) shortResult.value.amount = trimResult.shortAmount;
+          if (trimResult.longAmount !== undefined) longResult.value.amount = trimResult.longAmount;
+          if (trimResult.shortFilledNotional !== undefined) shortResult.value.filledNotional = trimResult.shortFilledNotional;
+          if (trimResult.longFilledNotional !== undefined) longResult.value.filledNotional = trimResult.longFilledNotional;
           console.log(`[EXECUTE] ${opportunity.baseAsset} hedge trim: ${hedgeTrimNote}`);
         }
       } catch (trimErr) {
@@ -579,6 +659,35 @@ export async function POST(req: NextRequest) {
         + (shortResult.value.filledNotional * resolveRuntimeFee(opportunity.shortExchange, 'taker', normalizedFeeOverrides, normalizedPaybackOverrides))
         + (longResult.value.filledNotional * resolveRuntimeFee(opportunity.longExchange, 'taker', normalizedFeeOverrides, normalizedPaybackOverrides))
       : undefined;
+    const executedNotional = shortOk && longOk
+      ? Math.min(shortResult.value.filledNotional, longResult.value.filledNotional)
+      : undefined;
+    const postExecutionConservativeEV = (
+      conservativeEVInputs
+      && conservativeEV
+      && executedNotional !== undefined
+      && executedNotional > 0
+      && expectedTotalRoundTripFees !== undefined
+    )
+      ? calcConservativeEV(
+        executedNotional,
+        shortRateForDecision,
+        longRateForDecision,
+        conservativeEVInputs.shortDrift,
+        conservativeEVInputs.longDrift,
+        expectedTotalRoundTripFees / executedNotional,
+        conservativeEVInputs.entryImpactDec,
+        conservativeEVInputs.exitImpactDec,
+        {
+          basisConvergenceReservePct: conservativeEVInputs.basisConvergenceReservePct,
+          volumeLiquidityReservePct: volumeLiquidityReservePct(
+            executedNotional,
+            shortQuoteVolume24h,
+            longQuoteVolume24h,
+          ),
+        },
+      )
+      : conservativeEV;
 
     return NextResponse.json({
       success: shortOk && longOk,
@@ -592,6 +701,10 @@ export async function POST(req: NextRequest) {
       hedgeTrim: hedgeTrimNote,
       pairId,
       expectedTotalRoundTripFees,
+      conservativeEV: postExecutionConservativeEV,
+      preExecutionConservativeEV: conservativeEV,
+      shortRateForDecision,
+      longRateForDecision,
     });
   } catch (err) {
     return NextResponse.json(

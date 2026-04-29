@@ -62,9 +62,18 @@ import {
 // Fee constants (fallback for contexts without exchange info)
 // ─────────────────────────────────────────────
 const TAKER_FEE_FALLBACK = 0.00048; // 0.048% referral-max worst-case fallback (bitget taker)
+const CLIENT_EXECUTION_TELEGRAM_ENABLED = process.env.NEXT_PUBLIC_ENABLE_CLIENT_EXECUTION_TELEGRAM === 'true';
 let _lastScheduleDiagAt = 0; // 진단 로그 스팸 방지
 const RUNTIME_INACTIVE_CONFIRM_MS = 10_000;
 const runtimeInactiveSince: Partial<Record<'real' | 'sim', number>> = {};
+
+function sendClientExecutionTelegram(message: string): Promise<boolean> {
+  if (!CLIENT_EXECUTION_TELEGRAM_ENABLED) {
+    console.warn('[telegram] client execution telegram suppressed; server scheduler is the source of truth');
+    return Promise.resolve(false);
+  }
+  return sendTelegramMessage(message);
+}
 
 function resolveRuntimeActiveWithGrace(
   mode: 'real' | 'sim',
@@ -1008,6 +1017,23 @@ interface ExecuteStrategyResult {
   hedgeTrim?: string;
   error?: string;
   reason?: string;
+  expectedTotalRoundTripFees?: number;
+  shortRateForDecision?: number;
+  longRateForDecision?: number;
+  conservativeEV?: {
+    expectedFundingUSD: number;
+    roundTripFeeUSD: number;
+    entryImpactUSD: number;
+    exitImpactUSD: number;
+    timingReserveUSD: number;
+    basisConvergenceReserveUSD: number;
+    volumeLiquidityReserveUSD: number;
+    dataHealthPenaltyUSD: number;
+    expectedNetUSD: number;
+    passesMinProfit: boolean;
+    passesEVRatio: boolean;
+    evRatio: number;
+  } | null;
   shortSlippage?: number;
   longSlippage?: number;
   maxSlippage?: number;
@@ -1184,7 +1210,11 @@ function flushTrades(options?: { preferBeacon?: boolean }) {
   tradeBatch = [];
   if (options?.preferBeacon && typeof navigator !== 'undefined') {
     try {
-      const payload = JSON.stringify({ events });
+      const payload = JSON.stringify({
+        events,
+        engineId: 'client-store',
+        eventSource: 'client-store-beacon',
+      });
       const blob = new Blob([payload], { type: 'application/json' });
       const sent = navigator.sendBeacon('/api/trades/save', blob);
       if (sent) return;
@@ -1196,7 +1226,11 @@ function flushTrades(options?: { preferBeacon?: boolean }) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     keepalive: true,
-    body: JSON.stringify({ events }),
+    body: JSON.stringify({
+      events,
+      engineId: 'client-store',
+      eventSource: 'client-store-fetch',
+    }),
   })
     .then(async (response) => {
       if (!response.ok) {
@@ -3106,7 +3140,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       saveSimState({ simBalances: st1.simBalances, simInitialBalances: st1.simInitialBalances, simPositions: st1.simPositions, simTotalFundingEarned: st1.simTotalFundingEarned, simTotalTopUps: st1.simTotalTopUps, simTotalFees: st1.simTotalFees, simTotalClosedPnl: st1.simTotalClosedPnl, simClosedPnlPerExchange: st1.simClosedPnlPerExchange, simClosedFeesPerExchange: st1.simClosedFeesPerExchange });
       const totalRoundTripFees = notional * getConfiguredExchangeFee(strategyConfig, shortExchange, 'taker') * 2
         + adjustedLongNotional * getConfiguredExchangeFee(strategyConfig, longExchange, 'taker') * 2; // 진입+청산 보수적 추정
-      const netProfit = perFunding - totalRoundTripFees;
+      const legacyConservativeProfit = estimateProfit(opportunity, margin, leverage, {
+        feeOverrides: strategyConfig.feeOverrides,
+        paybackOverrides: strategyConfig.paybackOverrides,
+        useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
+        entryImpactPercent: Math.abs(entryGapPercent),
+        exitImpactPercent: Math.abs(entryGapPercent),
+        basisConvergenceReservePercent: Math.max(0.05, Math.abs(entryGapPercent)),
+        volumeLiquidityReservePercent: 0.05,
+      });
+      const netProfit = legacyConservativeProfit.conservativeEV.expectedNetUSD;
       get().addLog('success',
         `[SIM] ${opportunity.baseAsset} 헷징 진입 완료 (${isSnipe ? '스나이프' : '홀딩'})`,
         undefined,
@@ -3129,6 +3172,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         netProfit,
         perFunding,
         totalRoundTripFees,
+        analysis: {
+          conservativeEvUSD: netProfit,
+          perFundingBeforeReserves: perFunding,
+          totalRoundTripFees,
+          entryImpactPercent: Math.abs(entryGapPercent),
+          basisConvergenceReservePercent: Math.max(0.05, Math.abs(entryGapPercent)),
+          volumeLiquidityReservePercent: 0.05,
+        },
         pairId,
       });
       return { success: true };
@@ -3268,6 +3319,12 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
       const shortData = result.short?.data;
       const longData = result.long?.data;
+      const shortRateForDecision = typeof result.shortRateForDecision === 'number'
+        ? result.shortRateForDecision
+        : opportunity.shortRate;
+      const longRateForDecision = typeof result.longRateForDecision === 'number'
+        ? result.longRateForDecision
+        : opportunity.longRate;
 
       if (result.success && shortData && longData) {
         const openedAt = Date.now();
@@ -3299,15 +3356,16 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         opportunity.baseAsset, [opportunity.shortExchange, opportunity.longExchange],
       ), 2000);
       const expectedPerFunding = shortData && longData
-        ? shortData.filledNotional * opportunity.shortRate - longData.filledNotional * opportunity.longRate
+        ? shortData.filledNotional * shortRateForDecision - longData.filledNotional * longRateForDecision
         : previewProfit.perFunding;
       const expectedTotalRoundTripFees = shortData && longData
-        ? shortData.estimatedFee
+        ? result.expectedTotalRoundTripFees
+          ?? shortData.estimatedFee
           + longData.estimatedFee
           + shortData.filledNotional * getConfiguredExchangeFee(strategyConfig, opportunity.shortExchange, 'taker')
           + longData.filledNotional * getConfiguredExchangeFee(strategyConfig, opportunity.longExchange, 'taker')
         : previewProfit.totalFees;
-      const expectedNetProfit = expectedPerFunding - expectedTotalRoundTripFees;
+      const expectedNetProfit = result.conservativeEV?.expectedNetUSD ?? expectedPerFunding - expectedTotalRoundTripFees;
       const executedNotional = shortData && longData
         ? Math.min(shortData.filledNotional, longData.filledNotional)
         : result.short?.data?.filledNotional ?? result.long?.data?.filledNotional ?? (realInvestment * strategyConfig.leverage);
@@ -3318,6 +3376,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         spread: opportunity.spread, spreadPercent: opportunity.spreadPercent,
         margin: realInvestment, leverage: strategyConfig.leverage,
         notional: executedNotional,
+        shortRate: shortRateForDecision,
+        longRate: longRateForDecision,
         entryFee: (result.short?.data?.estimatedFee ?? 0) + (result.long?.data?.estimatedFee ?? 0),
         netProfit: expectedNetProfit,
         perFunding: expectedPerFunding,
@@ -3326,7 +3386,19 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         longPrice: result.long?.data?.price,
         shortLiquidity: result.short?.data?.liquidity,
         longLiquidity: result.long?.data?.liquidity,
-        detail: `short:${result.short?.success ? 'OK' : result.short?.error} long:${result.long?.success ? 'OK' : result.long?.error}${result.hedgeTrim ? ` | trim:${result.hedgeTrim}` : ''}${result.rollback ? ` | rollback:${result.rollback}` : ''}`,
+        analysis: result.conservativeEV
+          ? {
+            conservativeEvUSD: result.conservativeEV.expectedNetUSD,
+            expectedPerFundingBeforeReserves: expectedPerFunding,
+            totalRoundTripFees: expectedTotalRoundTripFees,
+            entryImpactUSD: result.conservativeEV.entryImpactUSD,
+            exitImpactUSD: result.conservativeEV.exitImpactUSD,
+            basisConvergenceReserveUSD: result.conservativeEV.basisConvergenceReserveUSD,
+            volumeLiquidityReserveUSD: result.conservativeEV.volumeLiquidityReserveUSD,
+            evRatio: result.conservativeEV.evRatio,
+          }
+          : undefined,
+        detail: `conservativeEV:${expectedNetProfit.toFixed(8)} expectedPerFunding:${expectedPerFunding.toFixed(8)} totalRoundTripFees:${expectedTotalRoundTripFees.toFixed(8)} short:${result.short?.success ? 'OK' : result.short?.error} long:${result.long?.success ? 'OK' : result.long?.error}${result.hedgeTrim ? ` | trim:${result.hedgeTrim}` : ''}${result.rollback ? ` | rollback:${result.rollback}` : ''}`,
         success: result.success,
         pairId,
       });
@@ -3777,7 +3849,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         `  ${p.exchange.toUpperCase()} ${p.symbol} (${p.side}): ${p.amount >= 0 ? '+' : ''}$${p.amount.toFixed(4)}`
       );
       const icon = totalNewFunding >= 0 ? '💰' : '💸';
-      void sendTelegramMessage([
+      void sendClientExecutionTelegram([
         `${icon} <b>[SIM]실체결 펀딩 수령: ${simFundingPayments.length}건</b>`,
         ...lines,
         `\n합계: ${totalNewFunding >= 0 ? '+' : ''}$${totalNewFunding.toFixed(4)}`,
@@ -3845,7 +3917,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           byAsset.set(key, prev);
         }
         for (const [asset, info] of byAsset) {
-          void sendTelegramMessage(formatSnipeCompleteAlert({
+          void sendClientExecutionTelegram(formatSnipeCompleteAlert({
             baseAsset: asset,
             shortExchange: info.short,
             longExchange: info.long,
@@ -4810,7 +4882,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
               );
             }
 
-            void sendTelegramMessage(formatSnipeCompleteAlert({
+            void sendClientExecutionTelegram(formatSnipeCompleteAlert({
               baseAsset: asset,
               shortExchange: target.shortExchange,
               longExchange: target.longExchange,

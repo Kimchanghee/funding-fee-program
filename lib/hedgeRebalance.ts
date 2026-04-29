@@ -29,6 +29,8 @@ export interface HedgeTrimParams {
 export interface HedgeTrimResult {
   trimmed: boolean;
   detail?: string;
+  trimmedSide?: 'short' | 'long';
+  trimFee?: number;
   /** Updated amounts after trim (only set when trimmed=true) */
   shortAmount?: number;
   longAmount?: number;
@@ -63,12 +65,14 @@ export async function rebalanceExecutedHedge(
 
   if (shortNotional > longNotional) {
     const excessQty = (shortNotional - minNotional) / shortEntry.price;
-    await closePosition(
+    const trimClose = await closePosition(
       params.shortExchange, params.shortConfig,
       params.shortSymbol, 'short', excessQty, params.feeOverrides, params.paybackOverrides,
     );
     return {
       trimmed: true,
+      trimmedSide: 'short',
+      trimFee: trimClose.estimatedFee,
       detail: `short excess $${(shortNotional - minNotional).toFixed(2)} trimmed (${diffPercent.toFixed(3)}%)`,
       shortAmount: shortEntry.amount - excessQty,
       longAmount: longEntry.amount,
@@ -77,12 +81,14 @@ export async function rebalanceExecutedHedge(
     };
   } else {
     const excessQty = (longNotional - minNotional) / longEntry.price;
-    await closePosition(
+    const trimClose = await closePosition(
       params.longExchange, params.longConfig,
       params.longSymbol, 'long', excessQty, params.feeOverrides, params.paybackOverrides,
     );
     return {
       trimmed: true,
+      trimmedSide: 'long',
+      trimFee: trimClose.estimatedFee,
       detail: `long excess $${(longNotional - minNotional).toFixed(2)} trimmed (${diffPercent.toFixed(3)}%)`,
       shortAmount: shortEntry.amount,
       longAmount: longEntry.amount - excessQty,

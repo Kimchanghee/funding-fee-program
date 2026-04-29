@@ -29,6 +29,15 @@ function parseScope(value: string | null): TradeHistoryScope | null {
   return null;
 }
 
+function parseCsvFilter(value: string | null): Set<string> | null {
+  if (!value) return null;
+  const items = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length > 0 ? new Set(items) : null;
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const date = url.searchParams.get('date') || undefined;
@@ -42,6 +51,8 @@ export async function GET(req: NextRequest) {
   const limit = parsePositiveInt(url.searchParams.get('limit'));
   const page = parsePositiveInt(url.searchParams.get('page'));
   const pageSize = parsePositiveInt(url.searchParams.get('pageSize'));
+  const engineIdSet = parseCsvFilter(url.searchParams.get('engineId') ?? url.searchParams.get('engineIds'));
+  const eventSourceSet = parseCsvFilter(url.searchParams.get('eventSource') ?? url.searchParams.get('eventSources'));
 
   if (!scope) {
     return NextResponse.json({ success: false, error: 'Invalid scope (all|sim|real|sim_executed|real_executed)' }, { status: 400 });
@@ -81,6 +92,8 @@ export async function GET(req: NextRequest) {
     if (timestamp === null) continue;
     if (typeSet && !typeSet.has(event.type)) continue;
     if (simulationValue !== null && event.simulation !== simulationValue) continue;
+    if (engineIdSet && !engineIdSet.has(event.engineId ?? '')) continue;
+    if (eventSourceSet && !eventSourceSet.has(event.eventSource ?? '')) continue;
     if (from !== null && timestamp < from) continue;
     if (to !== null && timestamp > to) continue;
     normalized.push({ ...event, timestamp });
@@ -121,6 +134,10 @@ export async function GET(req: NextRequest) {
     totalPages,
     fromIndex,
     toIndex,
+    filters: {
+      engineIds: engineIdSet ? Array.from(engineIdSet) : null,
+      eventSources: eventSourceSet ? Array.from(eventSourceSet) : null,
+    },
     events: events.map((event) => ({
       ...event,
       timestampText: formatTimestampYmdHmsMs(event.timestamp),
