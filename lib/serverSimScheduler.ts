@@ -63,6 +63,13 @@ import {
 } from './serverSimState';
 import { getDataDir } from './dataDir';
 import { getSchedulerRuntimeIdentity, getTradeWindowDiagnostics } from './runtimeDiagnostics';
+import {
+  getActiveLiveFundingTimeDriftMs,
+  getRelaxGuardsFlags,
+  isAcceptableFundingShift,
+  MAX_DEFERRALS_PER_ENTRY,
+  ORDERBOOK_BACKOFF_DELAYS_MS,
+} from './relaxGuardsConfig';
 
 const DATA_DIR = getDataDir();
 const STATE_FILE = join(DATA_DIR, 'sim-scheduler-state.json');
@@ -144,17 +151,6 @@ const MAX_BASIS_CONVERGENCE_RESERVE_BPS = 200;
 const UNKNOWN_VOLUME_RESERVE_BPS = 5;
 const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 80;
 const STALE_DATA_PENALTY_BPS = 10;
-
-function isSingleCycleFundingRolloverShift(
-  shiftMs: number,
-  fundingIntervalMs: number,
-  toleranceMs: number,
-): boolean {
-  if (!Number.isFinite(shiftMs) || !Number.isFinite(fundingIntervalMs) || fundingIntervalMs <= 0) {
-    return false;
-  }
-  return Math.abs(shiftMs - fundingIntervalMs) <= toleranceMs;
-}
 
 function formatSignedUsd(value: number, digits = 4): string {
   const sign = value >= 0 ? '+' : '';
@@ -635,6 +631,13 @@ interface ScheduledSimEntry {
   opportunity: ArbitrageOpportunity;
   targetTime: number;
   investmentUSDT: number;
+  /**
+   * How many times this entry has been deferred to a future funding cycle by
+   * the scenario-C orderbook fallback. Capped at MAX_DEFERRALS_PER_ENTRY so a
+   * persistently broken symbol cannot loop forever. Optional for backwards
+   * compat with persisted state from before the feature flag.
+   */
+  deferralCount?: number;
 }
 
 interface ScheduleProbeState {
@@ -2645,6 +2648,65 @@ class ServerSimScheduler {
 
       const failedAt = Date.now();
       const failureReason = mapSimEntryErrorToGuardReason(primaryResult.error);
+
+      // Scenario C (ORDERBOOK_DEFER_ENABLED=true): when the failure is purely
+      // an orderbook-availability problem, requeue the entry for the next
+      // funding cycle instead of recording a terminal failure. Cap by
+      // deferralCount so a permanently broken symbol cannot loop. Default OFF
+      // preserves the existing immediate-fail behaviour.
+      const deferFlags = getRelaxGuardsFlags();
+      const deferralCount = entry.deferralCount ?? 0;
+      const canDefer = deferFlags.orderbookDeferEnabled
+        && failureReason === 'orderbook_unavailable'
+        && deferralCount < MAX_DEFERRALS_PER_ENTRY;
+      if (canDefer) {
+        const baseFundingMs = primaryOpportunity.fundingIntervalMs && primaryOpportunity.fundingIntervalMs > 0
+          ? primaryOpportunity.fundingIntervalMs
+          : 8 * 3600000;
+        const nextFundingTime = scheduledFundingTime + baseFundingMs;
+        const lead = Math.max(0, this.config.timingConfig?.entryLeadMs ?? 7000);
+        const newTargetTime = nextFundingTime - lead;
+        const newProbeId = `${entry.opportunityId}@${nextFundingTime}`;
+        const deferredOpportunity: ArbitrageOpportunity = {
+          ...primaryOpportunity,
+          nextFundingTime,
+        };
+        const deferredEntry: ScheduledSimEntry = {
+          opportunityId: entry.opportunityId,
+          probeId: newProbeId,
+          asset: entry.asset,
+          opportunity: deferredOpportunity,
+          targetTime: newTargetTime,
+          investmentUSDT: entry.investmentUSDT,
+          deferralCount: deferralCount + 1,
+        };
+        this.scheduledEntries.set(entry.opportunityId, deferredEntry);
+        probeState.lastReason = 'deferred_to_next_cycle';
+        this.scheduleProbeStates.set(probeState.probeId, probeState);
+        this.recordTrades([
+          this.buildScheduleProbeEvent(
+            'deferred_to_next_cycle',
+            primaryOpportunity,
+            entry.investmentUSDT,
+            failedAt,
+            {
+              status: 'scheduled',
+              reason: 'orderbook_unavailable_deferred',
+              timeToExecutionMs: newTargetTime - failedAt,
+              analysis: {
+                failureReason,
+                primaryAnalysis: primaryResult.analysis ?? null,
+                primaryError: primaryResult.error ?? null,
+                deferralCount: deferralCount + 1,
+                nextFundingTime,
+                newProbeId,
+              },
+            },
+          ),
+        ]);
+        continue;
+      }
+
       if (Number.isFinite(primaryResult.shortSlippagePercent)) {
         probeState.lastShortSlippagePercent = primaryResult.shortSlippagePercent;
       }
@@ -3473,18 +3535,26 @@ class ServerSimScheduler {
       const fundingIntervalMs = opportunity.fundingIntervalMs && opportunity.fundingIntervalMs > 0
         ? opportunity.fundingIntervalMs
         : 8 * 3600000;
-      const shortIsRollover = isSingleCycleFundingRolloverShift(
+      // Scenario B (RELAX_FUNDING_WINDOW=true): bumps drift tolerance from 1m
+      // to 10m and also accepts shifts that match any of {1h, 4h, 8h} cycles
+      // (not only the opportunity's own interval). Default OFF preserves
+      // current strict behaviour exactly.
+      const relaxFlags = getRelaxGuardsFlags();
+      const liveFundingDriftMs = getActiveLiveFundingTimeDriftMs(LIVE_FUNDING_TIME_DRIFT_MS);
+      const shortIsRollover = isAcceptableFundingShift(
         shortFundingShiftMs,
         fundingIntervalMs,
-        LIVE_FUNDING_TIME_DRIFT_MS,
+        liveFundingDriftMs,
+        { allowMultiCycle: relaxFlags.relaxFundingWindow },
       );
-      const longIsRollover = isSingleCycleFundingRolloverShift(
+      const longIsRollover = isAcceptableFundingShift(
         longFundingShiftMs,
         fundingIntervalMs,
-        LIVE_FUNDING_TIME_DRIFT_MS,
+        liveFundingDriftMs,
+        { allowMultiCycle: relaxFlags.relaxFundingWindow },
       );
-      const shortWithinWindow = shortFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS || shortIsRollover;
-      const longWithinWindow = longFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS || longIsRollover;
+      const shortWithinWindow = shortFundingShiftMs <= liveFundingDriftMs || shortIsRollover;
+      const longWithinWindow = longFundingShiftMs <= liveFundingDriftMs || longIsRollover;
       if (!shortWithinWindow || !longWithinWindow) {
         return {
           success: false,
@@ -3494,12 +3564,13 @@ class ServerSimScheduler {
             extra: {
               shortFundingShiftMs,
               longFundingShiftMs,
-              liveFundingTimeDriftMs: LIVE_FUNDING_TIME_DRIFT_MS,
+              liveFundingTimeDriftMs: liveFundingDriftMs,
               fundingIntervalMs,
               shortIsRollover,
               longIsRollover,
               shortWithinWindow,
               longWithinWindow,
+              relaxFundingWindow: relaxFlags.relaxFundingWindow,
             },
           }),
         };
@@ -3633,17 +3704,50 @@ class ServerSimScheduler {
           fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
         ]));
       } catch (err) {
-        return {
-          success: false,
-          error: `orderbook fetch failed; cannot validate slippage: ${(err as Error).message ?? err}`,
-          analysis: buildFailureAnalysis({
-            attemptedNotionalUSDT: baseNotional,
-            effectiveNotionalUSDT: notional,
-            extra: {
-              orderbookError: (err as Error).message ?? String(err),
-            },
-          }),
-        };
+        // Scenario C (ORDERBOOK_DEFER_ENABLED=true): give the orderbook
+        // another chance with longer backoffs (500ms -> 1s -> 2s) before
+        // giving up. This addresses the common pattern where Binance WS
+        // returns an empty orderbook for low-volume symbols for 1-3 seconds
+        // around the funding boundary. The default OFF preserves the current
+        // immediate-fail behaviour.
+        const orderbookFlags = getRelaxGuardsFlags();
+        let recoveredFill: [
+          Awaited<ReturnType<typeof fetchMarketFillPrice>>,
+          Awaited<ReturnType<typeof fetchMarketFillPrice>>,
+        ] | null = null;
+        let lastBackoffErr: unknown = err;
+        if (orderbookFlags.orderbookDeferEnabled) {
+          for (const delayMs of ORDERBOOK_BACKOFF_DELAYS_MS) {
+            await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+            try {
+              recoveredFill = await Promise.all([
+                fetchMarketFillPrice(opportunity.shortExchange, opportunity.shortSymbol, 'sell', notional),
+                fetchMarketFillPrice(opportunity.longExchange, opportunity.longSymbol, 'buy', notional),
+              ]);
+              break;
+            } catch (retryErr) {
+              lastBackoffErr = retryErr;
+            }
+          }
+        }
+        if (recoveredFill) {
+          [shortFill, longFill] = recoveredFill;
+        } else {
+          return {
+            success: false,
+            error: `orderbook fetch failed; cannot validate slippage: ${(lastBackoffErr as Error).message ?? lastBackoffErr}`,
+            analysis: buildFailureAnalysis({
+              attemptedNotionalUSDT: baseNotional,
+              effectiveNotionalUSDT: notional,
+              extra: {
+                orderbookError: (lastBackoffErr as Error).message ?? String(lastBackoffErr),
+                orderbookBackoffAttempts: orderbookFlags.orderbookDeferEnabled
+                  ? ORDERBOOK_BACKOFF_DELAYS_MS.length
+                  : 0,
+              },
+            }),
+          };
+        }
       }
 
       if (snipeConfig.useImpactGuards) {
