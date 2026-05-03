@@ -31,6 +31,7 @@ export interface TradeEventLike {
   netProfit?: number;
   perFunding?: number;
   totalRoundTripFees?: number;
+  totalReservesUSD?: number;
   pairId?: string;
   entryFee?: number;
   exitFee?: number;
@@ -58,6 +59,18 @@ export interface TradePairSummary {
   spreadPercent: number;
   expectedProfit: number;
   expectedRoiPercent: number;
+  /**
+   * Sum of conservative-EV deductions that are NOT funding income and NOT
+   * round-trip fees. Equals (perFunding − totalRoundTripFees) − netProfit.
+   * Components: timing reserve (5bp), basis convergence (5~200bp), volume
+   * liquidity (0~80bp), data health penalty (0~10bp), entry/exit slippage
+   * estimates, and any drift-buffer impact on the funding term.
+   * Surfaced in the entry telegram alert so the user can see exactly how
+   * much the EV is shaving off the raw spread.
+   */
+  totalReservesUSD: number;
+  perFunding: number;
+  totalRoundTripFees: number;
   shortExit: TradeEventLike | null;
   longExit: TradeEventLike | null;
   shortPnl: number;
@@ -144,6 +157,11 @@ function createPairFromEvent(event: TradeEventLike): TradePairSummary {
   const leverage = valueOrZero(event.leverage) || 1;
   const notional = valueOrZero(event.notional);
   const expectedProfit = valueOrZero(event.netProfit);
+  const perFunding = valueOrZero(event.perFunding);
+  const totalRoundTripFees = valueOrZero(event.totalRoundTripFees);
+  const totalReservesUSD = isFiniteNumber(event.totalReservesUSD)
+    ? event.totalReservesUSD
+    : Math.max(0, perFunding - totalRoundTripFees - expectedProfit);
   const pair: TradePairSummary = {
     pairId,
     baseAsset: event.baseAsset ?? 'UNKNOWN',
@@ -157,6 +175,9 @@ function createPairFromEvent(event: TradeEventLike): TradePairSummary {
     spreadPercent: valueOrZero(event.spreadPercent),
     expectedProfit,
     expectedRoiPercent: 0,
+    totalReservesUSD,
+    perFunding,
+    totalRoundTripFees,
     shortExit: null,
     longExit: null,
     shortPnl: 0,
@@ -191,6 +212,15 @@ function updatePairFromEvent(pair: TradePairSummary, event: TradeEventLike): voi
   if (isFiniteNumber(event.notional) && event.notional > 0) pair.notional = event.notional;
   if (isFiniteNumber(event.spreadPercent)) pair.spreadPercent = event.spreadPercent;
   if (isFiniteNumber(event.netProfit)) pair.expectedProfit = event.netProfit;
+  if (isFiniteNumber(event.perFunding)) pair.perFunding = event.perFunding;
+  if (isFiniteNumber(event.totalRoundTripFees)) pair.totalRoundTripFees = event.totalRoundTripFees;
+  if (isFiniteNumber(event.totalReservesUSD)) {
+    pair.totalReservesUSD = event.totalReservesUSD;
+  } else if (isFiniteNumber(event.perFunding)
+    && isFiniteNumber(event.totalRoundTripFees)
+    && isFiniteNumber(event.netProfit)) {
+    pair.totalReservesUSD = Math.max(0, event.perFunding - event.totalRoundTripFees - event.netProfit);
+  }
   pair.entryTime = Math.min(pair.entryTime, event.timestamp);
 }
 
@@ -322,6 +352,15 @@ export function formatTradePairTelegramMessage(
   lines.push(`pairId: ${pair.pairId}`);
   lines.push(`route: ${pair.shortExchange.toUpperCase()} -> ${pair.longExchange.toUpperCase()}`);
   if (!realized) {
+    // Surface the conservative-EV reserves so that "expNet vs perFunding-fees"
+    // gap is visible at entry time. Only show when reserves are non-trivial
+    // (>$0.01) to avoid noise on tiny trades.
+    if (pair.totalReservesUSD > 0.01) {
+      lines.push(`EV 리저브 차감: -$${pair.totalReservesUSD.toFixed(2)} (슬리피지/타이밍/베이시스/유동성)`);
+    }
+    if (pair.perFunding > 0) {
+      lines.push(`raw 펀딩 인컴(예상): +$${pair.perFunding.toFixed(2)}, 왕복수수료: -$${pair.totalRoundTripFees.toFixed(2)}`);
+    }
     lines.push(`spread: +${pair.spreadPercent.toFixed(4)}%`);
     lines.push('실현손익은 청산 알림/대시보드 PnL 기준');
   }

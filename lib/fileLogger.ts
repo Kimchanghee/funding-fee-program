@@ -108,6 +108,12 @@ export interface TradeEvent {
   netProfit?: number;
   perFunding?: number;
   totalRoundTripFees?: number;
+  /**
+   * Conservative-EV reserves (timing/basis/volume/dataHealth/impact) shaved
+   * off the raw spread to produce `netProfit`. Surfaced on entry events for
+   * post-hoc analysis: equals `(perFunding − totalRoundTripFees) − netProfit`.
+   */
+  totalReservesUSD?: number;
   pairId?: string;
   entryFee?: number;
   exitFee?: number;

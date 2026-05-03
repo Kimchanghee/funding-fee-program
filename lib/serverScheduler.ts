@@ -612,6 +612,7 @@ class ServerScheduler {
     );
     void sendTelegramMessage(
       `[REAL Scheduler] started\ninvestment: $${this.config.investmentUSDT} | leverage: ${this.config.leverage}x | compound: ${this.config.compoundInvesting ? 'ON' : 'OFF'}\nexchanges: ${this.config.enabledExchanges.join(', ')}\nminSpread: ${this.config.minSpreadPercent}%`,
+      { kind: 'manual' },
     );
   }
 
@@ -666,6 +667,7 @@ class ServerScheduler {
     );
     void sendTelegramMessage(
       `[REAL Scheduler] stopped\nentries: ${this.stats.totalEntries} | closes: ${this.stats.totalCloses}${openPositions > 0 ? `\nopen positions require manual handling: ${openPositions}` : ''}`,
+      { kind: 'manual' },
     );
   }
 
@@ -2361,10 +2363,29 @@ class ServerScheduler {
       const persistedEvents = persisted.events;
       const entryPair = buildTradePairsFromEvents(persistedEvents)[0];
       if (entryPair) {
-        void sendTelegramMessage(formatTradePairTelegramMessage(entryPair, 'entry', {
-          currentTotalBalanceUSDT: balanceSummary.totalUSDT,
-          note: formatPersistenceTelegramNote(persistedEvents, pairId),
-        }));
+        void sendTelegramMessage(
+          formatTradePairTelegramMessage(entryPair, 'entry', {
+            currentTotalBalanceUSDT: balanceSummary.totalUSDT,
+            note: formatPersistenceTelegramNote(persistedEvents, pairId),
+          }),
+          {
+            kind: 'entry',
+            pairId,
+            symbol: entryPair.baseAsset,
+            exchanges: `${entryPair.shortExchange}/${entryPair.longExchange}`,
+            structured: {
+              expNet: entryPair.expectedProfit,
+              perFunding: entryPair.perFunding,
+              totalRoundTripFees: entryPair.totalRoundTripFees,
+              totalReservesUSD: entryPair.totalReservesUSD,
+              margin: entryPair.margin,
+              notional: entryPair.notional,
+              leverage: entryPair.leverage,
+              spreadPercent: entryPair.spreadPercent,
+              expectedRoiPercent: entryPair.expectedRoiPercent,
+            },
+          },
+        );
       }
 
       this.saveState();
@@ -2666,6 +2687,12 @@ class ServerScheduler {
         }]);
         void sendTelegramMessage(
           `[REAL]실체결 ${asset} close incomplete\nretry scheduled in ${CLOSE_RETRY_DELAY_MS / 1000}s\n${errors.join('\n')}`,
+          {
+            kind: 'error',
+            pairId: position.pairId,
+            symbol: asset,
+            structured: { errors: errors.length },
+          },
         );
         this.saveState();
         return;
@@ -2812,14 +2839,35 @@ class ServerScheduler {
       const completedPair = buildTradePairsFromEvents(persistedEvents)
         .find((pair) => pair.pairId === position.pairId);
       if (completedPair) {
-        void sendTelegramMessage(formatTradePairTelegramMessage(completedPair, 'close', {
-          currentTotalBalanceUSDT: balanceSummary.totalUSDT,
-          note: formatPersistenceTelegramNote(
-            persistedEvents,
-            position.pairId,
-            fundingVerification.verified ? undefined : 'funding verification pending/manual check recommended',
-          ),
-        }));
+        void sendTelegramMessage(
+          formatTradePairTelegramMessage(completedPair, 'close', {
+            currentTotalBalanceUSDT: balanceSummary.totalUSDT,
+            note: formatPersistenceTelegramNote(
+              persistedEvents,
+              position.pairId,
+              fundingVerification.verified ? undefined : 'funding verification pending/manual check recommended',
+            ),
+          }),
+          {
+            kind: 'exit',
+            pairId: position.pairId,
+            symbol: completedPair.baseAsset,
+            exchanges: `${completedPair.shortExchange}/${completedPair.longExchange}`,
+            structured: {
+              realPnl: completedPair.totalPnl,
+              totalFunding: completedPair.totalFunding,
+              totalPricePnl: completedPair.totalPricePnl,
+              totalFees: completedPair.totalFees,
+              margin: completedPair.margin,
+              notional: completedPair.notional,
+              leverage: completedPair.leverage,
+              spreadPercent: completedPair.spreadPercent,
+              expNet: completedPair.expectedProfit,
+              expectedRoiPercent: completedPair.expectedRoiPercent,
+              realizedRoiPercent: completedPair.realizedRoiPercent,
+            },
+          },
+        );
       }
       this.saveState();
     } catch (err) {

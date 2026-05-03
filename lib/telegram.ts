@@ -63,12 +63,27 @@ async function sleep(ms: number): Promise<void> {
   });
 }
 
-export async function sendTelegramMessageWithConfig(
+export interface TelegramSendResult {
+  success: boolean;
+  messageId?: number;
+  error?: string;
+  /** Set when the call short-circuited because telegram is not configured. */
+  skipped?: boolean;
+}
+
+/**
+ * Detailed variant — captures `message_id` from Telegram's response so callers
+ * (notably the server-side archive) can persist it. Use the boolean wrapper
+ * `sendTelegramMessageWithConfig` below when you only need ok/not-ok.
+ */
+export async function sendTelegramMessageWithConfigDetailed(
   config: TelegramConfig,
   message: string,
-): Promise<boolean> {
+): Promise<TelegramSendResult> {
   const normalized = normalizeTelegramConfig(config);
-  if (!isTelegramReady(normalized) || !message.trim()) return false;
+  if (!isTelegramReady(normalized) || !message.trim()) {
+    return { success: false, skipped: true, error: 'telegram_not_ready_or_empty_message' };
+  }
 
   let lastError = 'unknown';
   for (let attempt = 1; attempt <= TELEGRAM_SEND_ATTEMPTS; attempt += 1) {
@@ -89,8 +104,12 @@ export async function sendTelegramMessageWithConfig(
       });
 
       if (res.ok) {
-        const data = await res.json().catch(() => null) as { ok?: boolean } | null;
-        if (data?.ok !== false) return true;
+        const data = await res.json().catch(() => null) as
+          | { ok?: boolean; result?: { message_id?: number } }
+          | null;
+        if (data?.ok !== false) {
+          return { success: true, messageId: data?.result?.message_id };
+        }
       }
 
       lastError = `HTTP ${res.status}`;
@@ -112,7 +131,15 @@ export async function sendTelegramMessageWithConfig(
   }
 
   console.error(`[telegram] sendMessage failed after ${TELEGRAM_SEND_ATTEMPTS} attempts: ${lastError}`);
-  return false;
+  return { success: false, error: lastError };
+}
+
+export async function sendTelegramMessageWithConfig(
+  config: TelegramConfig,
+  message: string,
+): Promise<boolean> {
+  const result = await sendTelegramMessageWithConfigDetailed(config, message);
+  return result.success;
 }
 
 export async function sendTelegramMessage(message: string): Promise<boolean> {
