@@ -89,6 +89,11 @@ import {
 } from './types';
 import { getDataDir } from './dataDir';
 import { getSchedulerRuntimeIdentity, getTradeWindowDiagnostics } from './runtimeDiagnostics';
+import {
+  getActiveLiveFundingTimeDriftMs,
+  getRelaxGuardsFlags,
+  isAcceptableFundingShift,
+} from './relaxGuardsConfig';
 
 const DATA_DIR = getDataDir();
 const STATE_FILE = join(DATA_DIR, 'scheduler-state.json');
@@ -177,17 +182,6 @@ function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return 'unknown';
-}
-
-function isSingleCycleFundingRolloverShift(
-  shiftMs: number,
-  fundingIntervalMs: number,
-  toleranceMs: number,
-): boolean {
-  if (!Number.isFinite(shiftMs) || !Number.isFinite(fundingIntervalMs) || fundingIntervalMs <= 0) {
-    return false;
-  }
-  return Math.abs(shiftMs - fundingIntervalMs) <= toleranceMs;
 }
 
 function isLikelyTransientDataError(error: unknown): boolean {
@@ -1459,18 +1453,25 @@ class ServerScheduler {
         const fundingIntervalMs = opportunity.fundingIntervalMs && opportunity.fundingIntervalMs > 0
           ? opportunity.fundingIntervalMs
           : 8 * 3600000;
-        const shortIsRollover = isSingleCycleFundingRolloverShift(
+        // Scenario B (RELAX_FUNDING_WINDOW=true) parity with SIM scheduler:
+        // bumps drift tolerance to 10m AND accepts cross-interval (1h/4h/8h)
+        // shifts. Default OFF preserves the existing strict behaviour.
+        const realRelaxFlags = getRelaxGuardsFlags();
+        const realLiveFundingDriftMs = getActiveLiveFundingTimeDriftMs(LIVE_FUNDING_TIME_DRIFT_MS);
+        const shortIsRollover = isAcceptableFundingShift(
           shortFundingShiftMs,
           fundingIntervalMs,
-          LIVE_FUNDING_TIME_DRIFT_MS,
+          realLiveFundingDriftMs,
+          { allowMultiCycle: realRelaxFlags.relaxFundingWindow },
         );
-        const longIsRollover = isSingleCycleFundingRolloverShift(
+        const longIsRollover = isAcceptableFundingShift(
           longFundingShiftMs,
           fundingIntervalMs,
-          LIVE_FUNDING_TIME_DRIFT_MS,
+          realLiveFundingDriftMs,
+          { allowMultiCycle: realRelaxFlags.relaxFundingWindow },
         );
-        const shortWithinWindow = shortFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS || shortIsRollover;
-        const longWithinWindow = longFundingShiftMs <= LIVE_FUNDING_TIME_DRIFT_MS || longIsRollover;
+        const shortWithinWindow = shortFundingShiftMs <= realLiveFundingDriftMs || shortIsRollover;
+        const longWithinWindow = longFundingShiftMs <= realLiveFundingDriftMs || longIsRollover;
         if (!shortWithinWindow || !longWithinWindow) {
           this.log(
             'warning',
@@ -1486,7 +1487,7 @@ class ServerScheduler {
             spread: liveSpread,
             spreadPercent: liveSpreadPercent,
             reason: 'funding_window_shifted',
-            detail: `shortShiftMs:${shortFundingShiftMs} longShiftMs:${longFundingShiftMs} cap:${LIVE_FUNDING_TIME_DRIFT_MS} fundingIntervalMs:${fundingIntervalMs} shortRollover:${shortIsRollover} longRollover:${longIsRollover}`,
+            detail: `shortShiftMs:${shortFundingShiftMs} longShiftMs:${longFundingShiftMs} cap:${realLiveFundingDriftMs} fundingIntervalMs:${fundingIntervalMs} shortRollover:${shortIsRollover} longRollover:${longIsRollover} relaxFundingWindow:${realRelaxFlags.relaxFundingWindow}`,
           }]);
           return;
         }
