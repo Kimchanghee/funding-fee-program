@@ -984,7 +984,27 @@ class ServerSimScheduler {
     if (args.pairId) lines.push(`pairId: ${args.pairId}`);
     if (args.route) lines.push(`route: ${args.route}`);
     if (args.extraLine) lines.push(args.extraLine);
-    void sendTelegramMessage(lines.join('\n'));
+    void sendTelegramMessage(lines.join('\n'), {
+      kind: realized ? 'exit' : 'entry',
+      pairId: args.pairId,
+      symbol: args.baseAsset,
+      exchanges: args.route,
+      structured: {
+        margin: args.investmentUSDT / 2,
+        ...(realized
+          ? {
+            realPnl: args.netProfitUSD,
+            realizedRoiPercent: args.roiPercent,
+            totalFunding: args.fundingUSD,
+            totalPricePnl: args.pricePnlUSD,
+            totalFees: args.feesUSD,
+          }
+          : {
+            expNet: args.netProfitUSD,
+            expectedRoiPercent: args.roiPercent,
+          }),
+      },
+    });
   }
 
   getStatus() {
@@ -2886,12 +2906,18 @@ class ServerSimScheduler {
         `  ${payment.exchange.toUpperCase()} ${payment.symbol} (${payment.side}): ${payment.amount >= 0 ? '+' : ''}$${payment.amount.toFixed(4)}`,
       );
       const persistenceNote = persisted ? formatPersistenceTelegramNote(persisted.events) : undefined;
-      void sendTelegramMessage([
-        `${totalFunding >= 0 ? '💰' : '💸'} <b>[SIM] 펀딩 수령: ${fundingEvents.length}건</b>`,
-        ...lines,
-        ...(persistenceNote ? [persistenceNote] : []),
-        `합계: ${totalFunding >= 0 ? '+' : ''}$${totalFunding.toFixed(4)}`,
-      ].join('\n'));
+      void sendTelegramMessage(
+        [
+          `${totalFunding >= 0 ? '💰' : '💸'} <b>[SIM] 펀딩 수령: ${fundingEvents.length}건</b>`,
+          ...lines,
+          ...(persistenceNote ? [persistenceNote] : []),
+          `합계: ${totalFunding >= 0 ? '+' : ''}$${totalFunding.toFixed(4)}`,
+        ].join('\n'),
+        {
+          kind: 'funding',
+          structured: { totalFunding, fundingEvents: fundingEvents.length },
+        },
+      );
     }
   }
 
@@ -3083,10 +3109,31 @@ class ServerSimScheduler {
     const persistedEvents = persisted?.events ?? tradeEvents;
     const completedPair = buildTradePairsFromEvents(persistedEvents).find((pair) => pair.pairId === pairId);
     if (completedPair) {
-      void sendTelegramMessage(formatTradePairTelegramMessage(completedPair, 'close', {
-        currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(state),
-        note: formatPersistenceTelegramNote(persistedEvents, pairId),
-      }));
+      void sendTelegramMessage(
+        formatTradePairTelegramMessage(completedPair, 'close', {
+          currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(state),
+          note: formatPersistenceTelegramNote(persistedEvents, pairId),
+        }),
+        {
+          kind: 'exit',
+          pairId,
+          symbol: completedPair.baseAsset,
+          exchanges: `${completedPair.shortExchange}/${completedPair.longExchange}`,
+          structured: {
+            realPnl: completedPair.totalPnl,
+            totalFunding: completedPair.totalFunding,
+            totalPricePnl: completedPair.totalPricePnl,
+            totalFees: completedPair.totalFees,
+            margin: completedPair.margin,
+            notional: completedPair.notional,
+            leverage: completedPair.leverage,
+            spreadPercent: completedPair.spreadPercent,
+            expNet: completedPair.expectedProfit,
+            expectedRoiPercent: completedPair.expectedRoiPercent,
+            realizedRoiPercent: completedPair.realizedRoiPercent,
+          },
+        },
+      );
     }
   }
 
@@ -4121,6 +4168,11 @@ class ServerSimScheduler {
     const totalRoundTripFees = notional * shortFeeRate * 2
       + notional * longFeeRate * 2;
     const netProfit = conservativeExpectedNetProfit;
+    // Visibility: how much the conservative EV is shaving off the raw spread.
+    // Equals timing + basis + volume + dataHealth + entry/exit impact reserves
+    // + any drift-buffer impact. Shown in the entry telegram alert so that
+    // "expNet vs perFunding-fees" gap is no longer a mystery.
+    const totalReservesUSD = perFunding - totalRoundTripFees - netProfit;
 
     const nextState: SimStateSnapshot = {
       ...state,
@@ -4150,21 +4202,43 @@ class ServerSimScheduler {
       netProfit,
       perFunding,
       totalRoundTripFees,
+      totalReservesUSD,
       pairId,
       analysis: {
         conservativeEvDecision,
         perFundingBeforeReserves: perFunding,
         totalRoundTripFees,
+        totalReservesUSD,
       },
     };
     const persisted = this.recordTrades([entryTrade]);
     const persistedEntryEvents = persisted.events;
     const entryPair = buildTradePairsFromEvents(persistedEntryEvents)[0];
     if (entryPair) {
-      void sendTelegramMessage(formatTradePairTelegramMessage(entryPair, 'entry', {
-        currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(savedState),
-        note: formatPersistenceTelegramNote(persistedEntryEvents, pairId),
-      }));
+      void sendTelegramMessage(
+        formatTradePairTelegramMessage(entryPair, 'entry', {
+          currentTotalBalanceUSDT: this.getCurrentSimBalanceTotal(savedState),
+          note: formatPersistenceTelegramNote(persistedEntryEvents, pairId),
+        }),
+        {
+          kind: 'entry',
+          pairId,
+          symbol: opportunity.baseAsset,
+          exchanges: `${opportunity.shortExchange}/${opportunity.longExchange}`,
+          fundingTime: new Date(targetFundingTime).toISOString(),
+          structured: {
+            expNet: netProfit,
+            perFunding,
+            totalRoundTripFees,
+            totalReservesUSD,
+            margin,
+            notional,
+            leverage,
+            spreadPercent: spreadPercentForDecision,
+            expectedRoiPercent: entryPair.expectedRoiPercent,
+          },
+        },
+      );
     }
 
     return {
