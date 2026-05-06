@@ -9,11 +9,10 @@
  * meaningful fraction of high-EV entries. A 4-day backtest showed that
  * relaxing those two guards would have grown realised P&L roughly 3.4-6x.
  *
- * The relaxations are intentionally hidden behind environment variables that
- * default to OFF. This means: shipping this branch to production is a
- * NO-OP at runtime — the new code paths only activate when the operator
- * explicitly opts in by exporting the env vars below. To roll back, simply
- * unset / set false.
+ * Funding-window relaxation stays hidden behind an OFF-by-default environment
+ * variable. Orderbook retry/defer defaults ON because the 48h review showed
+ * high-EV entries were being lost to transient book/API gaps; set
+ * ORDERBOOK_DEFER_ENABLED=false for instant rollback.
  *
  * Env vars
  * --------
@@ -27,7 +26,7 @@
  *          1h-funded legs against 4h/8h-funded legs without the guard
  *          panicking on the cross-interval shift.
  *
- *   ORDERBOOK_DEFER_ENABLED=true|false  (default: false)
+ *   ORDERBOOK_DEFER_ENABLED=true|false  (default: true)
  *     - When true:
  *       a) Orderbook fetch failures during execute trigger an extra
  *          backoff retry layer (500ms -> 1s -> 2s, up to 3 attempts).
@@ -36,13 +35,12 @@
  *          being recorded as a terminal `execute_failed`. The deferral is
  *          logged with a new milestone `deferred_to_next_cycle`.
  *
- * Example: enable both in production
+ * Example: enable relaxed funding windows in production
  *   export RELAX_FUNDING_WINDOW=true
- *   export ORDERBOOK_DEFER_ENABLED=true
  *
- * Example: emergency rollback (instantly reverts to current strict guards)
+ * Example: emergency rollback for orderbook defer only
  *   unset  RELAX_FUNDING_WINDOW
- *   unset  ORDERBOOK_DEFER_ENABLED
+ *   export ORDERBOOK_DEFER_ENABLED=false
  *   pm2 reload ecosystem.config.cjs --update-env
  */
 
@@ -83,7 +81,7 @@ export interface RelaxGuardsFlags {
 export function getRelaxGuardsFlags(): RelaxGuardsFlags {
   return {
     relaxFundingWindow: readBooleanEnv('RELAX_FUNDING_WINDOW', false),
-    orderbookDeferEnabled: readBooleanEnv('ORDERBOOK_DEFER_ENABLED', false),
+    orderbookDeferEnabled: readBooleanEnv('ORDERBOOK_DEFER_ENABLED', true),
   };
 }
 

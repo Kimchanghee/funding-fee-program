@@ -29,6 +29,8 @@ export interface TradeEventLike {
   leverage?: number;
   notional?: number;
   netProfit?: number;
+  expectedNetProfit?: number;
+  expectedRoiPercent?: number;
   perFunding?: number;
   totalRoundTripFees?: number;
   totalReservesUSD?: number;
@@ -211,15 +213,20 @@ function updatePairFromEvent(pair: TradePairSummary, event: TradeEventLike): voi
   if (isFiniteNumber(event.leverage) && event.leverage > 0) pair.leverage = event.leverage;
   if (isFiniteNumber(event.notional) && event.notional > 0) pair.notional = event.notional;
   if (isFiniteNumber(event.spreadPercent)) pair.spreadPercent = event.spreadPercent;
-  if (isFiniteNumber(event.netProfit)) pair.expectedProfit = event.netProfit;
+  const nextExpectedProfit = isFiniteNumber(event.expectedNetProfit)
+    ? event.expectedNetProfit
+    : isFiniteNumber(event.netProfit)
+      ? event.netProfit
+      : null;
+  if (nextExpectedProfit != null) pair.expectedProfit = nextExpectedProfit;
   if (isFiniteNumber(event.perFunding)) pair.perFunding = event.perFunding;
   if (isFiniteNumber(event.totalRoundTripFees)) pair.totalRoundTripFees = event.totalRoundTripFees;
   if (isFiniteNumber(event.totalReservesUSD)) {
     pair.totalReservesUSD = event.totalReservesUSD;
   } else if (isFiniteNumber(event.perFunding)
     && isFiniteNumber(event.totalRoundTripFees)
-    && isFiniteNumber(event.netProfit)) {
-    pair.totalReservesUSD = Math.max(0, event.perFunding - event.totalRoundTripFees - event.netProfit);
+    && nextExpectedProfit != null) {
+    pair.totalReservesUSD = Math.max(0, event.perFunding - event.totalRoundTripFees - nextExpectedProfit);
   }
   pair.entryTime = Math.min(pair.entryTime, event.timestamp);
 }
@@ -243,6 +250,14 @@ export function buildTradePairsFromEvents(events: TradeEventLike[]): TradePairSu
     if ((event.type === 'entry' || event.type === 'snipe_entry') && event.pairId) {
       getPair(event);
     }
+  }
+
+  for (const event of events) {
+    if (event.type !== 'schedule_probe' || event.milestone !== 'execute_success' || !event.pairId) continue;
+    if (!isFiniteNumber(event.expectedNetProfit)) continue;
+    const pair = getPair(event);
+    pair.expectedProfit = event.expectedNetProfit;
+    recalcPair(pair);
   }
 
   for (const event of events) {
@@ -345,6 +360,10 @@ export function formatTradePairTelegramMessage(
     lines.push(`현재 전체 잔액: $${options.currentTotalBalanceUSDT.toFixed(2)}`);
   }
   if (realized) {
+    if (Math.abs(pair.expectedProfit) > 0.0000001) {
+      lines.push(`예상순익: ${formatSignedUsd(pair.expectedProfit)}`);
+      lines.push(`예상대비: ${formatSignedUsd(pair.totalPnl - pair.expectedProfit)}`);
+    }
     lines.push(`펀딩 정산: ${formatSignedUsd(pair.totalFunding)}`);
     lines.push(`가격PnL: ${formatSignedUsd(pair.totalPricePnl)}`);
     lines.push(`수수료: -$${Math.abs(pair.totalFees).toFixed(4)}`);

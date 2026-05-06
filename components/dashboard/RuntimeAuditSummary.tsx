@@ -122,8 +122,12 @@ export default function RuntimeAuditSummary() {
       const query = new URLSearchParams({
         hours: String(targetHours),
         sampleLimit: '0',
+        t: String(Date.now()),
       });
-      const response = await fetch(`/api/analysis/runtime-audit?${query.toString()}`, { cache: 'no-store' });
+      const response = await fetch(`/api/analysis/runtime-audit?${query.toString()}`, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+      });
       const json = await response.json() as RuntimeAuditResponse;
       if (!response.ok || !json.success) {
         throw new Error('runtime audit fetch failed');

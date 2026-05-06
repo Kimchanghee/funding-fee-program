@@ -4,6 +4,9 @@ import { getServerScheduler } from '@/lib/serverScheduler';
 import { getServerSimScheduler } from '@/lib/serverSimScheduler';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 function parsePositiveInt(value: string | null, fallback: number, min: number, max: number): number {
   if (!value) return fallback;
   const numeric = Number(value);
@@ -166,6 +169,10 @@ export async function GET(req: NextRequest) {
           timestampText: formatTimestampYmdHmsMs(entry.timestamp),
         })),
       },
+    },
+  }, {
+    headers: {
+      'Cache-Control': 'no-store, max-age=0',
     },
   });
 }

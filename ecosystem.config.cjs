@@ -19,11 +19,12 @@ module.exports = {
         PORT: '3000',
         SITE_PASSWORD: process.env.SITE_PASSWORD || '9788',
         INTERNAL_API_TOKEN: process.env.INTERNAL_API_TOKEN || process.env.SITE_PASSWORD || '9788',
-        // Scenario D guard relaxation flags. Default OFF when env unset.
+        // Scenario D guard relaxation flags. Funding-window relaxation stays OFF;
+        // orderbook retry/defer defaults ON to recover transient high-EV entries.
         // Read live by lib/relaxGuardsConfig.ts each scheduler tick, so
         // `pm2 reload ecosystem.config.cjs --update-env` flips behaviour.
         RELAX_FUNDING_WINDOW: process.env.RELAX_FUNDING_WINDOW || 'false',
-        ORDERBOOK_DEFER_ENABLED: process.env.ORDERBOOK_DEFER_ENABLED || 'false',
+        ORDERBOOK_DEFER_ENABLED: process.env.ORDERBOOK_DEFER_ENABLED || 'true',
       },
     },
     {

@@ -12,7 +12,15 @@ import {
   getOpportunityBalanceEqualizationMultiplier,
   type BalanceEqualizationPlan,
 } from './balanceEqualization';
-import { appendLogs, appendTrades, type FileLogEntry, readTrades, type TradeEvent } from './fileLogger';
+import {
+  appendLogs,
+  appendTrades,
+  type FileLogEntry,
+  listTradeHistoryDates,
+  readTradeHistory,
+  readTrades,
+  type TradeEvent,
+} from './fileLogger';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
 import { loadAllServerApiConfigs } from './serverKeyStore';
 import { sendTelegramMessage } from './telegramServer';
@@ -26,6 +34,7 @@ import {
   makeOpportunityId,
   calcConservativeEV,
   calcDriftBuffer,
+  type ConservativeEVResult,
 } from './opportunities';
 import { saveOpportunityHourlySnapshot } from './analysisLogger';
 import {
@@ -98,6 +107,11 @@ const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
+const MIN_EV_ALLOCATION_USDT = 100;
+const FUNDING_REVALIDATE_CACHE_MAX_AGE_MS = 15_000;
+const FUNDING_REVALIDATE_STALE_FALLBACK_MS = 60_000;
+const FUNDING_REVALIDATE_ATTEMPTS = 4;
+const FUNDING_REVALIDATE_RETRY_DELAY_MS = 350;
 const TRANSIENT_DATA_ERROR_PATTERNS = [
   /timeout/i,
   /timed out/i,
@@ -205,13 +219,37 @@ function clampBps(value: number, minBps: number, maxBps: number): number {
   return Math.max(minBps, Math.min(maxBps, value));
 }
 
-function basisReservePctFromEntryGap(entryGapDriftPercent: number): number {
-  const driftBps = Math.abs(entryGapDriftPercent) * 100;
+function basisReservePctFromBasisRisk(params: {
+  entryGapDriftPercent?: number;
+  entryGapPercent?: number;
+  basisMoveBps?: number;
+  basisBps?: number;
+}): number {
+  const bpsCandidates = [
+    MIN_BASIS_CONVERGENCE_RESERVE_BPS,
+    Number.isFinite(params.entryGapDriftPercent ?? Number.NaN)
+      ? Math.abs(params.entryGapDriftPercent as number) * 100
+      : 0,
+    Number.isFinite(params.entryGapPercent ?? Number.NaN)
+      ? Math.abs(params.entryGapPercent as number) * 100
+      : 0,
+    Number.isFinite(params.basisMoveBps ?? Number.NaN)
+      ? Math.abs(params.basisMoveBps as number)
+      : 0,
+    Number.isFinite(params.basisBps ?? Number.NaN)
+      ? Math.abs(params.basisBps as number)
+      : 0,
+  ];
+
   return clampBps(
-    Math.max(MIN_BASIS_CONVERGENCE_RESERVE_BPS, driftBps),
+    Math.max(...bpsCandidates),
     MIN_BASIS_CONVERGENCE_RESERVE_BPS,
     MAX_BASIS_CONVERGENCE_RESERVE_BPS,
   ) / 10000;
+}
+
+function basisReservePctFromEntryGap(entryGapDriftPercent: number, entryGapPercent = 0, basisBps?: number): number {
+  return basisReservePctFromBasisRisk({ entryGapDriftPercent, entryGapPercent, basisBps });
 }
 
 function volumeLiquidityReservePct(params: {
@@ -424,6 +462,10 @@ function estimatePreEntryConservativeEV(
     ? calcDriftBuffer(opportunity.longRate, undefined, usesInstantRate)
     : 0;
   const impactDec = getFallbackImpactPercent(config) / 100;
+  const markGap = getEntryGapMetrics({
+    shortPrice: opportunity.shortMarkPrice,
+    longPrice: opportunity.longMarkPrice,
+  });
 
   return calcConservativeEV(
     notional,
@@ -435,7 +477,7 @@ function estimatePreEntryConservativeEV(
     impactDec,
     impactDec,
     {
-      basisConvergenceReservePct: MIN_BASIS_CONVERGENCE_RESERVE_BPS / 10000,
+      basisConvergenceReservePct: basisReservePctFromEntryGap(0, markGap.liveGapPercent),
       volumeLiquidityReservePct: UNKNOWN_VOLUME_RESERVE_BPS / 10000,
     },
   );
@@ -480,7 +522,19 @@ function getOpportunityYieldScore(
   const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig);
   if (!ev) return 0;
   if (!ev.passesMinProfit || !ev.passesEVRatio) return 0;
-  return Math.max(0, ev.expectedNetUSD / getOpportunityIntervalHours(opportunity));
+  const intervalHours = Math.max(1, getOpportunityIntervalHours(opportunity));
+  const roiPerMargin = ev.expectedNetUSD / Math.max(1, strategyConfig.investmentUSDT);
+  return Math.max(0, (ev.expectedNetUSD * Math.max(1, ev.evRatio) * (1 + roiPerMargin)) / intervalHours);
+}
+
+function passesPreEntryEVAtAllocation(
+  opportunity: ArbitrageOpportunity,
+  strategyConfig: StrategyConfig,
+  investmentUSDT: number,
+): ConservativeEVResult | null {
+  const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig, investmentUSDT);
+  if (!ev) return null;
+  return ev.passesMinProfit && ev.passesEVRatio && ev.expectedNetUSD > 0 ? ev : null;
 }
 
 function planWindowAllocations(
@@ -516,8 +570,11 @@ function planWindowAllocations(
 
   const allocations = new Map<string, number>();
   const assetWindowAllocations = new Map<string, number>();
-  const allocationStep = Math.max(25, Math.min(strategyConfig.investmentUSDT / 5, 250));
-  const minAllocation = Math.min(Math.max(10, strategyConfig.investmentUSDT * 0.1), allocationStep);
+  const allocationStep = Math.max(MIN_EV_ALLOCATION_USDT, Math.min(strategyConfig.investmentUSDT, 250));
+  const minAllocation = Math.min(
+    Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT * 0.4),
+    allocationStep,
+  );
   const assetWindowCap = Math.max(minAllocation, strategyConfig.investmentUSDT);
   const getAssetWindowKey = (opportunity: ArbitrageOpportunity) =>
     `${opportunity.baseAsset}:${getOpportunityTimeGroupKey(opportunity.nextFundingTime)}`;
@@ -550,8 +607,13 @@ function planWindowAllocations(
       const opportunity = candidate.opportunity;
       const allocated = allocations.get(getOpportunityId(opportunity)) ?? 0;
       const groupAllocated = assetWindowAllocations.get(getAssetWindowKey(opportunity)) ?? 0;
-      return getCap(opportunity) - allocated >= minAllocation
-        && assetWindowCap - groupAllocated >= minAllocation;
+      const remainingCap = Math.min(
+        getCap(opportunity) - allocated,
+        assetWindowCap - groupAllocated,
+      );
+      if (remainingCap < minAllocation) return false;
+      const nextInvestment = allocated + Math.min(allocationStep, remainingCap);
+      return !!passesPreEntryEVAtAllocation(opportunity, strategyConfig, nextInvestment);
     });
     if (eligible.length === 0) break;
 
@@ -607,7 +669,10 @@ function planWindowAllocations(
       opportunity: candidate.opportunity,
       investmentUSDT: allocations.get(getOpportunityId(candidate.opportunity)) ?? 0,
     }))
-    .filter((candidate) => candidate.investmentUSDT >= minAllocation);
+    .filter((candidate) => (
+      candidate.investmentUSDT >= minAllocation
+      && !!passesPreEntryEVAtAllocation(candidate.opportunity, strategyConfig, candidate.investmentUSDT)
+    ));
 }
 
 export interface ServerSimSchedulerConfig {
@@ -748,6 +813,13 @@ type PreparedSimCloseLeg = {
   fillCapturedAt: number;
 };
 
+type ExecutionFundingRateLookup = {
+  rate: FundingRate;
+  source: 'latest_rates_cache' | 'targeted_fetch' | 'targeted_cache' | 'latest_rates_stale_after_fetch_error' | 'targeted_cache_stale_after_fetch_error';
+  ageMs?: number;
+  fetchError?: string;
+};
+
 class ServerSimScheduler {
   private static instance: ServerSimScheduler | null = null;
 
@@ -774,6 +846,7 @@ class ServerSimScheduler {
   private routeFailureMemory = new RouteFailureMemory();
   private scheduleProbeStates = new Map<string, ScheduleProbeState>();
   private fundingUniverseCache = new Map<ExchangeId, FundingUniverseCacheEntry>();
+  private fundingRevalidateCache = new Map<string, { rate: FundingRate; fetchedAt: number }>();
   private lastFullFundingRefreshAt = 0;
   private lastStatePersistAt = 0;
   private lastAnalyticsSnapshotAt = 0;
@@ -1507,7 +1580,6 @@ class ServerSimScheduler {
       const opportunityId = getOpportunityId(opportunity);
       const selectedAllocation = selectedById.get(opportunityId) ?? 0;
       const isSelected = selectedAllocation > 0;
-      if (isSelected) selectedCount += 1;
 
       const routeFailureKey = makeRouteFailureKey(
         opportunity.baseAsset,
@@ -1594,8 +1666,12 @@ class ServerSimScheduler {
       }
 
       const score = getOpportunityYieldScore(opportunity, strategyConfig);
-      const status = isSelected
+      const isExecutableSelected = isSelected && rejectReasons.length === 0;
+      if (isExecutableSelected) selectedCount += 1;
+      const status = isExecutableSelected
         ? 'selected'
+        : isSelected
+          ? 'allocated_rejected'
         : rejectReasons.length === 0
           ? 'unselected'
           : 'rejected';
@@ -1626,7 +1702,8 @@ class ServerSimScheduler {
         analysis: {
           opportunityId,
           status,
-          selected: isSelected,
+          selected: isExecutableSelected,
+          allocated: isSelected,
           selectedAllocationUSDT: selectedAllocation,
           candidateIncluded: candidateIds.has(opportunityId),
           scorePerHourUSD: score,
@@ -1831,9 +1908,10 @@ class ServerSimScheduler {
     const longMidMoveBps = options?.longMidMoveBps;
     const basisMoveBps = options?.basisMoveBps;
     const analysis = options?.analysis;
-    const basisConvergenceReservePct = basisMoveBps == null
-      ? MIN_BASIS_CONVERGENCE_RESERVE_BPS / 10000
-      : clampBps(Math.abs(basisMoveBps), MIN_BASIS_CONVERGENCE_RESERVE_BPS, MAX_BASIS_CONVERGENCE_RESERVE_BPS) / 10000;
+    const basisConvergenceReservePct = basisReservePctFromBasisRisk({
+      basisMoveBps,
+      basisBps: marketSnapshot?.basisBps,
+    });
     const volumeReservePct = volumeLiquidityReservePct({
       notionalUSDT: notional,
       shortQuoteVolume24h: shortLive?.quoteVolume24h,
@@ -2268,6 +2346,75 @@ class ServerSimScheduler {
 
   }
 
+  private getFundingRevalidateCacheKey(exchange: ExchangeId, symbol: string) {
+    return `${exchange}:${symbol}`;
+  }
+
+  private findLatestFundingRate(exchange: ExchangeId, symbol: string, baseAsset: string): FundingRate | undefined {
+    return this.latestRates.find((rate) => rate.exchange === exchange && rate.symbol === symbol)
+      ?? this.latestRates.find((rate) => rate.exchange === exchange && rate.baseAsset === baseAsset);
+  }
+
+  private async resolveExecutionFundingRate(
+    exchange: ExchangeId,
+    symbol: string,
+    baseAsset: string,
+  ): Promise<ExecutionFundingRateLookup> {
+    const now = Date.now();
+    const latest = this.findLatestFundingRate(exchange, symbol, baseAsset);
+    const latestAgeMs = now - this.lastRatesUpdate;
+    if (latest && latestAgeMs <= FUNDING_REVALIDATE_CACHE_MAX_AGE_MS) {
+      return { rate: latest, source: 'latest_rates_cache', ageMs: latestAgeMs };
+    }
+
+    const cacheKey = this.getFundingRevalidateCacheKey(exchange, symbol);
+    const cached = this.fundingRevalidateCache.get(cacheKey);
+    const cachedAgeMs = cached ? now - cached.fetchedAt : Number.POSITIVE_INFINITY;
+    if (cached && cachedAgeMs <= FUNDING_REVALIDATE_CACHE_MAX_AGE_MS) {
+      return { rate: cached.rate, source: 'targeted_cache', ageMs: cachedAgeMs };
+    }
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < FUNDING_REVALIDATE_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, FUNDING_REVALIDATE_RETRY_DELAY_MS * attempt));
+      }
+      try {
+        const rates = await fetchFundingRates(exchange, undefined, [symbol]);
+        const rate = rates.find((candidate) => candidate.symbol === symbol)
+          ?? rates.find((candidate) => candidate.baseAsset === baseAsset);
+        if (rate) {
+          this.fundingRevalidateCache.set(cacheKey, { rate, fetchedAt: Date.now() });
+          return { rate, source: 'targeted_fetch', ageMs: 0 };
+        }
+        lastError = new Error(`[${exchange}] funding revalidate missing for ${symbol}`);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    const errorMessage = getErrorMessage(lastError);
+    const fallbackLatestAgeMs = Date.now() - this.lastRatesUpdate;
+    if (latest && fallbackLatestAgeMs <= FUNDING_REVALIDATE_STALE_FALLBACK_MS) {
+      return {
+        rate: latest,
+        source: 'latest_rates_stale_after_fetch_error',
+        ageMs: fallbackLatestAgeMs,
+        fetchError: errorMessage,
+      };
+    }
+    if (cached && cachedAgeMs <= FUNDING_REVALIDATE_STALE_FALLBACK_MS) {
+      return {
+        rate: cached.rate,
+        source: 'targeted_cache_stale_after_fetch_error',
+        ageMs: cachedAgeMs,
+        fetchError: errorMessage,
+      };
+    }
+
+    throw lastError ?? new Error(`[${exchange}] funding revalidate failed for ${symbol}`);
+  }
+
   private async refreshRatesAndPlans() {
     if (this.config.enabledExchanges.length === 0) {
       this.latestRates = [];
@@ -2409,13 +2556,13 @@ class ServerSimScheduler {
     const planningBalances = getBalanceEqualizationPlanningBalances(balancePlan, true);
     const minVolume24hUSD = Math.max(0, this.config.minVolume24hUSD ?? 0);
     const volumeByExchangeAsset = buildVolumeByExchangeAsset(this.latestRates);
+    const strategyConfig = buildStrategyLikeConfig(this.config);
     const occupiedLegs = new Set<string>();
 
     for (const position of state.simPositions) {
       occupiedLegs.add(makePositionLegKey(position.exchange, position.symbol));
     }
 
-    const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     const candidates = this.opportunities.filter((opportunity) => {
       if (!this.config.enabledExchanges.includes(opportunity.shortExchange) || !this.config.enabledExchanges.includes(opportunity.longExchange)) {
         return false;
@@ -2440,14 +2587,19 @@ class ServerSimScheduler {
       if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
         return false;
       }
-      // v2: funding timestamp alignment
-      if (snipeConfig.useConfirmedClose) {
-        const shortRate = this.latestRates.find(r => r.exchange === opportunity.shortExchange && r.symbol === opportunity.shortSymbol);
-        const longRate = this.latestRates.find(r => r.exchange === opportunity.longExchange && r.symbol === opportunity.longSymbol);
-        if (shortRate && longRate) {
-          const tsDiff = Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
-          if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) return false;
-        }
+      const preEntryEv = passesPreEntryEVAtAllocation(
+        opportunity,
+        strategyConfig,
+        this.config.investmentUSDT,
+      );
+      if (!preEntryEv) {
+        return false;
+      }
+      const shortRate = this.latestRates.find(r => r.exchange === opportunity.shortExchange && r.symbol === opportunity.shortSymbol);
+      const longRate = this.latestRates.find(r => r.exchange === opportunity.longExchange && r.symbol === opportunity.longSymbol);
+      if (shortRate && longRate) {
+        const tsDiff = Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
+        if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) return false;
       }
       const profileLeadMs = getPairEntryLeadMs(opportunity.shortExchange, opportunity.longExchange);
       const entryLeadMs = Math.max(profileLeadMs, timing.entryLeadMs);
@@ -2467,7 +2619,7 @@ class ServerSimScheduler {
     const plans = planWindowAllocations(
       candidates,
       availableBalance,
-      buildStrategyLikeConfig(this.config),
+      strategyConfig,
       planningBalances,
       balancePlan,
     );
@@ -3107,7 +3259,12 @@ class ServerSimScheduler {
     this.pendingAutoCloses.delete(pairId);
     const persisted = tradeEvents.length > 0 ? this.recordTrades(tradeEvents) : null;
     const persistedEvents = persisted?.events ?? tradeEvents;
-    const completedPair = buildTradePairsFromEvents(persistedEvents).find((pair) => pair.pairId === pairId);
+    const pairEventsForTelegram = listTradeHistoryDates('sim')
+      .flatMap((date) => readTradeHistory('sim', date))
+      .filter((event) => event.pairId === pairId);
+    const completedPair = buildTradePairsFromEvents(
+      pairEventsForTelegram.length > 0 ? pairEventsForTelegram : persistedEvents,
+    ).find((pair) => pair.pairId === pairId);
     if (completedPair) {
       void sendTelegramMessage(
         formatTradePairTelegramMessage(completedPair, 'close', {
@@ -3427,6 +3584,10 @@ class ServerSimScheduler {
       shortCostFactor > 0 ? shortBal / shortCostFactor : 0,
       longCostFactor > 0 ? longBal / longCostFactor : 0,
     ));
+    const baselineEntryGap = getEntryGapMetrics({
+      shortPrice: opportunity.shortMarkPrice,
+      longPrice: opportunity.longMarkPrice,
+    });
     const buildCounterfactualEv = (
       notionalRef: number,
       shortImpactPct?: number,
@@ -3463,7 +3624,7 @@ class ServerSimScheduler {
           shortImpactDec,
           longImpactDec,
           {
-            basisConvergenceReservePct: MIN_BASIS_CONVERGENCE_RESERVE_BPS / 10000,
+            basisConvergenceReservePct: basisReservePctFromEntryGap(0, baselineEntryGap.liveGapPercent),
             volumeLiquidityReservePct: UNKNOWN_VOLUME_RESERVE_BPS / 10000,
           },
         );
@@ -3523,21 +3684,39 @@ class ServerSimScheduler {
       let liveSpread = 0;
       let liveSpreadPercent = 0;
       let liveSpreadAttempts = 0;
+      let shortRevalidateSource: ExecutionFundingRateLookup['source'] | undefined;
+      let longRevalidateSource: ExecutionFundingRateLookup['source'] | undefined;
+      let shortRevalidateAgeMs: number | undefined;
+      let longRevalidateAgeMs: number | undefined;
+      let shortRevalidateFetchError: string | undefined;
+      let longRevalidateFetchError: string | undefined;
       for (let attempt = 0; attempt < LIVE_SPREAD_RECHECK_ATTEMPTS; attempt += 1) {
         if (attempt > 0) {
           await new Promise<void>((resolve) => setTimeout(resolve, LIVE_SPREAD_RECHECK_DELAY_MS));
         }
         liveSpreadAttempts = attempt + 1;
-        const [shortRates, longRates] = await retryTransientFetch(() => Promise.all([
-          fetchFundingRates(opportunity.shortExchange, undefined, [opportunity.shortSymbol]),
-          fetchFundingRates(opportunity.longExchange, undefined, [opportunity.longSymbol]),
-        ]));
-        shortRatesCount = shortRates.length;
-        longRatesCount = longRates.length;
-        shortLiveRate = shortRates.find((rate) => rate.symbol === opportunity.shortSymbol)
-          ?? shortRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
-        longLiveRate = longRates.find((rate) => rate.symbol === opportunity.longSymbol)
-          ?? longRates.find((rate) => rate.baseAsset === opportunity.baseAsset);
+        const [shortLookup, longLookup] = await Promise.all([
+          this.resolveExecutionFundingRate(
+            opportunity.shortExchange,
+            opportunity.shortSymbol,
+            opportunity.baseAsset,
+          ),
+          this.resolveExecutionFundingRate(
+            opportunity.longExchange,
+            opportunity.longSymbol,
+            opportunity.baseAsset,
+          ),
+        ]);
+        shortRatesCount = 1;
+        longRatesCount = 1;
+        shortLiveRate = shortLookup.rate;
+        longLiveRate = longLookup.rate;
+        shortRevalidateSource = shortLookup.source;
+        longRevalidateSource = longLookup.source;
+        shortRevalidateAgeMs = shortLookup.ageMs;
+        longRevalidateAgeMs = longLookup.ageMs;
+        shortRevalidateFetchError = shortLookup.fetchError;
+        longRevalidateFetchError = longLookup.fetchError;
         if (!shortLiveRate || !longLiveRate) {
           // Missing rate is not a noise condition — fail immediately, no retry.
           break;
@@ -3556,6 +3735,12 @@ class ServerSimScheduler {
               shortRevalidateCount: shortRatesCount,
               longRevalidateCount: longRatesCount,
               liveSpreadAttempts,
+              shortRevalidateSource,
+              longRevalidateSource,
+              shortRevalidateAgeMs,
+              longRevalidateAgeMs,
+              shortRevalidateFetchError,
+              longRevalidateFetchError,
             },
           }),
         };
@@ -3572,6 +3757,12 @@ class ServerSimScheduler {
               minSpreadPercent: this.config.minSpreadPercent,
               executionGate: 'positive_live_spread_then_ev',
               liveSpreadAttempts,
+              shortRevalidateSource,
+              longRevalidateSource,
+              shortRevalidateAgeMs,
+              longRevalidateAgeMs,
+              shortRevalidateFetchError,
+              longRevalidateFetchError,
             },
           }),
         };
@@ -3618,6 +3809,12 @@ class ServerSimScheduler {
               shortWithinWindow,
               longWithinWindow,
               relaxFundingWindow: relaxFlags.relaxFundingWindow,
+              shortRevalidateSource,
+              longRevalidateSource,
+              shortRevalidateAgeMs,
+              longRevalidateAgeMs,
+              shortRevalidateFetchError,
+              longRevalidateFetchError,
             },
           }),
         };
@@ -3979,7 +4176,11 @@ class ServerSimScheduler {
       const longQuoteVolume24h = this.latestRates.find((rate) => (
         rate.exchange === opportunity.longExchange && rate.symbol === opportunity.longSymbol
       ))?.quoteVolume24h;
-      const basisConvergenceReservePct = basisReservePctFromEntryGap(entryGap.driftPercent);
+      const basisConvergenceReservePct = basisReservePctFromEntryGap(
+        entryGap.driftPercent,
+        entryGap.liveGapPercent,
+        executionMarketSnapshot?.basisBps,
+      );
       const volumeReservePct = volumeLiquidityReservePct({
         notionalUSDT: notional,
         shortQuoteVolume24h,
@@ -4015,6 +4216,9 @@ class ServerSimScheduler {
         longEntrySlippagePercent: longSlippagePercent,
         shortExitSlippagePercent,
         longExitSlippagePercent,
+        entryGapLivePercent: entryGap.liveGapPercent,
+        entryGapDriftPercent: entryGap.driftPercent,
+        basisRiskReservePct: basisConvergenceReservePct,
       };
       if (!ev.passesMinProfit || !ev.passesEVRatio) {
         return {
@@ -4040,6 +4244,9 @@ class ServerSimScheduler {
               basisConvergenceReserveUSD: ev.basisConvergenceReserveUSD,
               volumeLiquidityReserveUSD: ev.volumeLiquidityReserveUSD,
               dataHealthPenaltyUSD: ev.dataHealthPenaltyUSD,
+              entryGapLivePercent: entryGap.liveGapPercent,
+              entryGapDriftPercent: entryGap.driftPercent,
+              basisRiskReservePct: basisConvergenceReservePct,
               shortExitSlippagePercent,
               longExitSlippagePercent,
               shortQuoteVolume24h: shortQuoteVolume24h ?? null,
@@ -4200,6 +4407,8 @@ class ServerSimScheduler {
       notional,
       entryFee: shortEntryFee + longEntryFee,
       netProfit,
+      expectedNetProfit: netProfit,
+      expectedRoiPercent: calcExpectedRoiPercent(netProfit, margin, leverage),
       perFunding,
       totalRoundTripFees,
       totalReservesUSD,

@@ -6,6 +6,7 @@ const INTERNAL_API_PATHS = new Set([
   '/api/scheduler',
   '/api/sim-scheduler',
   '/api/funding-rates',
+  '/api/analysis/runtime-audit',
 ]);
 const TRUSTED_CLIENT_WRITE_API_PATHS = new Set([
   '/api/logs/save',
