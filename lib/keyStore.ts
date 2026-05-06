@@ -107,9 +107,9 @@ export function loadEnabledExchanges(): string[] | null {
 // strategy defaults. Only money-related keys are cleared; API keys and other
 // user-managed blobs survive the migration.
 const SCHEMA_VERSION_KEY = 'funding_fee_schema_version';
-// Bumped to v4 so clients carrying the zero-default profile are re-seeded with
-// active trading defaults (investment/leverage/minSpread/compound settings).
-const CURRENT_SCHEMA_VERSION = 'v4-active-defaults-2026-04-22';
+// Bumped to v5 so clients carrying the conservative profile are re-seeded with
+// aggressive auto-trading defaults.
+const CURRENT_SCHEMA_VERSION = 'v5-aggressive-defaults-2026-05-07';
 
 export function runLocalStorageMigrations(): void {
   if (typeof window === 'undefined') return;

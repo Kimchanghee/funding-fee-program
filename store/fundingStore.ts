@@ -47,6 +47,7 @@ import {
 import { sendTelegramMessage, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
 import {
   DEFAULT_TIMING_CONFIG,
+  DEFAULT_CONFIRMED_SNIPE_CONFIG,
   getHedgeFeesWithOverrides,
   getExchangeFee,
   calcNetSpreadPercent,
@@ -220,7 +221,7 @@ export function buildSchedulerConfig(
     minSpreadPercent: strategyConfig.minSpreadPercent,
     compoundInvesting: strategyConfig.compoundInvesting,
     enabledExchanges: sanitizeEnabledExchanges(enabledExchanges),
-    maxConcurrentPairs: 5,
+    maxConcurrentPairs: 10,
     feeOverrides: strategyConfig.feeOverrides,
     paybackOverrides: strategyConfig.paybackOverrides,
     timingConfig: getResolvedTimingConfig(strategyConfig.timingConfig),
@@ -1650,10 +1651,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   strategyConfig: {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.3,
-    autoExecute: false,
+    minSpreadPercent: 0.05,
+    autoExecute: true,
     compoundInvesting: true,
     timingConfig: { ...DEFAULT_TIMING_CONFIG },
+    maxSlippagePercent: 10,
+    minVolume24hUSD: 0,
+    confirmedSnipeConfig: { ...DEFAULT_CONFIRMED_SNIPE_CONFIG },
   },
   fundingHistory: [],
   simulationMode: true,

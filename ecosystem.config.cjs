@@ -23,7 +23,7 @@ module.exports = {
         // orderbook retry/defer defaults ON to recover transient high-EV entries.
         // Read live by lib/relaxGuardsConfig.ts each scheduler tick, so
         // `pm2 reload ecosystem.config.cjs --update-env` flips behaviour.
-        RELAX_FUNDING_WINDOW: process.env.RELAX_FUNDING_WINDOW || 'false',
+        RELAX_FUNDING_WINDOW: process.env.RELAX_FUNDING_WINDOW || 'true',
         ORDERBOOK_DEFER_ENABLED: process.env.ORDERBOOK_DEFER_ENABLED || 'true',
       },
     },

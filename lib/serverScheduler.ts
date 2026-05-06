@@ -72,6 +72,7 @@ import {
   DEFAULT_CONFIRMED_SNIPE_CONFIG,
   MAX_FUNDING_TIMESTAMP_DIFF_MS,
   MAX_ROUND_TRIP_IMPACT_BPS,
+  TARGET_IMPACT_BPS,
   MIN_FREE_MARGIN_PCT,
   MAX_ORPHAN_LEG_MS,
   HEDGE_RATIO_MIN,
@@ -103,15 +104,15 @@ const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
 const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
 const MAX_ANALYSIS_CANDIDATES_PER_POLL = 120;
 const COMPOUND_BALANCE_USAGE_PCT = 0.9;
-const MIN_ENTRY_NOTIONAL_USDT = 100;
+const MIN_ENTRY_NOTIONAL_USDT = 25;
 const MAX_ADAPTIVE_NOTIONAL_ATTEMPTS = 4;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
-const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 5;
+const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 1;
 const MAX_BASIS_CONVERGENCE_RESERVE_BPS = 200;
-const UNKNOWN_VOLUME_RESERVE_BPS = 5;
-const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 80;
+const UNKNOWN_VOLUME_RESERVE_BPS = 1;
+const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 25;
 const TRANSIENT_DATA_ERROR_PATTERNS = [
   /timeout/i,
   /timed out/i,
@@ -231,8 +232,8 @@ function getFallbackImpactPercent(config: Pick<SchedulerConfig, 'maxSlippagePerc
     // round-trip bps -> per-event (entry/exit) percent
     return maxRoundTripImpactBps / 200;
   }
-  // bps -> percent (4bps = 0.04%)
-  return (snipeConfig.targetImpactBps ?? 4) / 100;
+  // bps -> percent (1bps = 0.01% with aggressive defaults)
+  return (snipeConfig.targetImpactBps ?? TARGET_IMPACT_BPS) / 100;
 }
 
 function estimatePreEntryConservativeEV(
@@ -292,7 +293,7 @@ export interface SchedulerConfig {
   feeOverrides?: FeeOverrides;
   paybackOverrides?: PaybackOverrides;
   timingConfig?: TimingConfig;
-  maxSlippagePercent?: number; // Max per-leg slippage percent (default 1.5)
+  maxSlippagePercent?: number; // Max per-leg slippage percent (default 10)
   minVolume24hUSD?: number; // Minimum 24h quote volume in USD
   confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1; undefined means all toggles OFF
 }
@@ -369,15 +370,18 @@ class ServerScheduler {
   private static instance: ServerScheduler | null = null;
 
   private active = false;
-  // Baseline profile aligned with legacy production defaults.
+  // Aggressive baseline profile for permissive auto-investing.
   private config: SchedulerConfig = {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.3,
+    minSpreadPercent: 0.05,
     compoundInvesting: true,
     enabledExchanges: [],
-    maxConcurrentPairs: 5,
+    maxConcurrentPairs: 10,
     timingConfig: getResolvedTimingConfig(),
+    maxSlippagePercent: 10,
+    minVolume24hUSD: 0,
+    confirmedSnipeConfig: DEFAULT_CONFIRMED_SNIPE_CONFIG,
   };
   private startedAt: number | null = null;
   private stats: SchedulerStats = { totalEntries: 0, totalCloses: 0, totalProfit: 0, errors: 0 };
@@ -451,9 +455,13 @@ class ServerScheduler {
       ...config,
       enabledExchanges: sanitizeEnabledExchanges(config.enabledExchanges),
       compoundInvesting: config.compoundInvesting ?? true,
+      maxConcurrentPairs: config.maxConcurrentPairs ?? 10,
       feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
       paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
       timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
+      maxSlippagePercent: config.maxSlippagePercent ?? 10,
+      minVolume24hUSD: config.minVolume24hUSD ?? 0,
+      confirmedSnipeConfig: config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG,
     };
   }
 

@@ -118,8 +118,8 @@ export interface StrategyConfig {
   feeOverrides?: FeeOverrides; // ?�용???�수�?override
   paybackOverrides?: PaybackOverrides; // dual-account referral payback overrides
   timingConfig?: TimingConfig; // ?�나?�프/?�??검�??�?�밍 ?�정
-  maxSlippagePercent?: number; // 최�? ?�리?��? % (기본 1.5%) ?????�상?�면 ?�동??부족으�??�터�?
-  minVolume24hUSD?: number; // 최소 24?�간 거래??(USD) ??기본 $7,500,000 (??00?�원)
+  maxSlippagePercent?: number; // maximum slippage percent (aggressive default 10%)
+  minVolume24hUSD?: number; // minimum 24h quote volume in USD (aggressive default 0)
   confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1 — undefined = all toggles OFF (profile timing & Tier C still apply)
 }
 
@@ -566,17 +566,17 @@ export function getHedgeFeesWithOverrides(
  * @param spreadPercent   - 명목 ?�프?�드 (%)
  * @param entryGapPct     - 진입 가�?�?(%) ???�수 = 진입 ?�실
  * @param hedgeFeePct     - ?�복 ?�수�?(%) ??getHedgeFees * 100
- * @param safetyMarginPct - ?�전 마진 (%) ??기본 0.015 (1.5bps)
+ * @param safetyMarginPct - safety margin (%) default 0.002 (0.2bps)
  */
-export const SAFETY_MARGIN_PCT = 0.015; // 1.5bps ???�역 ?�수 (?�리?��? 가?��? 별도 보호)
+export const SAFETY_MARGIN_PCT = 0.002; // 0.2bps safety reserve; aggressive default profile
 
 // ── v2.1 Confirmed Snipe constants ──
 
-/** Target impact per leg in basis points (4bps = 0.04%) */
-export const TARGET_IMPACT_BPS = 4;
+/** Target impact per leg in basis points (1bp = 0.01%) */
+export const TARGET_IMPACT_BPS = 1;
 
 /** Hard cap for round-trip total impact in basis points */
-export const MAX_ROUND_TRIP_IMPACT_BPS = 12;
+export const MAX_ROUND_TRIP_IMPACT_BPS = 200;
 
 /** Maximum allowed hedge ratio deviation: 0.998 <= ratio <= 1.002 */
 export const HEDGE_RATIO_MIN = 0.998;
@@ -589,13 +589,13 @@ export const MAX_HEDGE_MISMATCH_PCT = 0.20;
 export const MAX_ORPHAN_LEG_MS = 300;
 
 /** Minimum expected net USD profit to enter */
-export const MIN_PROFIT_USD = 1.25;
+export const MIN_PROFIT_USD = 0.05;
 
 /** Minimum EV ratio: expectedNetUSD / worstCaseExitUSD */
-export const MIN_EV_RATIO = 0.6;
+export const MIN_EV_RATIO = 0.05;
 
 /** Maximum funding timestamp difference between two legs in ms */
-export const MAX_FUNDING_TIMESTAMP_DIFF_MS = 3_000;
+export const MAX_FUNDING_TIMESTAMP_DIFF_MS = 10 * 60 * 1000;
 
 /** Minimum free margin percentage to maintain */
 export const MIN_FREE_MARGIN_PCT = 25;
@@ -612,9 +612,9 @@ export const MIN_DRIFT_BUFFER_BPS = 1; // 0.01%
 export interface ConfirmedSnipeConfig {
   /** Use impact-based guards instead of maxSlippagePercent */
   useImpactGuards: boolean;
-  /** Target impact per leg (bps) — default 4 */
+  /** Target impact per leg (bps) */
   targetImpactBps: number;
-  /** Hard cap round-trip impact (bps) — default 12 */
+  /** Hard cap round-trip impact (bps) */
   maxRoundTripImpactBps: number;
   /** Use dynamic notional based on orderbook depth (no floor — skip if unviable) */
   useDynamicNotional: boolean;
@@ -631,14 +631,11 @@ export interface ConfirmedSnipeConfig {
 }
 
 /**
- * Defaults updated 2026-04-28 based on 24h SIM trade review:
- * - useConfirmedClose: 1s close-delay was too aggressive; the executed ORCA trade lost
- *   -$31.88 of price PnL in the 1ms window right after funding settlement. Enabling
- *   confirmed close uses per-exchange settlement wait (Binance 20s / Bybit 12s via
- *   getPairMaxSettlementWaitMs) so price PnL recovers most of the post-funding noise.
- * - useIocLimitOnly: market-order exits were taking full taker fee + slippage on both legs.
- *   IOC limit gives maker-side pricing with a 5bps buffer.
- * Other toggles stay OFF until explicitly opted in.
+ * Aggressive default profile:
+ * - Fixed close delay instead of confirmed close keeps the bot from dropping trades
+ *   when exchange funding timestamps drift around settlement.
+ * - Market-capable execution keeps fills permissive; slippage is controlled by
+ *   maxSlippagePercent unless impact guards are explicitly enabled.
  */
 export const DEFAULT_CONFIRMED_SNIPE_CONFIG: ConfirmedSnipeConfig = {
   useImpactGuards: false,
@@ -647,8 +644,8 @@ export const DEFAULT_CONFIRMED_SNIPE_CONFIG: ConfirmedSnipeConfig = {
   useDynamicNotional: false,
   dynamicNotionalCap: 2200,
   useDriftBuffer: false,
-  useConfirmedClose: true,
-  useIocLimitOnly: true,
+  useConfirmedClose: false,
+  useIocLimitOnly: false,
   useStrictHedge: false,
 };
 
