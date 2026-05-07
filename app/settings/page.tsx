@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ChevronDown, RefreshCw } from 'lucide-react';
 import { useFundingStore } from '@/store/fundingStore';
 import {
   EXCHANGE_NAMES,
@@ -76,6 +76,8 @@ function FeeInput({ label, defaultPct, currentPct, maxPct = 10, onCommit }: {
 }
 
 export default function SettingsPage() {
+  const [openFeeExchange, setOpenFeeExchange] = useState<(typeof OPERABLE_EXCHANGES)[number] | null>(null);
+  const [openPaybackExchange, setOpenPaybackExchange] = useState<(typeof OPERABLE_EXCHANGES)[number] | null>(null);
   const {
     strategyConfig,
     setStrategyConfig,
@@ -378,61 +380,110 @@ export default function SettingsPage() {
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 16 }}>
               {EXCHANGE_FEE_PRESET_NOTE} Leave blank to use this preset value, or enter your custom fee.
             </div>
-            <div className="settings-fee-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            <div className="settings-fee-grid" style={{ display: 'grid', gap: 8 }}>
               {OPERABLE_EXCHANGES.map(ex => {
                 const defaults = EXCHANGE_FEES[ex];
                 const override = strategyConfig.feeOverrides?.[ex];
                 const color = EXCHANGE_COLORS[ex];
+                const open = openFeeExchange === ex;
+                const panelId = `settings-fee-${ex}`;
                 return (
                   <div key={ex} style={{
-                    padding: '12px 14px', borderRadius: 8,
+                    borderRadius: 8,
                     background: override ? `${color}0a` : 'var(--bg-accent)',
-                    border: `1px solid ${override ? `${color}33` : 'var(--color-border)'}`,
+                    border: `1px solid ${open ? `${color}55` : override ? `${color}33` : 'var(--color-border)'}`,
+                    overflow: 'hidden',
                   }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color, marginBottom: 8 }}>
-                      {EXCHANGE_NAMES[ex]}
-                      {override && <span style={{ fontSize: 10, marginLeft: 6, color: '#10b981' }}>커스텀</span>}
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                      <FeeInput
-                        label="Taker"
-                        defaultPct={defaults.taker * 100}
-                        currentPct={override ? override.taker * 100 : null}
-                        onCommit={(pct) => {
-                          const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
-                          if (pct === null) {
-                            const cur = currentOverrides[ex];
-                            if (cur) {
-                              currentOverrides[ex] = { ...cur, taker: defaults.taker };
-                              if (cur.maker === defaults.maker) delete currentOverrides[ex];
-                            }
-                          } else {
-                            const cur = currentOverrides[ex] ?? { ...defaults };
-                            currentOverrides[ex] = { ...cur, taker: pct / 100 };
-                          }
-                          setStrategyConfig({ feeOverrides: Object.keys(currentOverrides).length > 0 ? currentOverrides : undefined });
+                    <button
+                      className="settings-disclosure-row"
+                      type="button"
+                      aria-expanded={open}
+                      aria-controls={panelId}
+                      onClick={() => setOpenFeeExchange(open ? null : ex)}
+                      style={{
+                        width: '100%',
+                        minHeight: 48,
+                        border: 0,
+                        background: 'transparent',
+                        padding: '10px 12px',
+                        display: 'grid',
+                        gridTemplateColumns: 'minmax(120px, 1fr) minmax(96px, auto) minmax(96px, auto) 24px',
+                        alignItems: 'center',
+                        gap: 12,
+                        color: 'var(--color-text)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 800, color }}>
+                        {EXCHANGE_NAMES[ex]}
+                        {override && <span style={{ fontSize: 10, marginLeft: 6, color: '#10b981' }}>커스텀</span>}
+                      </span>
+                      <span style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
+                        <span style={{ fontSize: 9, color: 'var(--color-text-muted)', fontWeight: 700 }}>Taker</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, fontFamily: 'var(--font-mono)' }}>{((override?.taker ?? defaults.taker) * 100).toFixed(3)}%</span>
+                      </span>
+                      <span style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
+                        <span style={{ fontSize: 9, color: 'var(--color-text-muted)', fontWeight: 700 }}>Maker</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, fontFamily: 'var(--font-mono)' }}>{((override?.maker ?? defaults.maker) * 100).toFixed(3)}%</span>
+                      </span>
+                      <ChevronDown
+                        size={16}
+                        style={{
+                          color: 'var(--color-text-muted)',
+                          transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.16s ease',
                         }}
                       />
-                      <FeeInput
-                        label="Maker"
-                        defaultPct={defaults.maker * 100}
-                        currentPct={override ? override.maker * 100 : null}
-                        onCommit={(pct) => {
-                          const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
-                          if (pct === null) {
-                            const cur = currentOverrides[ex];
-                            if (cur) {
-                              currentOverrides[ex] = { ...cur, maker: defaults.maker };
-                              if (cur.taker === defaults.taker) delete currentOverrides[ex];
+                    </button>
+                    {open && (
+                      <div id={panelId} style={{
+                        borderTop: '1px solid rgba(30,45,66,0.62)',
+                        padding: 12,
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                        gap: 8,
+                      }}>
+                        <FeeInput
+                          label="Taker"
+                          defaultPct={defaults.taker * 100}
+                          currentPct={override ? override.taker * 100 : null}
+                          onCommit={(pct) => {
+                            const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
+                            if (pct === null) {
+                              const cur = currentOverrides[ex];
+                              if (cur) {
+                                currentOverrides[ex] = { ...cur, taker: defaults.taker };
+                                if (cur.maker === defaults.maker) delete currentOverrides[ex];
+                              }
+                            } else {
+                              const cur = currentOverrides[ex] ?? { ...defaults };
+                              currentOverrides[ex] = { ...cur, taker: pct / 100 };
                             }
-                          } else {
-                            const cur = currentOverrides[ex] ?? { ...defaults };
-                            currentOverrides[ex] = { ...cur, maker: pct / 100 };
-                          }
-                          setStrategyConfig({ feeOverrides: Object.keys(currentOverrides).length > 0 ? currentOverrides : undefined });
-                        }}
-                      />
-                    </div>
+                            setStrategyConfig({ feeOverrides: Object.keys(currentOverrides).length > 0 ? currentOverrides : undefined });
+                          }}
+                        />
+                        <FeeInput
+                          label="Maker"
+                          defaultPct={defaults.maker * 100}
+                          currentPct={override ? override.maker * 100 : null}
+                          onCommit={(pct) => {
+                            const currentOverrides = { ...(strategyConfig.feeOverrides ?? {}) };
+                            if (pct === null) {
+                              const cur = currentOverrides[ex];
+                              if (cur) {
+                                currentOverrides[ex] = { ...cur, maker: defaults.maker };
+                                if (cur.taker === defaults.taker) delete currentOverrides[ex];
+                              }
+                            } else {
+                              const cur = currentOverrides[ex] ?? { ...defaults };
+                              currentOverrides[ex] = { ...cur, maker: pct / 100 };
+                            }
+                            setStrategyConfig({ feeOverrides: Object.keys(currentOverrides).length > 0 ? currentOverrides : undefined });
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -448,7 +499,7 @@ export default function SettingsPage() {
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 16 }}>
               {EXCHANGE_PAYBACK_PRESET_NOTE} Leave blank to use preset, or enter custom payback % for each account.
             </div>
-            <div className="settings-payback-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            <div className="settings-payback-grid" style={{ display: 'grid', gap: 8 }}>
               {OPERABLE_EXCHANGES.map(ex => {
                 const defaults = EXCHANGE_PAYBACKS[ex];
                 const override = strategyConfig.paybackOverrides?.[ex];
@@ -456,74 +507,121 @@ export default function SettingsPage() {
                 const accountA = override?.accountA ?? defaults.accountA;
                 const accountB = override?.accountB ?? defaults.accountB;
                 const totalPct = (accountA + accountB) * 100;
+                const open = openPaybackExchange === ex;
+                const panelId = `settings-payback-${ex}`;
                 return (
                   <div key={`payback-${ex}`} style={{
-                    padding: '12px 14px',
                     borderRadius: 8,
                     background: override ? `${color}0a` : 'var(--bg-accent)',
-                    border: `1px solid ${override ? `${color}33` : 'var(--color-border)'}`,
+                    border: `1px solid ${open ? `${color}55` : override ? `${color}33` : 'var(--color-border)'}`,
+                    overflow: 'hidden',
                   }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color }}>
+                    <button
+                      className="settings-disclosure-row"
+                      type="button"
+                      aria-expanded={open}
+                      aria-controls={panelId}
+                      onClick={() => setOpenPaybackExchange(open ? null : ex)}
+                      style={{
+                        width: '100%',
+                        minHeight: 48,
+                        border: 0,
+                        background: 'transparent',
+                        padding: '10px 12px',
+                        display: 'grid',
+                        gridTemplateColumns: 'minmax(120px, 1fr) minmax(88px, auto) minmax(88px, auto) minmax(88px, auto) 24px',
+                        alignItems: 'center',
+                        gap: 12,
+                        color: 'var(--color-text)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 800, color }}>
                         {EXCHANGE_NAMES[ex]}
                         {override && <span style={{ fontSize: 10, marginLeft: 6, color: '#22d3ee' }}>커스텀</span>}
-                      </div>
-                      <div style={{ fontSize: 10, color: '#22d3ee', fontWeight: 700 }}>
-                        총 {totalPct.toFixed(1)}%
-                      </div>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                      <FeeInput
-                        label="계정A 페이백"
-                        defaultPct={defaults.accountA * 100}
-                        currentPct={override ? override.accountA * 100 : null}
-                        maxPct={95}
-                        onCommit={(pct) => {
-                          const currentOverrides = { ...(strategyConfig.paybackOverrides ?? {}) };
-                          if (pct === null) {
-                            const cur = currentOverrides[ex];
-                            if (cur) {
-                              currentOverrides[ex] = { ...cur, accountA: defaults.accountA };
-                              if (cur.accountB === defaults.accountB) delete currentOverrides[ex];
-                            }
-                          } else {
-                            const cur = currentOverrides[ex] ?? { ...defaults };
-                            const nextA = Math.min(pct / 100, Math.max(0, 0.95 - cur.accountB));
-                            currentOverrides[ex] = { ...cur, accountA: nextA };
-                          }
-                          setStrategyConfig({
-                            paybackOverrides: Object.keys(currentOverrides).length > 0
-                              ? currentOverrides
-                              : undefined,
-                          });
+                      </span>
+                      <span style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
+                        <span style={{ fontSize: 9, color: 'var(--color-text-muted)', fontWeight: 700 }}>계정A</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, fontFamily: 'var(--font-mono)' }}>{(accountA * 100).toFixed(1)}%</span>
+                      </span>
+                      <span style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
+                        <span style={{ fontSize: 9, color: 'var(--color-text-muted)', fontWeight: 700 }}>계정B</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, fontFamily: 'var(--font-mono)' }}>{(accountB * 100).toFixed(1)}%</span>
+                      </span>
+                      <span style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
+                        <span style={{ fontSize: 9, color: 'var(--color-text-muted)', fontWeight: 700 }}>총</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, fontFamily: 'var(--font-mono)', color: '#22d3ee' }}>{totalPct.toFixed(1)}%</span>
+                      </span>
+                      <ChevronDown
+                        size={16}
+                        style={{
+                          color: 'var(--color-text-muted)',
+                          transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+                          transition: 'transform 0.16s ease',
                         }}
                       />
-                      <FeeInput
-                        label="계정B 페이백"
-                        defaultPct={defaults.accountB * 100}
-                        currentPct={override ? override.accountB * 100 : null}
-                        maxPct={95}
-                        onCommit={(pct) => {
-                          const currentOverrides = { ...(strategyConfig.paybackOverrides ?? {}) };
-                          if (pct === null) {
-                            const cur = currentOverrides[ex];
-                            if (cur) {
-                              currentOverrides[ex] = { ...cur, accountB: defaults.accountB };
-                              if (cur.accountA === defaults.accountA) delete currentOverrides[ex];
+                    </button>
+                    {open && (
+                      <div id={panelId} style={{
+                        borderTop: '1px solid rgba(30,45,66,0.62)',
+                        padding: 12,
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                        gap: 8,
+                      }}>
+                        <FeeInput
+                          label="계정A 페이백"
+                          defaultPct={defaults.accountA * 100}
+                          currentPct={override ? override.accountA * 100 : null}
+                          maxPct={95}
+                          onCommit={(pct) => {
+                            const currentOverrides = { ...(strategyConfig.paybackOverrides ?? {}) };
+                            if (pct === null) {
+                              const cur = currentOverrides[ex];
+                              if (cur) {
+                                currentOverrides[ex] = { ...cur, accountA: defaults.accountA };
+                                if (cur.accountB === defaults.accountB) delete currentOverrides[ex];
+                              }
+                            } else {
+                              const cur = currentOverrides[ex] ?? { ...defaults };
+                              const nextA = Math.min(pct / 100, Math.max(0, 0.95 - cur.accountB));
+                              currentOverrides[ex] = { ...cur, accountA: nextA };
                             }
-                          } else {
-                            const cur = currentOverrides[ex] ?? { ...defaults };
-                            const nextB = Math.min(pct / 100, Math.max(0, 0.95 - cur.accountA));
-                            currentOverrides[ex] = { ...cur, accountB: nextB };
-                          }
-                          setStrategyConfig({
-                            paybackOverrides: Object.keys(currentOverrides).length > 0
-                              ? currentOverrides
-                              : undefined,
-                          });
-                        }}
-                      />
-                    </div>
+                            setStrategyConfig({
+                              paybackOverrides: Object.keys(currentOverrides).length > 0
+                                ? currentOverrides
+                                : undefined,
+                            });
+                          }}
+                        />
+                        <FeeInput
+                          label="계정B 페이백"
+                          defaultPct={defaults.accountB * 100}
+                          currentPct={override ? override.accountB * 100 : null}
+                          maxPct={95}
+                          onCommit={(pct) => {
+                            const currentOverrides = { ...(strategyConfig.paybackOverrides ?? {}) };
+                            if (pct === null) {
+                              const cur = currentOverrides[ex];
+                              if (cur) {
+                                currentOverrides[ex] = { ...cur, accountB: defaults.accountB };
+                                if (cur.accountA === defaults.accountA) delete currentOverrides[ex];
+                              }
+                            } else {
+                              const cur = currentOverrides[ex] ?? { ...defaults };
+                              const nextB = Math.min(pct / 100, Math.max(0, 0.95 - cur.accountA));
+                              currentOverrides[ex] = { ...cur, accountB: nextB };
+                            }
+                            setStrategyConfig({
+                              paybackOverrides: Object.keys(currentOverrides).length > 0
+                                ? currentOverrides
+                                : undefined,
+                            });
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })}

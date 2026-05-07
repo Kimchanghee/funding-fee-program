@@ -45,6 +45,17 @@
   width: 100%;
 }
 
+.fee-payback-summary-row:hover,
+.settings-disclosure-row:hover {
+  background: rgba(255, 255, 255, 0.025) !important;
+}
+
+.fee-payback-summary-row:focus-visible,
+.settings-disclosure-row:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
 @media (max-width: 1280px) {
   .funding-rate-table-wrap,
   .funding-history-table-wrap,
@@ -73,6 +84,37 @@
     padding-right: 8px !important;
     white-space: normal !important;
     overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 720px) {
+  .fee-payback-summary-row,
+  .settings-disclosure-row {
+    grid-template-columns: minmax(0, 1fr) 24px !important;
+    row-gap: 8px !important;
+  }
+
+  .fee-payback-summary-row > span:first-child,
+  .settings-disclosure-row > span:first-child {
+    grid-column: 1;
+    min-width: 0;
+  }
+
+  .fee-payback-summary-row > svg,
+  .settings-disclosure-row > svg {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .fee-payback-summary-row > span:not(:first-child),
+  .settings-disclosure-row > span:not(:first-child) {
+    grid-column: 1 / -1;
+    width: 100%;
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between !important;
+    gap: 12px;
   }
 }
 
