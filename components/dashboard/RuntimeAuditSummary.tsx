@@ -87,6 +87,7 @@ function StatCell(props: {
 }) {
   return (
     <div
+      className="runtime-audit-stat-cell"
       style={{
         border: '1px solid rgba(51,65,85,0.8)',
         borderRadius: 10,
@@ -94,11 +95,11 @@ function StatCell(props: {
         background: 'rgba(15,23,42,0.55)',
       }}
     >
-      <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 4 }}>{props.title}</div>
-      <div className="mono" style={{ fontSize: 16, fontWeight: 800, color: props.color }}>
+      <div className="runtime-audit-stat-title" style={{ fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 4 }}>{props.title}</div>
+      <div className="mono runtime-audit-stat-value" style={{ fontSize: 16, fontWeight: 800, color: props.color }}>
         {props.value}
       </div>
-      <div style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 4, lineHeight: 1.3 }}>
+      <div className="runtime-audit-stat-detail" style={{ fontSize: 10, color: 'var(--color-text-muted)', marginTop: 4, lineHeight: 1.3 }}>
         {props.detail}
       </div>
     </div>

@@ -1347,7 +1347,43 @@ body {
   }
 
   .runtime-audit-grid {
-    grid-template-columns: 1fr !important;
+    display: flex !important;
+    grid-template-columns: none !important;
+    gap: 0 !important;
+    padding: 8px 10px !important;
+    overflow: hidden;
+    align-items: stretch;
+  }
+
+  .runtime-audit-stat-cell {
+    flex: 1 1 0;
+    min-width: 0;
+    border: 0 !important;
+    border-right: 1px solid rgba(51, 65, 85, 0.62) !important;
+    border-radius: 0 !important;
+    padding: 2px 4px !important;
+    background: transparent !important;
+    text-align: center;
+  }
+
+  .runtime-audit-stat-cell:last-child {
+    border-right: 0 !important;
+  }
+
+  .runtime-audit-stat-title {
+    margin-bottom: 1px !important;
+    font-size: 9px !important;
+    line-height: 1.15 !important;
+    white-space: nowrap;
+  }
+
+  .runtime-audit-stat-value {
+    font-size: 13px !important;
+    line-height: 1.1 !important;
+  }
+
+  .runtime-audit-stat-detail {
+    display: none !important;
   }
 
   .fee-payback-summary-header {
