@@ -104,15 +104,15 @@ const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
 const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
 const MAX_ANALYSIS_CANDIDATES_PER_POLL = 120;
 const COMPOUND_BALANCE_USAGE_PCT = 0.9;
-const MIN_ENTRY_NOTIONAL_USDT = 25;
+const MIN_ENTRY_NOTIONAL_USDT = 100;
 const MAX_ADAPTIVE_NOTIONAL_ATTEMPTS = 4;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
-const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 1;
+const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 5;
 const MAX_BASIS_CONVERGENCE_RESERVE_BPS = 200;
-const UNKNOWN_VOLUME_RESERVE_BPS = 1;
-const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 25;
+const UNKNOWN_VOLUME_RESERVE_BPS = 5;
+const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 80;
 const TRANSIENT_DATA_ERROR_PATTERNS = [
   /timeout/i,
   /timed out/i,
@@ -232,7 +232,7 @@ function getFallbackImpactPercent(config: Pick<SchedulerConfig, 'maxSlippagePerc
     // round-trip bps -> per-event (entry/exit) percent
     return maxRoundTripImpactBps / 200;
   }
-  // bps -> percent (1bps = 0.01% with aggressive defaults)
+  // bps -> percent (1bps = 0.01%)
   return (snipeConfig.targetImpactBps ?? TARGET_IMPACT_BPS) / 100;
 }
 
@@ -370,18 +370,17 @@ class ServerScheduler {
   private static instance: ServerScheduler | null = null;
 
   private active = false;
-  // Aggressive baseline profile for permissive auto-investing.
+  // Best-record REAL profile from the 2026-04-17~20 SIM run.
   private config: SchedulerConfig = {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.05,
+    minSpreadPercent: 0.3,
     compoundInvesting: true,
     enabledExchanges: [],
-    maxConcurrentPairs: 10,
+    maxConcurrentPairs: 5,
     timingConfig: getResolvedTimingConfig(),
-    maxSlippagePercent: 10,
+    maxSlippagePercent: 1.5,
     minVolume24hUSD: 0,
-    confirmedSnipeConfig: DEFAULT_CONFIRMED_SNIPE_CONFIG,
   };
   private startedAt: number | null = null;
   private stats: SchedulerStats = { totalEntries: 0, totalCloses: 0, totalProfit: 0, errors: 0 };
@@ -455,13 +454,13 @@ class ServerScheduler {
       ...config,
       enabledExchanges: sanitizeEnabledExchanges(config.enabledExchanges),
       compoundInvesting: config.compoundInvesting ?? true,
-      maxConcurrentPairs: config.maxConcurrentPairs ?? 10,
+      maxConcurrentPairs: config.maxConcurrentPairs ?? 5,
       feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
       paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
       timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
-      maxSlippagePercent: config.maxSlippagePercent ?? 10,
+      maxSlippagePercent: config.maxSlippagePercent ?? 1.5,
       minVolume24hUSD: config.minVolume24hUSD ?? 0,
-      confirmedSnipeConfig: config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG,
+      confirmedSnipeConfig: config.confirmedSnipeConfig,
     };
   }
 
@@ -993,8 +992,7 @@ class ServerScheduler {
         }
 
         const preEntryEv = estimatePreEntryConservativeEV(opportunity, this.config);
-        const evPasses = !!preEntryEv?.passesMinProfit && !!preEntryEv?.passesEVRatio;
-        if (opportunity.spreadPercent < this.config.minSpreadPercent && !evPasses) {
+        if (opportunity.spreadPercent < this.config.minSpreadPercent) {
           rejectReasons.push('spread_below_threshold');
         }
         if (!preEntryEv) {
@@ -1444,10 +1442,10 @@ class ServerScheduler {
 
         const liveSpread = shortLiveRate.rate - longLiveRate.rate;
         const liveSpreadPercent = liveSpread * 100;
-        if (liveSpread <= 0) {
+        if (liveSpread <= 0 || liveSpreadPercent < this.config.minSpreadPercent) {
           this.log(
             'warning',
-            `entry blocked by live spread revalidate | asset=${asset} spread=${liveSpreadPercent.toFixed(4)}% <= 0.0000%`,
+            `entry blocked by live spread revalidate | asset=${asset} spread=${liveSpreadPercent.toFixed(4)}% min=${this.config.minSpreadPercent.toFixed(4)}%`,
           );
           this.recordTrades([{
             timestamp: Date.now(),
@@ -1459,7 +1457,7 @@ class ServerScheduler {
             spread: liveSpread,
             spreadPercent: liveSpreadPercent,
             reason: 'live_spread_reverted',
-            detail: `liveSpread:${liveSpreadPercent.toFixed(6)} executionGate:positive_live_spread_then_ev minSpread:${this.config.minSpreadPercent.toFixed(6)}`,
+            detail: `liveSpread:${liveSpreadPercent.toFixed(6)} executionGate:min_spread_then_loss_only_ev minSpread:${this.config.minSpreadPercent.toFixed(6)}`,
           }]);
           return;
         }
@@ -1930,7 +1928,7 @@ class ServerScheduler {
         basisConvergenceReservePct: number;
       } | null = null;
 
-      // Profitability gate: match the aggressive 2026-04-17 behavior.
+      // Profitability gate: match the best-record 2026-04-17 behavior.
       // Scheduling already ranks by full conservative EV; execute-time only aborts expected loss.
       {
         const usesInstantRate = pairUsesInstantaneousRate(
@@ -1974,7 +1972,7 @@ class ServerScheduler {
           },
         );
 
-        profitabilityPassed = ev.passesMinProfit && ev.passesEVRatio;
+        profitabilityPassed = ev.expectedNetUSD > 0;
         evDecisionValue = ev.expectedNetUSD;
         profitabilityDetail = `EV=$${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)} drift=${shortDrift.toFixed(6)}/${longDrift.toFixed(6)} entryImpact=${(entryImpactDec * 100).toFixed(4)}% exitImpact=${(exitImpactDec * 100).toFixed(4)}% basisReserve=${(basisConvergenceReservePct * 100).toFixed(4)}% liqReserve=${(volumeReservePct * 100).toFixed(4)}%`;
 

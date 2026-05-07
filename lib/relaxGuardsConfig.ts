@@ -9,14 +9,14 @@
  * meaningful fraction of high-EV entries. A 4-day backtest showed that
  * relaxing those two guards would have grown realised P&L roughly 3.4-6x.
  *
- * Funding-window relaxation defaults ON for the aggressive auto-investing
- * profile. Orderbook retry/defer defaults ON because the 48h review showed
- * high-EV entries were being lost to transient book/API gaps; set
+ * Funding-window relaxation defaults OFF for the best-record profile. Orderbook
+ * retry/defer defaults ON because the 48h review showed high-EV entries were
+ * being lost to transient book/API gaps; set
  * ORDERBOOK_DEFER_ENABLED=false for instant rollback.
  *
  * Env vars
  * --------
- *   RELAX_FUNDING_WINDOW=true|false   (default: true)
+ *   RELAX_FUNDING_WINDOW=true|false   (default: false)
  *     - When true:
  *       a) The funding-time drift tolerance bumps from 60_000ms (1m) to
  *          600_000ms (10m).
@@ -80,7 +80,7 @@ export interface RelaxGuardsFlags {
  */
 export function getRelaxGuardsFlags(): RelaxGuardsFlags {
   return {
-    relaxFundingWindow: readBooleanEnv('RELAX_FUNDING_WINDOW', true),
+    relaxFundingWindow: readBooleanEnv('RELAX_FUNDING_WINDOW', false),
     orderbookDeferEnabled: readBooleanEnv('ORDERBOOK_DEFER_ENABLED', true),
   };
 }

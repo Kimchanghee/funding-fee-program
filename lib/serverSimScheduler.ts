@@ -93,7 +93,7 @@ const FINAL_REVALIDATE_GUARD_MS = 1_000;
 /** Grace window to protect near-due entries from being dropped by rebuildSchedules */
 const NEAR_DUE_GRACE_MS = 5_000;
 /** Freeze near-due schedules to prevent profitable entries from being churn-canceled by frequent replans. */
-const SCHEDULE_REPLAN_FREEZE_MS = 60 * 60 * 1000;
+const SCHEDULE_REPLAN_FREEZE_MS = 10 * 60 * 1000;
 /** Tiny tolerance for boundary noise on entry-gap drift checks. */
 const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FULL_REVALIDATE_CAP = 20;
@@ -108,7 +108,7 @@ const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
-const MIN_EV_ALLOCATION_USDT = 25;
+const MIN_EV_ALLOCATION_USDT = 100;
 const FUNDING_REVALIDATE_CACHE_MAX_AGE_MS = 15_000;
 const FUNDING_REVALIDATE_STALE_FALLBACK_MS = 60_000;
 const FUNDING_REVALIDATE_ATTEMPTS = 4;
@@ -161,11 +161,11 @@ const ANALYTICS_BASE_INTERVAL_MS = 5 * 60 * 1000;
 const ANALYTICS_NEAR_DUE_INTERVAL_MS = 60 * 1000;
 const ANALYTICS_NEAR_DUE_WINDOW_MS = 30 * 60 * 1000;
 const ANALYTICS_MAX_CANDIDATES = 200;
-const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 1;
+const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 5;
 const MAX_BASIS_CONVERGENCE_RESERVE_BPS = 200;
-const UNKNOWN_VOLUME_RESERVE_BPS = 1;
-const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 25;
-const STALE_DATA_PENALTY_BPS = 2;
+const UNKNOWN_VOLUME_RESERVE_BPS = 5;
+const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 80;
+const STALE_DATA_PENALTY_BPS = 10;
 
 function formatSignedUsd(value: number, digits = 4): string {
   const sign = value >= 0 ? '+' : '';
@@ -425,7 +425,7 @@ function getFallbackImpactPercent(config: Pick<StrategyConfig, 'maxSlippagePerce
     return maxRoundTripImpactBps / 200;
   }
   // When impact guards are off, use target impact (expected), not max slippage cap.
-  // bps -> percent (1bps = 0.01% with aggressive defaults)
+  // bps -> percent (1bps = 0.01%)
   return (snipeConfig.targetImpactBps ?? TARGET_IMPACT_BPS) / 100;
 }
 
@@ -825,17 +825,16 @@ class ServerSimScheduler {
   private static instance: ServerSimScheduler | null = null;
 
   private active = false;
-  // Aggressive baseline profile for high-frequency SIM auto-investing.
+  // Best-record SIM profile from the 2026-04-17~20 run.
   private config: ServerSimSchedulerConfig = {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.05,
+    minSpreadPercent: 0.3,
     compoundInvesting: true,
     enabledExchanges: [],
     timingConfig: getResolvedTimingConfig(),
-    maxSlippagePercent: 10,
+    maxSlippagePercent: 1.5,
     minVolume24hUSD: 0,
-    confirmedSnipeConfig: DEFAULT_CONFIRMED_SNIPE_CONFIG,
   };
   private startedAt: number | null = null;
   private latestRates: FundingRate[] = [];
@@ -898,9 +897,9 @@ class ServerSimScheduler {
       feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
       paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
       timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
-      maxSlippagePercent: config.maxSlippagePercent ?? 10,
+      maxSlippagePercent: config.maxSlippagePercent ?? 1.5,
       minVolume24hUSD: config.minVolume24hUSD ?? 0,
-      confirmedSnipeConfig: config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG,
+      confirmedSnipeConfig: config.confirmedSnipeConfig,
     };
   }
 
@@ -1623,7 +1622,6 @@ class ServerSimScheduler {
         strategyConfig,
         analysisInvestmentUSDT,
       );
-      const evPasses = !!preEntryEv?.passesMinProfit && !!preEntryEv?.passesEVRatio;
       const rejectReasons: string[] = [];
       if (!this.config.enabledExchanges.includes(opportunity.shortExchange)
         || !this.config.enabledExchanges.includes(opportunity.longExchange)) {
@@ -1635,7 +1633,7 @@ class ServerSimScheduler {
           rejectReasons.push('tier_c_disabled');
         }
       }
-      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent) && !evPasses) {
+      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
         rejectReasons.push('spread_below_threshold');
       }
       if (volumeStatus.belowMin) {
@@ -3730,7 +3728,7 @@ class ServerSimScheduler {
         }
         liveSpread = shortLiveRate.rate - longLiveRate.rate;
         liveSpreadPercent = liveSpread * 100;
-        if (liveSpread > 0) break;
+        if (liveSpread > 0 && liveSpreadPercent >= this.config.minSpreadPercent) break;
       }
       if (!shortLiveRate || !longLiveRate) {
         return {
@@ -3753,16 +3751,16 @@ class ServerSimScheduler {
         };
       }
 
-      if (liveSpread <= 0) {
+      if (liveSpread <= 0 || liveSpreadPercent < this.config.minSpreadPercent) {
         return {
           success: false,
-          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% <= 0.0000% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
+          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% < ${this.config.minSpreadPercent.toFixed(4)}% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
           analysis: buildFailureAnalysis({
             attemptedNotionalUSDT: baseNotional,
             extra: {
               liveSpreadPercent,
               minSpreadPercent: this.config.minSpreadPercent,
-              executionGate: 'positive_live_spread_then_ev',
+              executionGate: 'min_spread_then_loss_only_ev',
               liveSpreadAttempts,
               shortRevalidateSource,
               longRevalidateSource,
@@ -4227,7 +4225,7 @@ class ServerSimScheduler {
         entryGapDriftPercent: entryGap.driftPercent,
         basisRiskReservePct: basisConvergenceReservePct,
       };
-      if (!ev.passesMinProfit || !ev.passesEVRatio) {
+      if (ev.expectedNetUSD <= 0) {
         return {
           success: false,
           error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,

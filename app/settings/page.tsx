@@ -192,7 +192,7 @@ export default function SettingsPage() {
                   onChange={e => setStrategyConfig({ minSpreadPercent: Number(e.target.value) })}
                 />
                 <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                  이 수치 이상일 때만 진입 · 기본 0.08%
+                  이 수치 이상일 때만 진입 · 기본 0.3%
                 </div>
               </div>
 
@@ -210,7 +210,7 @@ export default function SettingsPage() {
                   onChange={e => setStrategyConfig({ maxSlippagePercent: Number(e.target.value) })}
                 />
                 <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                  유동성 필터 — 슬리피지가 이 값 이상이면 진입 차단
+                  유동성 필터 — 슬리피지가 이 값 이상이면 진입 차단 · 기본 1.5%
                 </div>
               </div>
 
@@ -222,11 +222,11 @@ export default function SettingsPage() {
                   min={0}
                   max={100000000}
                   step={1000000}
-                  value={strategyConfig.minVolume24hUSD ?? 7500000}
+                  value={strategyConfig.minVolume24hUSD ?? 0}
                   onChange={e => setStrategyConfig({ minVolume24hUSD: Number(e.target.value) })}
                 />
                 <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                  거래량 필터 — 24시간 거래량이 이 값 미만이면 거래 제외 (기본 $7.5M ≈ 100억원, 0 = 비활성)
+                  거래량 필터 — 24시간 거래량이 이 값 미만이면 거래 제외 · 기본 0 = 비활성
                 </div>
               </div>
 
