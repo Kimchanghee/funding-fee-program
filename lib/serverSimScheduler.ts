@@ -2506,7 +2506,7 @@ class ServerSimScheduler {
 
     const markedState = this.updatePositionMarks(this.getState());
     this.setState(markedState);
-    this.rebuildSchedules(markedState);
+    this.rebuildSchedules(markedState, { fullRefresh: effectiveFullRefresh });
     this.saveState();
   }
 
@@ -2546,7 +2546,10 @@ class ServerSimScheduler {
       : state;
   }
 
-  private rebuildSchedules(state: SimStateSnapshot) {
+  private rebuildSchedules(
+    state: SimStateSnapshot,
+    options: { fullRefresh?: boolean } = {},
+  ) {
     if (!this.active) {
       this.scheduledEntries.clear();
       return;
@@ -2562,6 +2565,7 @@ class ServerSimScheduler {
     const minVolume24hUSD = Math.max(0, this.config.minVolume24hUSD ?? 0);
     const volumeByExchangeAsset = buildVolumeByExchangeAsset(this.latestRates);
     const strategyConfig = buildStrategyLikeConfig(this.config);
+    const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     const occupiedLegs = new Set<string>();
 
     for (const position of state.simPositions) {
@@ -2602,7 +2606,7 @@ class ServerSimScheduler {
       }
       const shortRate = this.latestRates.find(r => r.exchange === opportunity.shortExchange && r.symbol === opportunity.shortSymbol);
       const longRate = this.latestRates.find(r => r.exchange === opportunity.longExchange && r.symbol === opportunity.longSymbol);
-      if (shortRate && longRate) {
+      if (snipeConfig.useConfirmedClose && shortRate && longRate) {
         const tsDiff = Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
         if (tsDiff > MAX_FUNDING_TIMESTAMP_DIFF_MS) return false;
       }
@@ -2687,10 +2691,15 @@ class ServerSimScheduler {
       }
     }
 
-    // Preserve due/near-due entries that disappeared from opportunities ??executeDueEntries must handle them
+    // Partial refreshes only scan a fast symbol subset. If a previously
+    // scheduled route is absent from that subset, keep it until the next full
+    // refresh can make a complete cancel/replan decision.
     for (const [opportunityId, previousEntry] of previousEntries.entries()) {
       if (nextEntries.has(opportunityId)) continue;
-      if (previousEntry.targetTime <= now + SCHEDULE_REPLAN_FREEZE_MS) {
+      if (
+        (!options.fullRefresh && previousEntry.targetTime > now + NEAR_DUE_GRACE_MS)
+        || previousEntry.targetTime <= now + SCHEDULE_REPLAN_FREEZE_MS
+      ) {
         nextEntries.set(opportunityId, previousEntry);
       }
     }
