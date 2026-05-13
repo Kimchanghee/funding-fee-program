@@ -54,7 +54,9 @@ module.exports = {
         WATCHDOG_DATA_PROBE_INTERVAL_MS: '20000',
         WATCHDOG_FUNDING_STALL_THRESHOLD_MS: '60000',
         // real | sim | both | either(default)
-        WATCHDOG_EXPECTED_MODE: 'either',
+        WATCHDOG_EXPECTED_MODE: 'sim',
+        WATCHDOG_AUTO_START_SIM: 'true',
+        WATCHDOG_SIM_START_COOLDOWN_MS: '60000',
       },
     },
   ],

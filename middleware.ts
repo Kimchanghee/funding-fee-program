@@ -8,6 +8,9 @@ const INTERNAL_API_PATHS = new Set([
   '/api/funding-rates',
   '/api/analysis/runtime-audit',
 ]);
+const INTERNAL_WRITE_API_PATHS = new Set([
+  '/api/sim-scheduler',
+]);
 const TRUSTED_CLIENT_WRITE_API_PATHS = new Set([
   '/api/logs/save',
   '/api/trades/save',
@@ -28,6 +31,12 @@ function isInternalApiPath(request: NextRequest): boolean {
   const { pathname } = request.nextUrl;
   if (request.method !== 'GET') return false;
   return INTERNAL_API_PATHS.has(pathname) || PUBLIC_EXCHANGE_READ_RE.test(pathname);
+}
+
+function isInternalWriteApiPath(request: NextRequest): boolean {
+  const { pathname } = request.nextUrl;
+  if (request.method !== 'POST') return false;
+  return INTERNAL_WRITE_API_PATHS.has(pathname);
 }
 
 function hex(buffer: ArrayBuffer): string {
@@ -80,7 +89,7 @@ function unauthorizedApi() {
 }
 
 function isInternalApiRequest(request: NextRequest): boolean {
-  if (!isInternalApiPath(request)) return false;
+  if (!isInternalApiPath(request) && !isInternalWriteApiPath(request)) return false;
 
   const expected = process.env.INTERNAL_API_TOKEN?.trim() || process.env.SITE_PASSWORD?.trim() || '';
   if (!expected) return false;
