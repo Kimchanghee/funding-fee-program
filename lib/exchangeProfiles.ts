@@ -29,13 +29,7 @@ export interface ExchangeProfile {
 
 /**
  * Per-exchange operational profiles based on documented settlement behavior.
- *
- * Binance: settlement can have up to 15s variance
- * Bybit: funding rate updates every minute, settlement typically fast
- * OKX: settlement can take up to 60s, uses last-minute rate
- * Bitget: some contracts have 2/4h intervals, processing delay possible
- * Gate: typically fast settlement
- * BingX: orders 30s before may not count, settlement can delay up to 60s
+ * Aggressive profile keeps all supported venues eligible for scan and REAL mode.
  */
 export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
   binance: {
@@ -49,7 +43,6 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-
   },
   bybit: {
     id: 'bybit',
@@ -62,11 +55,10 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-
   },
   okx: {
     id: 'okx',
-    tier: 'B',
+    tier: 'A',
     maxSettlementWaitSec: 75,
     entryLeadSec: 7,
     frequentRateUpdates: false,
@@ -75,7 +67,6 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-
   },
   bitget: {
     id: 'bitget',
@@ -88,7 +79,6 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-
   },
   gate: {
     id: 'gate',
@@ -101,20 +91,18 @@ export const EXCHANGE_PROFILES: Record<ExchangeId, ExchangeProfile> = {
     supportsRawOrderbook: true,
     supportsIocLimit: true,
     realEnabledByDefault: true,
-
   },
   bingx: {
     id: 'bingx',
-    tier: 'C',
+    tier: 'A',
     maxSettlementWaitSec: 75,
     entryLeadSec: 35,
     frequentRateUpdates: false,
     usesInstantaneousRate: false,
-    supportsFundingSettlementCheck: false,  // unreliable settlement history
+    supportsFundingSettlementCheck: false,
     supportsRawOrderbook: true,
     supportsIocLimit: true,
-    realEnabledByDefault: false,
-
+    realEnabledByDefault: true,
   },
 };
 
