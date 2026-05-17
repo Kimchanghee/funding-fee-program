@@ -3,7 +3,6 @@
 import { useEffect } from 'react';
 import Header from '@/components/dashboard/Header';
 import OpportunityCard from '@/components/dashboard/OpportunityCard';
-import FeePaybackSummary from '@/components/dashboard/FeePaybackSummary';
 import FundingRateTable from '@/components/dashboard/FundingRateTable';
 import BalanceCards from '@/components/dashboard/BalanceCards';
 import BalanceEqualizationPanel from '@/components/dashboard/BalanceEqualizationPanel';
@@ -73,9 +72,6 @@ export default function DashboardPage() {
 
         {/* Best Opportunity (Hero) */}
         <OpportunityCard />
-
-        {/* Fee / Payback Summary */}
-        <FeePaybackSummary />
 
         {/* Balance Cards */}
         <BalanceCards />
