@@ -17,16 +17,16 @@ function normalizeReason(reason?: string): string {
 
 function getReasonPolicy(reasonRaw?: string): { cooldownMs: number; weight: number } {
   const reason = normalizeReason(reasonRaw);
-  if (reason.includes('revalidate_spread_reverted')) return { cooldownMs: 6 * 60 * 1000, weight: 1.5 };
-  if (reason.includes('profitability')) return { cooldownMs: 2 * 60 * 1000, weight: 0.7 };
+  if (reason.includes('revalidate_spread_reverted')) return { cooldownMs: 2 * 60 * 1000, weight: 1.0 };
+  if (reason.includes('profitability')) return { cooldownMs: 45 * 1000, weight: 0.25 };
   if (reason.includes('depth')) return { cooldownMs: 12 * 60 * 1000, weight: 1.8 };
   if (reason.includes('slippage') || reason.includes('impact') || reason.includes('entry_gap')) {
     return { cooldownMs: 10 * 60 * 1000, weight: 1.7 };
   }
-  if (reason.includes('orderbook')) return { cooldownMs: 4 * 60 * 1000, weight: 1.0 };
-  if (reason.includes('balance') || reason.includes('margin')) return { cooldownMs: 2 * 60 * 1000, weight: 0.8 };
-  if (reason.includes('position already active')) return { cooldownMs: 60 * 1000, weight: 0.3 };
-  return { cooldownMs: 3 * 60 * 1000, weight: 0.9 };
+  if (reason.includes('orderbook')) return { cooldownMs: 90 * 1000, weight: 0.7 };
+  if (reason.includes('balance') || reason.includes('margin')) return { cooldownMs: 60 * 1000, weight: 0.5 };
+  if (reason.includes('position already active')) return { cooldownMs: 30 * 1000, weight: 0.2 };
+  return { cooldownMs: 90 * 1000, weight: 0.6 };
 }
 
 function getRouteKeyFromEvent(event: TradeEvent): string | null {

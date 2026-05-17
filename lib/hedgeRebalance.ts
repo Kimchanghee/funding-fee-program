@@ -2,7 +2,7 @@
  * Shared hedge rebalance logic — used by both route.ts and serverScheduler.ts
  * to trim notional mismatch after entry execution.
  */
-import { closePosition } from './exchanges';
+import { closePosition, closePositionIocOnly } from './exchanges';
 import type { ExecutedOrderSummary } from './exchanges';
 import {
   MAX_HEDGE_MISMATCH_PCT,
@@ -41,7 +41,7 @@ export interface HedgeTrimResult {
 /**
  * Check notional mismatch between two executed legs and trim the excess side.
  *
- * When useStrictHedge is ON, threshold is MAX_HEDGE_MISMATCH_PCT (0.20%).
+ * When useStrictHedge is ON, threshold is MAX_HEDGE_MISMATCH_PCT (0.05%).
  * Otherwise, legacy 2% threshold is used.
  *
  * Returns whether trim was performed and the resulting amounts.
@@ -65,35 +65,53 @@ export async function rebalanceExecutedHedge(
 
   if (shortNotional > longNotional) {
     const excessQty = (shortNotional - minNotional) / shortEntry.price;
-    const trimClose = await closePosition(
+    let usedFallback = false;
+    const trimClose = await closePositionIocOnly(
       params.shortExchange, params.shortConfig,
       params.shortSymbol, 'short', excessQty, params.feeOverrides, params.paybackOverrides,
-    );
+    ).catch(async () => {
+      usedFallback = true;
+      return closePosition(
+        params.shortExchange, params.shortConfig,
+        params.shortSymbol, 'short', excessQty, params.feeOverrides, params.paybackOverrides,
+      );
+    });
+    const trimmedEntryNotional = trimClose.amount * shortEntry.price;
+    const nextShortNotional = Math.max(0, shortNotional - trimmedEntryNotional);
     return {
       trimmed: true,
       trimmedSide: 'short',
       trimFee: trimClose.estimatedFee,
-      detail: `short excess $${(shortNotional - minNotional).toFixed(2)} trimmed (${diffPercent.toFixed(3)}%)`,
-      shortAmount: shortEntry.amount - excessQty,
+      detail: `short excess $${(shortNotional - minNotional).toFixed(2)} trimmed (${diffPercent.toFixed(3)}%)${usedFallback ? ' via fallback' : ' via IOC-only'}`,
+      shortAmount: Math.max(0, shortEntry.amount - trimClose.amount),
       longAmount: longEntry.amount,
-      shortFilledNotional: minNotional,
+      shortFilledNotional: Math.max(minNotional, nextShortNotional),
       longFilledNotional: longNotional,
     };
   } else {
     const excessQty = (longNotional - minNotional) / longEntry.price;
-    const trimClose = await closePosition(
+    let usedFallback = false;
+    const trimClose = await closePositionIocOnly(
       params.longExchange, params.longConfig,
       params.longSymbol, 'long', excessQty, params.feeOverrides, params.paybackOverrides,
-    );
+    ).catch(async () => {
+      usedFallback = true;
+      return closePosition(
+        params.longExchange, params.longConfig,
+        params.longSymbol, 'long', excessQty, params.feeOverrides, params.paybackOverrides,
+      );
+    });
+    const trimmedEntryNotional = trimClose.amount * longEntry.price;
+    const nextLongNotional = Math.max(0, longNotional - trimmedEntryNotional);
     return {
       trimmed: true,
       trimmedSide: 'long',
       trimFee: trimClose.estimatedFee,
-      detail: `long excess $${(longNotional - minNotional).toFixed(2)} trimmed (${diffPercent.toFixed(3)}%)`,
+      detail: `long excess $${(longNotional - minNotional).toFixed(2)} trimmed (${diffPercent.toFixed(3)}%)${usedFallback ? ' via fallback' : ' via IOC-only'}`,
       shortAmount: shortEntry.amount,
-      longAmount: longEntry.amount - excessQty,
+      longAmount: Math.max(0, longEntry.amount - trimClose.amount),
       shortFilledNotional: shortNotional,
-      longFilledNotional: minNotional,
+      longFilledNotional: Math.max(minNotional, nextLongNotional),
     };
   }
 }

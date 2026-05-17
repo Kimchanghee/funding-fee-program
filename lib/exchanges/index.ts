@@ -1383,6 +1383,75 @@ export async function closePosition(
   }
 }
 
+export async function closePositionIocOnly(
+  id: ExchangeId,
+  config: ApiConfig,
+  symbol: string,
+  side: 'long' | 'short',
+  amount: number,
+  feeOverrides?: FeeOverrides,
+  paybackOverrides?: PaybackOverrides,
+): Promise<ExecutedOrderSummary> {
+  let ex = makeExchange(id, config);
+  try {
+    ex = await ensureMarkets(ex, id, config);
+    const ob = await fetchOrderbook(id, symbol, 50);
+
+    const levels = side === 'long' ? ob.bids : ob.asks;
+    if (!levels || levels.length === 0) throw new Error('empty orderbook');
+
+    const baseAmount = amount;
+    let contractAmount = amount;
+    if (ex.markets && ex.markets[symbol]) {
+      const market = ex.markets[symbol];
+      if (market.contractSize && market.contractSize !== 1) {
+        contractAmount = contractAmount / market.contractSize;
+      }
+      contractAmount = parseFloat(ex.amountToPrecision(symbol, contractAmount));
+    }
+    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
+    const closeSide: 'buy' | 'sell' = side === 'long' ? 'sell' : 'buy';
+    const estimatedNotional = baseAmount * levels[0][0];
+    const analysis = analyzeOrderbook(levels, estimatedNotional, closeSide);
+    const priceBuffer = 0.0005;
+    const limitPrice = side === 'long'
+      ? analysis.worstPrice * (1 - priceBuffer)
+      : analysis.worstPrice * (1 + priceBuffer);
+
+    console.log(
+      `[${id}] ${symbol} CLOSE ${side} IOC-ONLY: limit=${limitPrice.toFixed(4)}, qty=${contractAmount.toFixed(6)}`,
+    );
+
+    const order = await Promise.race([
+      ex.createOrder(symbol, 'limit', closeSide, contractAmount, limitPrice, {
+        timeInForce: 'IOC',
+        reduceOnly: true,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Close IOC-only timeout')), 3000),
+      ),
+    ]);
+
+    const filledAmount = (order.filled as number) || 0;
+    if (filledAmount <= 0) {
+      throw new Error(`[${id}] ${symbol} close IOC-only filled 0`);
+    }
+
+    const filledPrice = (order.average as number) || limitPrice;
+    const filledNotional = filledAmount * cSize * filledPrice;
+    return {
+      orderId: (order.id as string) || '',
+      price: filledPrice,
+      amount: filledAmount * cSize,
+      filledNotional,
+      liquidity: 'taker',
+      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides, paybackOverrides),
+    };
+  } catch (err) {
+    throw new Error(`[${id}] closePositionIocOnly failed: ${(err as Error).message}`);
+  }
+}
+
 export async function fetchFundingHistory(
   id: ExchangeId,
   config: ApiConfig,

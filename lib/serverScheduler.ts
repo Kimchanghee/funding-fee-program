@@ -7,6 +7,7 @@ import {
   fetchFundingRates,
   fetchMarketFillPrice,
   fetchOrderbook,
+  fetchPositions,
   calcOrderbookImpactBps,
   checkFundingSettled,
   getPartialExecution,
@@ -86,6 +87,7 @@ import {
   type PaybackOverrides,
   type FundingPayment,
   type FundingRate,
+  type Position,
   type TimingConfig,
 } from './types';
 import { getDataDir } from './dataDir';
@@ -99,10 +101,10 @@ const FUNDING_MATCH_WINDOW_MS = 10 * 60 * 1000;
 const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
 const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
-const FULL_FUNDING_SCAN_INTERVAL_MS = 5 * 60 * 1000;
-const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
-const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
-const MAX_ANALYSIS_CANDIDATES_PER_POLL = 120;
+const FULL_FUNDING_SCAN_INTERVAL_MS = 60 * 1000;
+const FAST_SYMBOL_CAP_PER_EXCHANGE = 120;
+const FAST_SYMBOL_MIN_PER_EXCHANGE = 40;
+const MAX_ANALYSIS_CANDIDATES_PER_POLL = 300;
 const COMPOUND_BALANCE_USAGE_PCT = 0.9;
 const MIN_ENTRY_NOTIONAL_USDT = 100;
 const MAX_ADAPTIVE_NOTIONAL_ATTEMPTS = 4;
@@ -178,6 +180,55 @@ function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return 'unknown';
+}
+
+function normalizePositionSymbol(symbol: string): string {
+  return symbol
+    .replace(':USDT', '')
+    .replace(':USD', '')
+    .replace(/[-_]/g, '/')
+    .toUpperCase();
+}
+
+function findPositionForExecutedLeg(
+  positions: Position[],
+  symbol: string,
+  side: 'long' | 'short',
+): Position | null {
+  const target = normalizePositionSymbol(symbol);
+  return positions.find((position) => (
+    position.side === side
+    && position.size > 0
+    && (
+      normalizePositionSymbol(position.symbol) === target
+      || normalizePositionSymbol(position.displaySymbol) === target
+    )
+  )) ?? null;
+}
+
+function applyPositionSnapshotToExecution(
+  execution: ExecutedOrderSummary,
+  position: Position,
+): string | null {
+  const amount = Math.abs(position.size);
+  const price = position.entryPrice > 0 ? position.entryPrice : execution.price;
+  const notional = Math.abs(position.sizeUSD) > 0
+    ? Math.abs(position.sizeUSD)
+    : amount * price;
+
+  if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(notional) || notional <= 0) {
+    return null;
+  }
+
+  const before = {
+    amount: execution.amount,
+    filledNotional: execution.filledNotional,
+  };
+  execution.amount = amount;
+  execution.price = price;
+  execution.filledNotional = notional;
+
+  return `amount ${before.amount.toFixed(8)}->${amount.toFixed(8)} notional $${before.filledNotional.toFixed(2)}->$${notional.toFixed(2)}`;
 }
 
 function isSingleCycleFundingRolloverShift(
@@ -295,7 +346,7 @@ export interface SchedulerConfig {
   timingConfig?: TimingConfig;
   maxSlippagePercent?: number; // Max per-leg slippage percent (default 10)
   minVolume24hUSD?: number; // Minimum 24h quote volume in USD
-  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1; undefined means all toggles OFF
+  confirmedSnipeConfig?: ConfirmedSnipeConfig; // v2.1; undefined uses DEFAULT_CONFIRMED_SNIPE_CONFIG
 }
 
 interface SchedulerStats {
@@ -370,11 +421,11 @@ class ServerScheduler {
   private static instance: ServerScheduler | null = null;
 
   private active = false;
-  // Best-record REAL profile from the 2026-04-17~20 SIM run.
+  // Aggressive REAL profile for broader funding capture.
   private config: SchedulerConfig = {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.3,
+    minSpreadPercent: 0.12,
     compoundInvesting: true,
     enabledExchanges: [],
     maxConcurrentPairs: 5,
@@ -997,7 +1048,7 @@ class ServerScheduler {
         }
         if (!preEntryEv) {
           rejectReasons.push('profitability_calculation_failed');
-        } else if (!preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) {
+        } else if (preEntryEv.expectedNetUSD <= 0) {
           rejectReasons.push('profitability_scan_failed');
         }
 
@@ -2076,40 +2127,33 @@ class ServerScheduler {
       const orphanMs = Math.abs(shortDoneAt - longDoneAt);
       const totalExecMs = Date.now() - execStartMs;
 
-      // Hard enforcement: if orphan exceeds cap AND both legs succeeded, rollback both
+      // If both legs succeeded, keep the hedge and let post-fill position reconciliation
+      // and trim correct the notional mismatch. Only failed/partial hedge paths roll back.
       if (orphanMs > MAX_ORPHAN_LEG_MS && shortResult.status === 'fulfilled' && longResult.status === 'fulfilled') {
         this.log(
           'warning',
-          `orphan leg exceeded - forced rollback | asset=${asset} orphan=${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms totalExec=${totalExecMs}ms`,
+          `orphan leg exceeded after both fills - continuing | asset=${asset} orphan=${orphanMs}ms > ${MAX_ORPHAN_LEG_MS}ms totalExec=${totalExecMs}ms`,
         );
-
-        await Promise.allSettled([
-          this.rollbackSingleEntry(
-            opportunity.shortExchange, shortConfig, opportunity.shortSymbol,
-            'short', shortResult.value.amount, asset, 'orphan_leg_exceeded',
-          ),
-          this.rollbackSingleEntry(
-            opportunity.longExchange, longConfig, opportunity.longSymbol,
-            'long', longResult.value.amount, asset, 'orphan_leg_exceeded',
-          ),
-        ]);
-
-        completeExecution(opportunityId, 'forced_close', { orphanLegMs: orphanMs });
-
         this.recordTrades([{
           timestamp: Date.now(),
-          type: 'guard_block',
+          type: 'schedule_probe',
           simulation: false,
           baseAsset: asset,
           shortExchange: opportunity.shortExchange,
           longExchange: opportunity.longExchange,
           spread: opportunity.spread,
           spreadPercent: opportunity.spreadPercent,
-          reason: 'orphan_leg_exceeded',
-          detail: `orphanMs:${orphanMs} cap:${MAX_ORPHAN_LEG_MS} totalExec:${totalExecMs}`,
+          reason: 'orphan_leg_latency_exceeded',
+          milestone: 'execute_latency',
+          detail: `orphanMs:${orphanMs} cap:${MAX_ORPHAN_LEG_MS} totalExec:${totalExecMs} action=continue_to_reconcile`,
+          analysis: {
+            opportunityId,
+            orphanLegMs: orphanMs,
+            orphanCapMs: MAX_ORPHAN_LEG_MS,
+            totalExecMs,
+            action: 'continue_to_reconcile',
+          },
         }]);
-        this.saveState();
-        return;
       } else if (orphanMs > MAX_ORPHAN_LEG_MS) {
         // One leg failed anyway; log telemetry and continue rollback handling.
         this.log(
@@ -2195,6 +2239,18 @@ class ServerScheduler {
       }
 
       if (shortResult.status !== 'fulfilled' || longResult.status !== 'fulfilled') return;
+
+      await this.reconcileExecutedHedgeWithPositions({
+        asset,
+        shortExchange: opportunity.shortExchange,
+        longExchange: opportunity.longExchange,
+        shortConfig,
+        longConfig,
+        shortSymbol: opportunity.shortSymbol,
+        longSymbol: opportunity.longSymbol,
+        shortEntry: shortResult.value,
+        longEntry: longResult.value,
+      });
 
       // ???? Hedge trim: reduce excess side via shared helper ????
       try {
@@ -3123,6 +3179,66 @@ class ServerScheduler {
     }
 
     return logs;
+  }
+
+  private async reconcileExecutedLegWithPosition(
+    exchange: ExchangeId,
+    config: ApiConfig,
+    symbol: string,
+    side: 'long' | 'short',
+    execution: ExecutedOrderSummary,
+  ): Promise<string | null> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const positions = await fetchPositions(exchange, config);
+      const position = findPositionForExecutedLeg(positions, symbol, side);
+      if (position) {
+        const detail = applyPositionSnapshotToExecution(execution, position);
+        return detail ? `${exchange}:${symbol}:${side} ${detail}` : null;
+      }
+      if (attempt === 0) {
+        await this.sleep(350);
+      }
+    }
+    return null;
+  }
+
+  private async reconcileExecutedHedgeWithPositions(args: {
+    asset: string;
+    shortExchange: ExchangeId;
+    longExchange: ExchangeId;
+    shortConfig: ApiConfig;
+    longConfig: ApiConfig;
+    shortSymbol: string;
+    longSymbol: string;
+    shortEntry: ExecutedOrderSummary;
+    longEntry: ExecutedOrderSummary;
+  }) {
+    const [shortReconcile, longReconcile] = await Promise.allSettled([
+      this.reconcileExecutedLegWithPosition(
+        args.shortExchange,
+        args.shortConfig,
+        args.shortSymbol,
+        'short',
+        args.shortEntry,
+      ),
+      this.reconcileExecutedLegWithPosition(
+        args.longExchange,
+        args.longConfig,
+        args.longSymbol,
+        'long',
+        args.longEntry,
+      ),
+    ]);
+
+    const details = [shortReconcile, longReconcile]
+      .flatMap((result) => {
+        if (result.status === 'fulfilled') return result.value ? [result.value] : [];
+        return [`position reconcile failed: ${getErrorMessage(result.reason)}`];
+      });
+
+    if (details.length > 0) {
+      this.log('info', `post-fill position reconcile | asset=${args.asset} ${details.join(' | ')}`);
+    }
   }
 
   private async rollbackSingleEntry(

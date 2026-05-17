@@ -1650,7 +1650,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   strategyConfig: {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.3,
+    minSpreadPercent: 0.12,
     autoExecute: true,
     compoundInvesting: true,
     timingConfig: { ...DEFAULT_TIMING_CONFIG },
@@ -1940,8 +1940,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── API config ────────────────────────────────
   setApiConfig(exchange, config) {
+    const exchangeLabel = String(exchange).toUpperCase();
     if (!isExchangeOperable(exchange)) {
-      get().addLog('warning', `${exchange.toUpperCase()} currently disabled`, exchange);
+      get().addLog('warning', `${exchangeLabel} currently disabled`, exchange);
       return;
     }
     const prev = get().apiConfigs;
@@ -3948,8 +3949,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── Exchange Toggle ─────────────────────────
   toggleExchange(exchange) {
     const { enabledExchanges, simPositions } = get();
+    const exchangeLabel = String(exchange).toUpperCase();
     if (!isExchangeOperable(exchange)) {
-      get().addLog('warning', `${exchange.toUpperCase()} currently disabled`, exchange);
+      get().addLog('warning', `${exchangeLabel} currently disabled`, exchange);
       return;
     }
 

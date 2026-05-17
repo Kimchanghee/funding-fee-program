@@ -1,5 +1,5 @@
 export type ExchangeId = 'binance' | 'bybit' | 'okx' | 'bitget' | 'gate' | 'bingx';
-export type OperableExchangeId = Exclude<ExchangeId, 'okx' | 'bitget'>;
+export type OperableExchangeId = ExchangeId;
 
 export const EXCHANGE_NAMES: Record<ExchangeId, string> = {
   binance: 'BINANCE',
@@ -179,7 +179,7 @@ export interface SnipeStateSnapshot {
 }
 
 export const SUPPORTED_EXCHANGES: ExchangeId[] = ['binance', 'bybit', 'okx', 'bitget', 'gate', 'bingx'];
-export const DISABLED_EXCHANGES = ['okx', 'bitget'] as const satisfies readonly ExchangeId[];
+export const DISABLED_EXCHANGES = [] as const satisfies readonly ExchangeId[];
 const DISABLED_EXCHANGE_SET = new Set<ExchangeId>(DISABLED_EXCHANGES);
 export const OPERABLE_EXCHANGES: OperableExchangeId[] = SUPPORTED_EXCHANGES.filter(
   (exchange): exchange is OperableExchangeId => !DISABLED_EXCHANGE_SET.has(exchange),
@@ -566,9 +566,9 @@ export function getHedgeFeesWithOverrides(
  * @param spreadPercent   - 명목 ?�프?�드 (%)
  * @param entryGapPct     - 진입 가�?�?(%) ???�수 = 진입 ?�실
  * @param hedgeFeePct     - ?�복 ?�수�?(%) ??getHedgeFees * 100
- * @param safetyMarginPct - safety margin (%) default 0.015 (1.5bps)
+ * @param safetyMarginPct - safety margin (%) default 0.005 (0.5bps)
  */
-export const SAFETY_MARGIN_PCT = 0.015; // 1.5bps reserve from the best-record profile
+export const SAFETY_MARGIN_PCT = 0.005; // 0.5bps reserve for aggressive funding capture
 
 // ── v2.1 Confirmed Snipe constants ──
 
@@ -578,21 +578,21 @@ export const TARGET_IMPACT_BPS = 4;
 /** Hard cap for round-trip total impact in basis points */
 export const MAX_ROUND_TRIP_IMPACT_BPS = 12;
 
-/** Maximum allowed hedge ratio deviation: 0.998 <= ratio <= 1.002 */
-export const HEDGE_RATIO_MIN = 0.998;
-export const HEDGE_RATIO_MAX = 1.002;
+/** Maximum allowed hedge ratio deviation: 0.9995 <= ratio <= 1.0005 */
+export const HEDGE_RATIO_MIN = 0.9995;
+export const HEDGE_RATIO_MAX = 1.0005;
 
 /** Maximum allowed qty mismatch percent */
-export const MAX_HEDGE_MISMATCH_PCT = 0.20;
+export const MAX_HEDGE_MISMATCH_PCT = 0.05;
 
 /** Maximum orphan leg exposure time in ms */
 export const MAX_ORPHAN_LEG_MS = 300;
 
 /** Minimum expected net USD profit to enter */
-export const MIN_PROFIT_USD = 1.25;
+export const MIN_PROFIT_USD = 0.05;
 
 /** Minimum EV ratio: expectedNetUSD / worstCaseExitUSD */
-export const MIN_EV_RATIO = 0.6;
+export const MIN_EV_RATIO = 0.01;
 
 /** Maximum funding timestamp difference between two legs in ms */
 export const MAX_FUNDING_TIMESTAMP_DIFF_MS = 3_000;
@@ -605,9 +605,8 @@ export const MIN_DRIFT_BUFFER_BPS = 1; // 0.01%
 
 /**
  * v2.1 Confirmed Snipe configuration.
- * All feature toggles default to OFF.
- * However, scheduler-level exchange profile entry timing and Tier C filtering
- * are applied independently of these toggles.
+ * Execution-speed and hedge-precision toggles default ON for REAL funding capture.
+ * Scheduler-level exchange profile entry timing is applied independently.
  */
 export interface ConfirmedSnipeConfig {
   /** Use impact-based guards instead of maxSlippagePercent */
@@ -631,9 +630,9 @@ export interface ConfirmedSnipeConfig {
 }
 
 /**
- * Best-record profile:
- * - All v2.1 feature toggles default OFF, matching the 2026-04-17~20 run.
- * - Fixed-delay close remains the baseline; confirmed close is opt-in only.
+ * Aggressive funding profile:
+ * - IOC-limit-only entry is the default to improve simultaneous hedge capture.
+ * - Strict hedge is the default; confirmed close remains opt-in only.
  */
 export const DEFAULT_CONFIRMED_SNIPE_CONFIG: ConfirmedSnipeConfig = {
   useImpactGuards: false,
@@ -643,8 +642,8 @@ export const DEFAULT_CONFIRMED_SNIPE_CONFIG: ConfirmedSnipeConfig = {
   dynamicNotionalCap: 2200,
   useDriftBuffer: false,
   useConfirmedClose: false,
-  useIocLimitOnly: false,
-  useStrictHedge: false,
+  useIocLimitOnly: true,
+  useStrictHedge: true,
 };
 
 export function calcNetSpreadPercent(
@@ -681,10 +680,18 @@ export function calcHedgedNetSpreadPercent(
   return spreadPercent - roundTripSlippagePct - hedgeFeePct - safetyMarginPct;
 }
 
-// Popular symbols to track (top coins by OI)
+// Broad futures universe for aggressive funding scans.
 export const TRACKED_SYMBOLS = [
   'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'ADA', 'AVAX', 'DOT', 'LINK',
   'LTC', 'BCH', 'NEAR', 'ATOM', 'UNI', 'APT', 'OP', 'ARB', 'INJ', 'SUI',
   'TRX', 'MATIC', 'FIL', 'SAND', 'MANA', 'AXS', 'AAVE', 'EOS', 'XLM', 'VET',
   'ICP', 'HBAR', 'FTM', 'ALGO', 'RUNE', 'THETA', 'EGLD', 'FLOW', 'ETC', 'XMR',
+  'SHIB', '1000SHIB', 'PEPE', '1000PEPE', 'WIF', 'BONK', '1000BONK', 'FLOKI',
+  '1000FLOKI', 'MEME', 'PEOPLE', 'TURBO', 'ORDI', 'SATS', '1000SATS', 'NOT',
+  'DOGS', 'PNUT', 'ACT', 'GOAT', 'MEW', 'POPCAT', 'FET', 'RNDR', 'RENDER',
+  'TAO', 'WLD', 'TIA', 'SEI', 'JUP', 'JTO', 'PYTH', 'STRK', 'ZK', 'ZRO',
+  'ENA', 'EIGEN', 'ETHFI', 'AEVO', 'ALT', 'MANTA', 'BLUR', 'SAGA', 'DYM',
+  'ONDO', 'PENDLE', 'OM', 'MKR', 'COMP', 'CRV', 'LDO', 'AR', 'GRT', 'IMX',
+  'STX', 'KAS', 'TON', 'APE', 'GMT', 'GALA', 'CHZ', 'DYDX', 'MINA', 'ROSE',
+  'KAVA', 'ZIL', 'IOTA', 'NEO', 'QTUM', 'DASH', 'ZEC', 'MASK', 'MAGIC',
 ];
