@@ -4,6 +4,7 @@ const PUBLIC_PAGE_PATHS = ['/login'];
 const INTERNAL_API_PATHS = new Set([
   '/api/market-data-health',
   '/api/scheduler',
+  '/api/scheduler/diagnostics',
   '/api/sim-scheduler',
   '/api/funding-rates',
   '/api/analysis/runtime-audit',
