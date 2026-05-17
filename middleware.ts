@@ -10,6 +10,7 @@ const INTERNAL_API_PATHS = new Set([
   '/api/analysis/runtime-audit',
 ]);
 const INTERNAL_WRITE_API_PATHS = new Set([
+  '/api/scheduler',
   '/api/sim-scheduler',
 ]);
 const TRUSTED_CLIENT_WRITE_API_PATHS = new Set([
