@@ -99,11 +99,11 @@ const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FULL_REVALIDATE_CAP = 20;
 const PROBE_STATE_RETENTION_MS = 2 * 60 * 60 * 1000;
 const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
-const FULL_FUNDING_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const FULL_FUNDING_REFRESH_INTERVAL_MS = 60 * 1000;
 const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
-const FAST_SYMBOL_CAP_PER_EXCHANGE = 24;
-const FAST_SYMBOL_MIN_PER_EXCHANGE = 8;
-const FAST_OPPORTUNITY_SEED_COUNT = 12;
+const FAST_SYMBOL_CAP_PER_EXCHANGE = 120;
+const FAST_SYMBOL_MIN_PER_EXCHANGE = 40;
+const FAST_OPPORTUNITY_SEED_COUNT = 40;
 const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
@@ -522,10 +522,10 @@ function getOpportunityYieldScore(
 ): number {
   const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig);
   if (!ev) return 0;
-  if (!ev.passesMinProfit || !ev.passesEVRatio) return 0;
+  if (ev.expectedNetUSD <= 0) return 0;
   const intervalHours = Math.max(1, getOpportunityIntervalHours(opportunity));
   const roiPerMargin = ev.expectedNetUSD / Math.max(1, strategyConfig.investmentUSDT);
-  return Math.max(0, (ev.expectedNetUSD * Math.max(1, ev.evRatio) * (1 + roiPerMargin)) / intervalHours);
+  return Math.max(0, (ev.expectedNetUSD * Math.max(0.01, ev.evRatio) * (1 + roiPerMargin)) / intervalHours);
 }
 
 function passesPreEntryEVAtAllocation(
@@ -535,7 +535,7 @@ function passesPreEntryEVAtAllocation(
 ): ConservativeEVResult | null {
   const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig, investmentUSDT);
   if (!ev) return null;
-  return ev.passesMinProfit && ev.passesEVRatio && ev.expectedNetUSD > 0 ? ev : null;
+  return ev.expectedNetUSD > 0 ? ev : null;
 }
 
 function planWindowAllocations(
@@ -825,11 +825,11 @@ class ServerSimScheduler {
   private static instance: ServerSimScheduler | null = null;
 
   private active = false;
-  // Best-record SIM profile from the 2026-04-17~20 run.
+  // Aggressive SIM profile for broader funding-capture testing.
   private config: ServerSimSchedulerConfig = {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.3,
+    minSpreadPercent: 0.12,
     compoundInvesting: true,
     enabledExchanges: [],
     timingConfig: getResolvedTimingConfig(),
@@ -1660,7 +1660,7 @@ class ServerSimScheduler {
       }
       if (!preEntryEv) {
         rejectReasons.push('profitability_calculation_failed');
-      } else if (!preEntryEv.passesMinProfit || !preEntryEv.passesEVRatio) {
+      } else if (preEntryEv.expectedNetUSD <= 0) {
         rejectReasons.push('profitability_scan_failed');
       }
       if (rejectReasons.length === 0 && !candidateIds.has(opportunityId)) {
