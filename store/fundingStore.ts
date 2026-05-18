@@ -47,6 +47,7 @@ import {
 import { sendTelegramMessage, formatBalanceWarning, formatSnipeCompleteAlert } from '@/lib/telegram';
 import {
   DEFAULT_TIMING_CONFIG,
+  DEFAULT_CONFIRMED_SNIPE_CONFIG,
   getHedgeFeesWithOverrides,
   getExchangeFee,
   calcNetSpreadPercent,
@@ -141,6 +142,10 @@ function getResolvedStrategyConfig(config: StrategyConfig): StrategyConfig {
     feeOverrides: sanitizeFeeOverrides(config.feeOverrides),
     paybackOverrides: sanitizePaybackOverrides(config.paybackOverrides),
     timingConfig: getResolvedTimingConfig(sanitizeTimingConfig(config.timingConfig)),
+    confirmedSnipeConfig: {
+      ...DEFAULT_CONFIRMED_SNIPE_CONFIG,
+      ...(config.confirmedSnipeConfig ?? {}),
+    },
   };
 }
 

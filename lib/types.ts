@@ -632,14 +632,15 @@ export interface ConfirmedSnipeConfig {
 /**
  * Aggressive funding profile:
  * - IOC-limit-only entry is the default to improve simultaneous hedge capture.
+ * - Dynamic notional is the default so each route only uses the size that remains profitable.
  * - Strict hedge is the default; confirmed close remains opt-in only.
  */
 export const DEFAULT_CONFIRMED_SNIPE_CONFIG: ConfirmedSnipeConfig = {
   useImpactGuards: false,
   targetImpactBps: TARGET_IMPACT_BPS,
   maxRoundTripImpactBps: MAX_ROUND_TRIP_IMPACT_BPS,
-  useDynamicNotional: false,
-  dynamicNotionalCap: 2200,
+  useDynamicNotional: true,
+  dynamicNotionalCap: 100_000,
   useDriftBuffer: false,
   useConfirmedClose: false,
   useIocLimitOnly: true,

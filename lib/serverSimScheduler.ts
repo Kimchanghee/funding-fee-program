@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
+import { analyzeOrderbook, fetchFundingRates, fetchMarketFillPrice, fetchOrderbook, calcOrderbookImpactBps } from './exchanges';
 import { warmFundingRatesWs, warmOrderbookWs } from './exchanges/wsPublicData';
 import { pairUsesInstantaneousRate, hasTierCExchange, getPairEntryLeadMs, getPairMaxSettlementWaitMs } from './exchangeProfiles';
 import { getEntryGapMetrics } from './entryGapGuard';
@@ -108,7 +108,9 @@ const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
-const MIN_EV_ALLOCATION_USDT = 100;
+const MIN_EV_ALLOCATION_USDT = 25;
+const LIQUIDITY_SIZING_CANDIDATE_CAP = 16;
+const PROFITABLE_SIZING_SEARCH_STEPS = 8;
 const FUNDING_REVALIDATE_CACHE_MAX_AGE_MS = 15_000;
 const FUNDING_REVALIDATE_STALE_FALLBACK_MS = 60_000;
 const FUNDING_REVALIDATE_ATTEMPTS = 4;
@@ -489,6 +491,262 @@ function calcExpectedRoiPercent(expectedNetProfit: number, investmentUSDT: numbe
   return (expectedNetProfit / (investmentUSDT * leverage)) * 100;
 }
 
+type OrderbookSnapshot = { bids: number[][]; asks: number[][] };
+
+type ProfitableOrderbookSizing = {
+  investmentUSDT: number;
+  notionalUSDT: number;
+  expectedNetUSD: number;
+  expectedRoiPercent: number;
+  evRatio: number;
+  shortEntrySlippagePercent: number;
+  longEntrySlippagePercent: number;
+  shortExitSlippagePercent: number;
+  longExitSlippagePercent: number;
+  entryGapLivePercent: number;
+  entryGapDriftPercent: number;
+  marketSnapshot?: ProbeMarketSnapshot;
+  ev: ConservativeEVResult;
+};
+
+type LiquiditySizedCandidate = {
+  opportunity: ArbitrageOpportunity;
+  shortBook: OrderbookSnapshot | null;
+  longBook: OrderbookSnapshot | null;
+  sizing: ProfitableOrderbookSizing;
+  score: number;
+};
+
+function getOrderbookMid(book: OrderbookSnapshot): number | null {
+  const bid = book.bids?.[0]?.[0];
+  const ask = book.asks?.[0]?.[0];
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  return ((bid as number) + (ask as number)) / 2;
+}
+
+function getOrderbookFill(
+  book: OrderbookSnapshot,
+  side: 'buy' | 'sell',
+  notionalUSDT: number,
+) {
+  const midPrice = getOrderbookMid(book);
+  if (!midPrice || !Number.isFinite(notionalUSDT) || notionalUSDT <= 0) return null;
+  const analysis = analyzeOrderbook(side === 'buy' ? book.asks : book.bids, notionalUSDT, side);
+  const rawSlippage = side === 'buy'
+    ? (analysis.fillPrice - midPrice) / midPrice
+    : (midPrice - analysis.fillPrice) / midPrice;
+  return {
+    fillPrice: analysis.fillPrice,
+    worstPrice: analysis.worstPrice,
+    midPrice,
+    slippagePercent: Math.max(0, rawSlippage * 100),
+  };
+}
+
+function buildMarketSnapshotFromOrderbooks(
+  shortBook: OrderbookSnapshot,
+  longBook: OrderbookSnapshot,
+  notionalUSDT: number,
+): ProbeMarketSnapshot | undefined {
+  const shortBid = shortBook.bids?.[0]?.[0];
+  const shortAsk = shortBook.asks?.[0]?.[0];
+  const longBid = longBook.bids?.[0]?.[0];
+  const longAsk = longBook.asks?.[0]?.[0];
+  if (
+    !Number.isFinite(shortBid)
+    || !Number.isFinite(shortAsk)
+    || !Number.isFinite(longBid)
+    || !Number.isFinite(longAsk)
+  ) {
+    return undefined;
+  }
+
+  const shortMid = ((shortBid as number) + (shortAsk as number)) / 2;
+  const longMid = ((longBid as number) + (longAsk as number)) / 2;
+  const shortBidDepthUsd5 = sumDepthUsd(shortBook.bids, PROBE_ORDERBOOK_DEPTH);
+  const shortAskDepthUsd5 = sumDepthUsd(shortBook.asks, PROBE_ORDERBOOK_DEPTH);
+  const longBidDepthUsd5 = sumDepthUsd(longBook.bids, PROBE_ORDERBOOK_DEPTH);
+  const longAskDepthUsd5 = sumDepthUsd(longBook.asks, PROBE_ORDERBOOK_DEPTH);
+  const shortImpactBps = notionalUSDT > 0
+    ? calcOrderbookImpactBps(shortBook.bids, shortBook.asks, notionalUSDT, 'sell').impactBps
+    : 0;
+  const longImpactBps = notionalUSDT > 0
+    ? calcOrderbookImpactBps(longBook.bids, longBook.asks, notionalUSDT, 'buy').impactBps
+    : 0;
+
+  return {
+    shortBid: shortBid as number,
+    shortAsk: shortAsk as number,
+    shortMid,
+    shortSpreadBps: calcBookSpreadBps(shortBid as number, shortAsk as number),
+    shortBidDepthUsd5,
+    shortAskDepthUsd5,
+    shortImbalance: calcDepthImbalance(shortBidDepthUsd5, shortAskDepthUsd5),
+    shortImpactBps,
+    longBid: longBid as number,
+    longAsk: longAsk as number,
+    longMid,
+    longSpreadBps: calcBookSpreadBps(longBid as number, longAsk as number),
+    longBidDepthUsd5,
+    longAskDepthUsd5,
+    longImbalance: calcDepthImbalance(longBidDepthUsd5, longAskDepthUsd5),
+    longImpactBps,
+    basisBps: calcBasisBps(shortMid, longMid),
+    entryCapacityUsd5: Math.min(shortBidDepthUsd5, longAskDepthUsd5),
+    exitCapacityUsd5: Math.min(shortAskDepthUsd5, longBidDepthUsd5),
+  };
+}
+
+function evaluateOrderbookSizing(
+  opportunity: ArbitrageOpportunity,
+  strategyConfig: Pick<
+    StrategyConfig,
+    'investmentUSDT' | 'leverage' | 'feeOverrides' | 'paybackOverrides' | 'maxSlippagePercent' | 'confirmedSnipeConfig'
+  >,
+  investmentUSDT: number,
+  shortBook: OrderbookSnapshot,
+  longBook: OrderbookSnapshot,
+  rates?: { shortRate?: number; longRate?: number },
+): ProfitableOrderbookSizing | null {
+  const notionalUSDT = investmentUSDT * strategyConfig.leverage;
+  if (!Number.isFinite(notionalUSDT) || notionalUSDT <= 0) return null;
+
+  const shortEntry = getOrderbookFill(shortBook, 'sell', notionalUSDT);
+  const longEntry = getOrderbookFill(longBook, 'buy', notionalUSDT);
+  const shortExit = getOrderbookFill(shortBook, 'buy', notionalUSDT);
+  const longExit = getOrderbookFill(longBook, 'sell', notionalUSDT);
+  if (!shortEntry || !longEntry || !shortExit || !longExit) return null;
+
+  const entryGap = getEntryGapMetrics({
+    shortPrice: shortEntry.fillPrice,
+    longPrice: longEntry.fillPrice,
+    baselineShortPrice: opportunity.shortMarkPrice,
+    baselineLongPrice: opportunity.longMarkPrice,
+  });
+  const marketSnapshot = buildMarketSnapshotFromOrderbooks(shortBook, longBook, notionalUSDT);
+  const snipeConfig = strategyConfig.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
+  const usesInstantRate = pairUsesInstantaneousRate(
+    opportunity.shortExchange,
+    opportunity.longExchange,
+  );
+  const shortRate = rates?.shortRate ?? opportunity.shortRate;
+  const longRate = rates?.longRate ?? opportunity.longRate;
+  const shortDrift = snipeConfig.useDriftBuffer
+    ? calcDriftBuffer(shortRate, undefined, usesInstantRate)
+    : 0;
+  const longDrift = snipeConfig.useDriftBuffer
+    ? calcDriftBuffer(longRate, undefined, usesInstantRate)
+    : 0;
+  const shortFeeRate = resolveRuntimeFee(
+    opportunity.shortExchange,
+    'taker',
+    strategyConfig.feeOverrides,
+    strategyConfig.paybackOverrides,
+  );
+  const longFeeRate = resolveRuntimeFee(
+    opportunity.longExchange,
+    'taker',
+    strategyConfig.feeOverrides,
+    strategyConfig.paybackOverrides,
+  );
+  const ev = calcConservativeEV(
+    notionalUSDT,
+    shortRate,
+    longRate,
+    shortDrift,
+    longDrift,
+    (shortFeeRate + longFeeRate) * 2,
+    (shortEntry.slippagePercent + longEntry.slippagePercent) / 100,
+    (shortExit.slippagePercent + longExit.slippagePercent) / 100,
+    {
+      basisConvergenceReservePct: basisReservePctFromEntryGap(
+        entryGap.driftPercent,
+        entryGap.liveGapPercent,
+        marketSnapshot?.basisBps,
+      ),
+      volumeLiquidityReservePct: volumeLiquidityReservePct({
+        notionalUSDT,
+        marketSnapshot,
+      }),
+    },
+  );
+
+  return {
+    investmentUSDT,
+    notionalUSDT,
+    expectedNetUSD: ev.expectedNetUSD,
+    expectedRoiPercent: calcExpectedRoiPercent(ev.expectedNetUSD, investmentUSDT, strategyConfig.leverage),
+    evRatio: ev.evRatio,
+    shortEntrySlippagePercent: shortEntry.slippagePercent,
+    longEntrySlippagePercent: longEntry.slippagePercent,
+    shortExitSlippagePercent: shortExit.slippagePercent,
+    longExitSlippagePercent: longExit.slippagePercent,
+    entryGapLivePercent: entryGap.liveGapPercent,
+    entryGapDriftPercent: entryGap.driftPercent,
+    marketSnapshot,
+    ev,
+  };
+}
+
+function findMaxProfitableOrderbookSizing(
+  opportunity: ArbitrageOpportunity,
+  strategyConfig: Pick<
+    StrategyConfig,
+    'investmentUSDT' | 'leverage' | 'feeOverrides' | 'paybackOverrides' | 'maxSlippagePercent' | 'confirmedSnipeConfig'
+  >,
+  maxInvestmentUSDT: number,
+  minInvestmentUSDT: number,
+  shortBook: OrderbookSnapshot,
+  longBook: OrderbookSnapshot,
+  rates?: { shortRate?: number; longRate?: number },
+): ProfitableOrderbookSizing | null {
+  const maxInvestment = Math.max(0, maxInvestmentUSDT);
+  const minInvestment = Math.max(0, Math.min(minInvestmentUSDT, maxInvestment));
+  if (maxInvestment <= 0 || minInvestment <= 0) return null;
+
+  const minSizing = evaluateOrderbookSizing(
+    opportunity,
+    strategyConfig,
+    minInvestment,
+    shortBook,
+    longBook,
+    rates,
+  );
+  if (!minSizing || minSizing.expectedNetUSD <= 0) return null;
+
+  const maxSizing = evaluateOrderbookSizing(
+    opportunity,
+    strategyConfig,
+    maxInvestment,
+    shortBook,
+    longBook,
+    rates,
+  );
+  if (maxSizing && maxSizing.expectedNetUSD > 0) return maxSizing;
+
+  let best = minSizing;
+  let low = minInvestment;
+  let high = maxInvestment;
+  for (let attempt = 0; attempt < PROFITABLE_SIZING_SEARCH_STEPS; attempt += 1) {
+    const mid = (low + high) / 2;
+    const sizing = evaluateOrderbookSizing(
+      opportunity,
+      strategyConfig,
+      mid,
+      shortBook,
+      longBook,
+      rates,
+    );
+    if (sizing && sizing.expectedNetUSD > 0) {
+      best = sizing;
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return best;
+}
+
 function buildVolumeByExchangeAsset(rates: FundingRate[]): Map<string, number> {
   const volumeByExchangeAsset = new Map<string, number>();
   for (const rate of rates) {
@@ -538,47 +796,32 @@ function passesPreEntryEVAtAllocation(
   return ev.expectedNetUSD > 0 ? ev : null;
 }
 
-function planWindowAllocations(
+async function planWindowAllocations(
   opportunities: ArbitrageOpportunity[],
   availableBalance: Record<string, number>,
   strategyConfig: StrategyConfig,
   planningBalance?: Record<string, number>,
   balancePlan?: BalanceEqualizationPlan,
-): Array<{ opportunity: ArbitrageOpportunity; investmentUSDT: number }> {
+): Promise<Array<{ opportunity: ArbitrageOpportunity; investmentUSDT: number; sizing?: ProfitableOrderbookSizing }>> {
   const effectiveBalance = planningBalance ? { ...planningBalance } : availableBalance;
-  const candidates = opportunities
+  const baseCandidates = opportunities
     .map((opportunity) => ({
       opportunity,
-      score: getOpportunityYieldScore(opportunity, strategyConfig)
+      preScore: getOpportunityYieldScore(opportunity, strategyConfig)
         * getOpportunityBalanceEqualizationMultiplier(balancePlan, opportunity),
     }))
-    .filter((candidate) => candidate.score > 0)
+    .filter((candidate) => candidate.preScore > 0)
     .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
+      if (b.preScore !== a.preScore) return b.preScore - a.preScore;
       return a.opportunity.nextFundingTime - b.opportunity.nextFundingTime;
     });
 
-  const occupiedLegs = new Set<string>();
-  const selected = candidates.filter((candidate) => {
-    if (getOpportunityLegKeys(candidate.opportunity).some((legKey) => occupiedLegs.has(legKey))) {
-      return false;
-    }
-    getOpportunityLegKeys(candidate.opportunity).forEach((legKey) => occupiedLegs.add(legKey));
-    return true;
-  });
+  const selectedForSizing = baseCandidates.slice(0, LIQUIDITY_SIZING_CANDIDATE_CAP);
 
-  if (selected.length === 0) return [];
-
-  const allocations = new Map<string, number>();
-  const assetWindowAllocations = new Map<string, number>();
-  const allocationStep = Math.max(MIN_EV_ALLOCATION_USDT, Math.min(strategyConfig.investmentUSDT, 250));
   const minAllocation = Math.min(
-    Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT * 0.4),
-    allocationStep,
+    Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT * 0.05),
+    Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT),
   );
-  const assetWindowCap = Math.max(minAllocation, strategyConfig.investmentUSDT);
-  const getAssetWindowKey = (opportunity: ArbitrageOpportunity) =>
-    `${opportunity.baseAsset}:${getOpportunityTimeGroupKey(opportunity.nextFundingTime)}`;
   const getCostFactor = (exchange: ExchangeId) => (
     1 + (strategyConfig.leverage * resolveRuntimeFee(
       exchange,
@@ -587,7 +830,6 @@ function planWindowAllocations(
       strategyConfig.paybackOverrides,
     ))
   );
-
   const getCap = (opportunity: ArbitrageOpportunity) => {
     const shortAvail = effectiveBalance[opportunity.shortExchange] ?? 0;
     const longAvail = effectiveBalance[opportunity.longExchange] ?? 0;
@@ -602,18 +844,116 @@ function planWindowAllocations(
     return Math.min(strategyConfig.investmentUSDT, maxByBalance);
   };
 
+  const sizedCandidateResults: Array<LiquiditySizedCandidate | null> = await Promise.all(
+    selectedForSizing.map(async (candidate): Promise<LiquiditySizedCandidate | null> => {
+    const maxInvestment = Math.min(getCap(candidate.opportunity), strategyConfig.investmentUSDT);
+    if (maxInvestment < minAllocation) return null;
+    try {
+      const [shortBook, longBook] = await retryTransientFetch(() => Promise.all([
+        fetchOrderbook(candidate.opportunity.shortExchange, candidate.opportunity.shortSymbol, 50),
+        fetchOrderbook(candidate.opportunity.longExchange, candidate.opportunity.longSymbol, 50),
+      ]));
+      const sizing = findMaxProfitableOrderbookSizing(
+        candidate.opportunity,
+        strategyConfig,
+        maxInvestment,
+        minAllocation,
+        shortBook,
+        longBook,
+      );
+      if (!sizing) return null;
+      const intervalHours = Math.max(1, getOpportunityIntervalHours(candidate.opportunity));
+      const roiBoost = 1 + Math.max(0, sizing.expectedNetUSD / Math.max(1, sizing.investmentUSDT));
+      return {
+        opportunity: candidate.opportunity,
+        shortBook,
+        longBook,
+        sizing,
+        score: (sizing.expectedNetUSD * Math.max(0.01, sizing.evRatio) * roiBoost / intervalHours)
+          * getOpportunityBalanceEqualizationMultiplier(balancePlan, candidate.opportunity),
+      };
+    } catch {
+      const fallbackSizing = passesPreEntryEVAtAllocation(
+        candidate.opportunity,
+        strategyConfig,
+        Math.min(maxInvestment, strategyConfig.investmentUSDT),
+      );
+      if (!fallbackSizing) return null;
+      const fallbackInvestment = Math.min(maxInvestment, strategyConfig.investmentUSDT);
+      return {
+        opportunity: candidate.opportunity,
+        shortBook: null,
+        longBook: null,
+        sizing: {
+          investmentUSDT: fallbackInvestment,
+          notionalUSDT: fallbackInvestment * strategyConfig.leverage,
+          expectedNetUSD: fallbackSizing.expectedNetUSD,
+          expectedRoiPercent: calcExpectedRoiPercent(fallbackSizing.expectedNetUSD, fallbackInvestment, strategyConfig.leverage),
+          evRatio: fallbackSizing.evRatio,
+          shortEntrySlippagePercent: 0,
+          longEntrySlippagePercent: 0,
+          shortExitSlippagePercent: 0,
+          longExitSlippagePercent: 0,
+          entryGapLivePercent: 0,
+          entryGapDriftPercent: 0,
+          ev: fallbackSizing,
+        },
+        score: candidate.preScore,
+      };
+    }
+    }),
+  );
+  const sizedCandidatesRaw = sizedCandidateResults
+    .filter((candidate): candidate is LiquiditySizedCandidate => (
+      !!candidate && candidate.score > 0 && candidate.sizing.investmentUSDT >= minAllocation
+    ))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.opportunity.nextFundingTime - b.opportunity.nextFundingTime;
+    });
+
+  const sizedOccupiedLegs = new Set<string>();
+  const sizedCandidates = sizedCandidatesRaw.filter((candidate) => {
+    const legKeys = getOpportunityLegKeys(candidate.opportunity);
+    if (legKeys.some((legKey) => sizedOccupiedLegs.has(legKey))) return false;
+    legKeys.forEach((legKey) => sizedOccupiedLegs.add(legKey));
+    return true;
+  });
+
+  if (sizedCandidates.length === 0) return [];
+
+  const allocations = new Map<string, number>();
+  const assetWindowAllocations = new Map<string, number>();
+  const allocationStep = Math.max(
+    minAllocation,
+    Math.min(Math.max(strategyConfig.investmentUSDT / 10, MIN_EV_ALLOCATION_USDT), 100),
+  );
+  const assetWindowCap = Math.max(minAllocation, strategyConfig.investmentUSDT);
+  const getAssetWindowKey = (opportunity: ArbitrageOpportunity) =>
+    `${opportunity.baseAsset}:${getOpportunityTimeGroupKey(opportunity.nextFundingTime)}`;
+
   let totalAllocated = 0;
   while (true) {
-    const eligible = selected.filter((candidate) => {
+    const eligible = sizedCandidates.filter((candidate) => {
       const opportunity = candidate.opportunity;
       const allocated = allocations.get(getOpportunityId(opportunity)) ?? 0;
       const groupAllocated = assetWindowAllocations.get(getAssetWindowKey(opportunity)) ?? 0;
       const remainingCap = Math.min(
         getCap(opportunity) - allocated,
+        candidate.sizing.investmentUSDT - allocated,
         assetWindowCap - groupAllocated,
       );
       if (remainingCap < minAllocation) return false;
       const nextInvestment = allocated + Math.min(allocationStep, remainingCap);
+      if (candidate.shortBook && candidate.longBook) {
+        return (evaluateOrderbookSizing(
+          opportunity,
+          strategyConfig,
+          nextInvestment,
+          candidate.shortBook,
+          candidate.longBook,
+        )?.expectedNetUSD ?? 0) > 0;
+      }
       return !!passesPreEntryEVAtAllocation(opportunity, strategyConfig, nextInvestment);
     });
     if (eligible.length === 0) break;
@@ -649,6 +989,7 @@ function planWindowAllocations(
     const chunk = Math.min(
       allocationStep,
       getCap(opportunity) - allocated,
+      bestCandidate.sizing.investmentUSDT - allocated,
       assetWindowCap - groupAllocated,
     );
 
@@ -665,14 +1006,18 @@ function planWindowAllocations(
     totalAllocated += chunk;
   }
 
-  return selected
+  return sizedCandidates
     .map((candidate) => ({
       opportunity: candidate.opportunity,
       investmentUSDT: allocations.get(getOpportunityId(candidate.opportunity)) ?? 0,
+      sizing: candidate.sizing,
     }))
     .filter((candidate) => (
       candidate.investmentUSDT >= minAllocation
-      && !!passesPreEntryEVAtAllocation(candidate.opportunity, strategyConfig, candidate.investmentUSDT)
+      && (
+        (candidate.sizing.expectedNetUSD > 0 && candidate.investmentUSDT <= candidate.sizing.investmentUSDT + 0.0001)
+        || !!passesPreEntryEVAtAllocation(candidate.opportunity, strategyConfig, candidate.investmentUSDT)
+      )
     ));
 }
 
@@ -2506,7 +2851,7 @@ class ServerSimScheduler {
 
     const markedState = this.updatePositionMarks(this.getState());
     this.setState(markedState);
-    this.rebuildSchedules(markedState, { fullRefresh: effectiveFullRefresh });
+    await this.rebuildSchedules(markedState, { fullRefresh: effectiveFullRefresh });
     this.saveState();
   }
 
@@ -2546,7 +2891,7 @@ class ServerSimScheduler {
       : state;
   }
 
-  private rebuildSchedules(
+  private async rebuildSchedules(
     state: SimStateSnapshot,
     options: { fullRefresh?: boolean } = {},
   ) {
@@ -2596,10 +2941,14 @@ class ServerSimScheduler {
       if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
         return false;
       }
+      const preEntryProbeInvestment = Math.min(
+        this.config.investmentUSDT,
+        Math.max(MIN_EV_ALLOCATION_USDT, this.config.investmentUSDT * 0.05),
+      );
       const preEntryEv = passesPreEntryEVAtAllocation(
         opportunity,
         strategyConfig,
-        this.config.investmentUSDT,
+        preEntryProbeInvestment,
       );
       if (!preEntryEv) {
         return false;
@@ -2625,7 +2974,7 @@ class ServerSimScheduler {
       return targetTime <= now + getScheduleAheadWindowMs(opportunity);
     });
 
-    const plans = planWindowAllocations(
+    const plans = await planWindowAllocations(
       candidates,
       availableBalance,
       strategyConfig,
@@ -3560,9 +3909,10 @@ class ServerSimScheduler {
       }
     }
 
-    const margin = Math.max(0, investmentUSDT);
+    const requestedMargin = Math.max(0, investmentUSDT);
+    let margin = requestedMargin;
     const leverage = this.config.leverage;
-    const baseNotional = margin * leverage;
+    const baseNotional = requestedMargin * leverage;
     if (baseNotional <= 0 || opportunity.shortMarkPrice <= 0 || opportunity.longMarkPrice <= 0) {
       return { success: false, error: 'invalid notional or mark price' };
     }
@@ -3661,8 +4011,9 @@ class ServerSimScheduler {
         ? (args?.effectiveNotionalUSDT as number)
         : attemptedNotionalUSDT;
       return {
-        attemptedMarginUSDT: margin,
+        attemptedMarginUSDT: requestedMargin,
         attemptedNotionalUSDT,
+        effectiveMarginUSDT: leverage > 0 ? effectiveNotionalUSDT / leverage : 0,
         effectiveNotionalUSDT,
         shortBalanceUSDT: shortBal,
         longBalanceUSDT: longBal,
@@ -3889,7 +4240,9 @@ class ServerSimScheduler {
       };
     }
 
-    // v2: dynamic notional based on orderbook depth
+    // Dynamic sizing: choose the largest margin that still has positive EV
+    // under the current orderbook. This lets the scheduler use $200 of a
+    // $1,000-per-trade budget when only $200 is actually profitable.
     let notional = baseNotional;
     if (snipeConfig.useDynamicNotional) {
       try {
@@ -3897,24 +4250,49 @@ class ServerSimScheduler {
           fetchOrderbook(opportunity.shortExchange, opportunity.shortSymbol, 50),
           fetchOrderbook(opportunity.longExchange, opportunity.longSymbol, 50),
         ]));
-        const shortImpact = calcOrderbookImpactBps(shortOb.bids, shortOb.asks, baseNotional, 'sell');
-        const longImpact = calcOrderbookImpactBps(longOb.bids, longOb.asks, baseNotional, 'buy');
-        notional = Math.min(baseNotional, shortImpact.depthCapNotional, longImpact.depthCapNotional, snipeConfig.dynamicNotionalCap);
-        if (notional < 100) {
+        const maxDynamicInvestment = Math.min(
+          requestedMargin,
+          snipeConfig.dynamicNotionalCap > 0
+            ? snipeConfig.dynamicNotionalCap / Math.max(1, leverage)
+            : requestedMargin,
+        );
+        const minDynamicInvestment = Math.min(
+          maxDynamicInvestment,
+          Math.max(MIN_EV_ALLOCATION_USDT, requestedMargin * 0.05),
+        );
+        const sizing = findMaxProfitableOrderbookSizing(
+          opportunity,
+          buildStrategyLikeConfig(this.config),
+          maxDynamicInvestment,
+          minDynamicInvestment,
+          shortOb,
+          longOb,
+          {
+            shortRate: shortRateForDecision,
+            longRate: longRateForDecision,
+          },
+        );
+        if (!sizing || sizing.notionalUSDT < 100) {
           return {
             success: false,
-            error: `depth too shallow: $${notional.toFixed(0)}`,
+            error: `no profitable executable size: minMargin=$${minDynamicInvestment.toFixed(2)} maxMargin=$${maxDynamicInvestment.toFixed(2)}`,
             analysis: buildFailureAnalysis({
               attemptedNotionalUSDT: baseNotional,
-              effectiveNotionalUSDT: notional,
+              effectiveNotionalUSDT: sizing?.notionalUSDT ?? 0,
               extra: {
-                depthCapShortUSDT: shortImpact.depthCapNotional,
-                depthCapLongUSDT: longImpact.depthCapNotional,
+                dynamicSizing: 'ev_orderbook',
+                minDynamicInvestmentUSDT: minDynamicInvestment,
+                maxDynamicInvestmentUSDT: maxDynamicInvestment,
                 dynamicNotionalCapUSDT: snipeConfig.dynamicNotionalCap,
+                bestExpectedNetUSD: sizing?.expectedNetUSD ?? null,
+                bestExpectedRoiPercent: sizing?.expectedRoiPercent ?? null,
+                bestMarketSnapshot: sizing?.marketSnapshot ?? null,
               },
             }),
           };
         }
+        notional = sizing.notionalUSDT;
+        margin = sizing.investmentUSDT;
       } catch (err) {
         return {
           success: false,
