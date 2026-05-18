@@ -37,3 +37,16 @@ next-env.d.ts
 /data/snapshots/
 /data/logs/
 /data/trades/
+/data/trades-executed/
+/data/funding-receipts/
+/data/analysis/
+/data/remote-*/
+/data/telegram/
+/data/*.json
+/data/*.log
+
+# local runtime output
+/server.log
+/reports/
+/outputs/
+/docs/trade-review-*.md
