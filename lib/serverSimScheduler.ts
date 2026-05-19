@@ -94,6 +94,8 @@ const FINAL_REVALIDATE_GUARD_MS = 1_000;
 const NEAR_DUE_GRACE_MS = 5_000;
 /** Freeze near-due schedules to prevent profitable entries from being churn-canceled by frequent replans. */
 const SCHEDULE_REPLAN_FREEZE_MS = 10 * 60 * 1000;
+/** Keep previously profitable schedules alive until execution-time guards can revalidate them. */
+const SCHEDULE_STICKY_KEEP_MS = 8 * 60 * 60 * 1000;
 /** Tiny tolerance for boundary noise on entry-gap drift checks. */
 const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FULL_REVALIDATE_CAP = 20;
@@ -3040,16 +3042,59 @@ class ServerSimScheduler {
       }
     }
 
-    // Partial refreshes only scan a fast symbol subset. If a previously
-    // scheduled route is absent from that subset, keep it until the next full
-    // refresh can make a complete cancel/replan decision.
+    const getReserveCost = (entry: ScheduledSimEntry, exchange: ExchangeId) => {
+      const feeRate = resolveRuntimeFee(
+        exchange,
+        'taker',
+        strategyConfig.feeOverrides,
+        strategyConfig.paybackOverrides,
+      );
+      return entry.investmentUSDT * (1 + (strategyConfig.leverage * feeRate));
+    };
+    const reservedCostByExchange = new Map<ExchangeId, number>();
+    const reservedLegs = new Set<string>();
+    const reserveEntry = (entry: ScheduledSimEntry) => {
+      for (const legKey of getOpportunityLegKeys(entry.opportunity)) {
+        reservedLegs.add(legKey);
+      }
+      for (const exchange of [entry.opportunity.shortExchange, entry.opportunity.longExchange]) {
+        reservedCostByExchange.set(
+          exchange,
+          (reservedCostByExchange.get(exchange) ?? 0) + getReserveCost(entry, exchange),
+        );
+      }
+    };
+    for (const entry of nextEntries.values()) {
+      reserveEntry(entry);
+    }
+    const canRetainPreviousEntry = (entry: ScheduledSimEntry) => {
+      if (entry.targetTime <= now + NEAR_DUE_GRACE_MS) return false;
+      if (entry.targetTime > now + SCHEDULE_STICKY_KEEP_MS) return false;
+      if (getOpportunityLegKeys(entry.opportunity).some((legKey) => reservedLegs.has(legKey) || occupiedLegs.has(legKey))) {
+        return false;
+      }
+      for (const exchange of [entry.opportunity.shortExchange, entry.opportunity.longExchange]) {
+        const reserved = reservedCostByExchange.get(exchange) ?? 0;
+        const balance = prePlanBalances[exchange] ?? 0;
+        if (reserved + getReserveCost(entry, exchange) > balance + 0.0001) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    // Keep previously profitable schedules alive through transient scan churn.
+    // The execution path still revalidates live rates/orderbooks and records
+    // execute_failed if the route is no longer viable at the actual entry time.
     for (const [opportunityId, previousEntry] of previousEntries.entries()) {
       if (nextEntries.has(opportunityId)) continue;
       if (
         (!options.fullRefresh && previousEntry.targetTime > now + NEAR_DUE_GRACE_MS)
         || previousEntry.targetTime <= now + SCHEDULE_REPLAN_FREEZE_MS
+        || canRetainPreviousEntry(previousEntry)
       ) {
         nextEntries.set(opportunityId, previousEntry);
+        reserveEntry(previousEntry);
       }
     }
 
@@ -3068,24 +3113,19 @@ class ServerSimScheduler {
       this.scheduleProbeStates.set(probeState.probeId, probeState);
 
       const timeToExecutionMs = previousEntry.targetTime - now;
-      if (
-        probeState.preMilestones.length > 0
-        || timeToExecutionMs <= PRE_EXECUTION_PROBE_POINTS[0].thresholdMs
-      ) {
-        canceledProbeEvents.push(this.buildScheduleProbeEvent(
-          'canceled_before_execute',
-          previousEntry.opportunity,
-          previousEntry.investmentUSDT,
-          now,
-          {
-            status: 'canceled',
-            reason: 'schedule_replanned',
-            timeToExecutionMs,
-            shortSlippagePercent: probeState.lastShortSlippagePercent,
-            longSlippagePercent: probeState.lastLongSlippagePercent,
-          },
-        ));
-      }
+      canceledProbeEvents.push(this.buildScheduleProbeEvent(
+        'canceled_before_execute',
+        previousEntry.opportunity,
+        previousEntry.investmentUSDT,
+        now,
+        {
+          status: 'canceled',
+          reason: 'schedule_replanned',
+          timeToExecutionMs,
+          shortSlippagePercent: probeState.lastShortSlippagePercent,
+          longSlippagePercent: probeState.lastLongSlippagePercent,
+        },
+      ));
     }
 
     this.scheduledEntries = nextEntries;
