@@ -412,14 +412,14 @@ function ConfirmedSnipeSettings({
           <input
             type="number"
             value={config.dynamicNotionalCap}
-            onChange={e => onChange({ dynamicNotionalCap: Math.max(500, Math.min(100000, Number(e.target.value))) })}
+            onChange={e => onChange({ dynamicNotionalCap: Math.max(500, Math.min(300000, Number(e.target.value))) })}
             style={{
               width: 80, padding: '4px 8px', borderRadius: 6, fontSize: 12,
               background: 'var(--bg-accent)', border: '1px solid var(--border-primary)',
               color: 'var(--color-text)',
             }}
             min={500}
-            max={100000}
+            max={300000}
             step={500}
           />
         </div>

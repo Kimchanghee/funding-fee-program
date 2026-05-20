@@ -453,17 +453,48 @@ async function fetchServerSimStateSnapshot() {
   return payload.data;
 }
 
+export type ServerSimScheduledEntry = {
+  opportunityId?: string;
+  opportunity?: ArbitrageOpportunity | null;
+  targetTime?: number;
+  investmentUSDT?: number;
+};
+
+type ServerSimSchedulerStatus = {
+  active?: boolean;
+  scheduledEntries?: ServerSimScheduledEntry[];
+  snipeTargets?: Record<string, number>;
+  snipeAllocations?: Record<string, number>;
+  state?: SimStateSnapshot;
+};
+
+export function mergeServerSimScheduledOpportunities(
+  opportunities: ArbitrageOpportunity[],
+  scheduledEntries?: ServerSimScheduledEntry[],
+): ArbitrageOpportunity[] {
+  if (!scheduledEntries?.length) return opportunities;
+
+  const byId = new Map(opportunities.map((opportunity) => [getOpportunityId(opportunity), opportunity]));
+  let changed = false;
+
+  for (const entry of scheduledEntries) {
+    const opportunity = entry.opportunity;
+    if (!opportunity) continue;
+    const opportunityId = entry.opportunityId || getOpportunityId(opportunity);
+    if (byId.has(opportunityId)) continue;
+    byId.set(opportunityId, opportunity);
+    changed = true;
+  }
+
+  return changed ? Array.from(byId.values()) : opportunities;
+}
+
 async function fetchServerSimSchedulerStatus() {
   const response = await fetch('/api/sim-scheduler');
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
-  return response.json() as Promise<{
-    active?: boolean;
-    snipeTargets?: Record<string, number>;
-    snipeAllocations?: Record<string, number>;
-    state?: SimStateSnapshot;
-  }>;
+  return response.json() as Promise<ServerSimSchedulerStatus>;
 }
 
 async function fetchSchedulerRuntimeActives() {
@@ -1655,11 +1686,11 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   strategyConfig: {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.12,
+    minSpreadPercent: 0.03,
     autoExecute: true,
     compoundInvesting: true,
     timingConfig: { ...DEFAULT_TIMING_CONFIG },
-    maxSlippagePercent: 1.5,
+    maxSlippagePercent: 4,
     minVolume24hUSD: 0,
   },
   fundingHistory: [],
@@ -1887,8 +1918,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       void fetchServerSimSchedulerStatus()
         .then((simScheduler) => {
           applyServerSimStateSnapshot(set, simScheduler.state, { getState: get });
+          const opportunities = mergeServerSimScheduledOpportunities(
+            get().opportunities,
+            simScheduler.scheduledEntries,
+          );
           set({
             simSnipeActive: !!simScheduler.active,
+            opportunities,
             snipeTargets: simScheduler.snipeTargets ?? {},
             snipeAllocations: simScheduler.snipeAllocations ?? {},
           });
@@ -2106,8 +2142,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           applyServerSimStateSnapshot(set, status.state, { getState: get });
           const state = get();
           const simActive = resolveRuntimeActiveWithGrace('sim', state.simSnipeActive, !!status.active, Date.now());
+          const opportunities = mergeServerSimScheduledOpportunities(
+            state.opportunities,
+            status.scheduledEntries,
+          );
           set({
             simSnipeActive: simActive,
+            opportunities,
             snipeTargets: status.snipeTargets ?? {},
             snipeAllocations: status.snipeAllocations ?? {},
           });
@@ -2766,8 +2807,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
             applyServerSimStateSnapshot(set, status.state, { getState: get });
             const state = get();
             const simActive = resolveRuntimeActiveWithGrace('sim', state.simSnipeActive, !!status.active, Date.now());
+            const opportunities = mergeServerSimScheduledOpportunities(
+              state.opportunities,
+              status.scheduledEntries,
+            );
             set({
               simSnipeActive: simActive,
+              opportunities,
               snipeTargets: {
                 ...Object.fromEntries(
                   Object.entries(get().snipeTargets).filter(([key]) => !key.startsWith('sim:')),
@@ -4243,8 +4289,13 @@ export const useFundingStore = create<FundingState>((set, get) => ({
           applyServerSimStateSnapshot(set, status.state, { getState: get });
           const state = get();
           const simActive = resolveRuntimeActiveWithGrace('sim', state.simSnipeActive, !!status.active, Date.now());
+          const opportunities = mergeServerSimScheduledOpportunities(
+            state.opportunities,
+            status.scheduledEntries,
+          );
           set({
             simSnipeActive: simActive,
+            opportunities,
             snipeTargets: {
               ...Object.fromEntries(
                 Object.entries(get().snipeTargets).filter(([key]) => !key.startsWith('sim:')),

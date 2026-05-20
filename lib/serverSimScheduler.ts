@@ -101,18 +101,19 @@ const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FULL_REVALIDATE_CAP = 20;
 const PROBE_STATE_RETENTION_MS = 2 * 60 * 60 * 1000;
 const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
-const FULL_FUNDING_REFRESH_INTERVAL_MS = 60 * 1000;
+const FULL_FUNDING_REFRESH_INTERVAL_MS = 30 * 1000;
 const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
-const FAST_SYMBOL_CAP_PER_EXCHANGE = 120;
-const FAST_SYMBOL_MIN_PER_EXCHANGE = 40;
-const FAST_OPPORTUNITY_SEED_COUNT = 40;
+const FAST_SYMBOL_CAP_PER_EXCHANGE = 320;
+const FAST_SYMBOL_MIN_PER_EXCHANGE = 100;
+const FAST_OPPORTUNITY_SEED_COUNT = 160;
 const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
-const MIN_EV_ALLOCATION_USDT = 25;
-const LIQUIDITY_SIZING_CANDIDATE_CAP = 16;
-const PROFITABLE_SIZING_SEARCH_STEPS = 8;
+const MIN_EV_ALLOCATION_USDT = 2;
+const MIN_EV_ALLOCATION_FRACTION = 0.01;
+const LIQUIDITY_SIZING_CANDIDATE_CAP = 72;
+const PROFITABLE_SIZING_SEARCH_STEPS = 16;
 const FUNDING_REVALIDATE_CACHE_MAX_AGE_MS = 15_000;
 const FUNDING_REVALIDATE_STALE_FALLBACK_MS = 60_000;
 const FUNDING_REVALIDATE_ATTEMPTS = 4;
@@ -164,12 +165,12 @@ const PROBE_ORDERBOOK_DEPTH = 5;
 const ANALYTICS_BASE_INTERVAL_MS = 5 * 60 * 1000;
 const ANALYTICS_NEAR_DUE_INTERVAL_MS = 60 * 1000;
 const ANALYTICS_NEAR_DUE_WINDOW_MS = 30 * 60 * 1000;
-const ANALYTICS_MAX_CANDIDATES = 200;
-const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 5;
+const ANALYTICS_MAX_CANDIDATES = 800;
+const MIN_BASIS_CONVERGENCE_RESERVE_BPS = 1;
 const MAX_BASIS_CONVERGENCE_RESERVE_BPS = 200;
-const UNKNOWN_VOLUME_RESERVE_BPS = 5;
-const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 80;
-const STALE_DATA_PENALTY_BPS = 10;
+const UNKNOWN_VOLUME_RESERVE_BPS = 1;
+const MAX_VOLUME_LIQUIDITY_RESERVE_BPS = 30;
+const STALE_DATA_PENALTY_BPS = 2;
 
 function formatSignedUsd(value: number, digits = 4): string {
   const sign = value >= 0 ? '+' : '';
@@ -821,7 +822,7 @@ async function planWindowAllocations(
   const selectedForSizing = baseCandidates.slice(0, LIQUIDITY_SIZING_CANDIDATE_CAP);
 
   const minAllocation = Math.min(
-    Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT * 0.05),
+    Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT * MIN_EV_ALLOCATION_FRACTION),
     Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT),
   );
   const getCostFactor = (exchange: ExchangeId) => (
@@ -863,7 +864,35 @@ async function planWindowAllocations(
         shortBook,
         longBook,
       );
-      if (!sizing) return null;
+      if (!sizing) {
+        const fallbackInvestment = Math.min(maxInvestment, strategyConfig.investmentUSDT);
+        const fallbackSizing = passesPreEntryEVAtAllocation(
+          candidate.opportunity,
+          strategyConfig,
+          fallbackInvestment,
+        );
+        if (!fallbackSizing) return null;
+        return {
+          opportunity: candidate.opportunity,
+          shortBook: null,
+          longBook: null,
+          sizing: {
+            investmentUSDT: fallbackInvestment,
+            notionalUSDT: fallbackInvestment * strategyConfig.leverage,
+            expectedNetUSD: fallbackSizing.expectedNetUSD,
+            expectedRoiPercent: calcExpectedRoiPercent(fallbackSizing.expectedNetUSD, fallbackInvestment, strategyConfig.leverage),
+            evRatio: fallbackSizing.evRatio,
+            shortEntrySlippagePercent: 0,
+            longEntrySlippagePercent: 0,
+            shortExitSlippagePercent: 0,
+            longExitSlippagePercent: 0,
+            entryGapLivePercent: 0,
+            entryGapDriftPercent: 0,
+            ev: fallbackSizing,
+          },
+          score: candidate.preScore * 0.5,
+        };
+      }
       const intervalHours = Math.max(1, getOpportunityIntervalHours(candidate.opportunity));
       const roiBoost = 1 + Math.max(0, sizing.expectedNetUSD / Math.max(1, sizing.investmentUSDT));
       return {
@@ -928,7 +957,7 @@ async function planWindowAllocations(
   const assetWindowAllocations = new Map<string, number>();
   const allocationStep = Math.max(
     minAllocation,
-    Math.min(Math.max(strategyConfig.investmentUSDT / 10, MIN_EV_ALLOCATION_USDT), 100),
+    Math.min(Math.max(strategyConfig.investmentUSDT / 25, MIN_EV_ALLOCATION_USDT), 50),
   );
   const assetWindowCap = Math.max(minAllocation, strategyConfig.investmentUSDT);
   const getAssetWindowKey = (opportunity: ArbitrageOpportunity) =>
@@ -1176,11 +1205,11 @@ class ServerSimScheduler {
   private config: ServerSimSchedulerConfig = {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.12,
+    minSpreadPercent: 0.03,
     compoundInvesting: true,
     enabledExchanges: [],
     timingConfig: getResolvedTimingConfig(),
-    maxSlippagePercent: 1.5,
+    maxSlippagePercent: 4,
     minVolume24hUSD: 0,
   };
   private startedAt: number | null = null;
@@ -2945,7 +2974,7 @@ class ServerSimScheduler {
       }
       const preEntryProbeInvestment = Math.min(
         this.config.investmentUSDT,
-        Math.max(MIN_EV_ALLOCATION_USDT, this.config.investmentUSDT * 0.05),
+        Math.max(MIN_EV_ALLOCATION_USDT, this.config.investmentUSDT * MIN_EV_ALLOCATION_FRACTION),
       );
       const preEntryEv = passesPreEntryEVAtAllocation(
         opportunity,
@@ -4298,7 +4327,7 @@ class ServerSimScheduler {
         );
         const minDynamicInvestment = Math.min(
           maxDynamicInvestment,
-          Math.max(MIN_EV_ALLOCATION_USDT, requestedMargin * 0.05),
+          Math.max(MIN_EV_ALLOCATION_USDT, requestedMargin * MIN_EV_ALLOCATION_FRACTION),
         );
         const sizing = findMaxProfitableOrderbookSizing(
           opportunity,

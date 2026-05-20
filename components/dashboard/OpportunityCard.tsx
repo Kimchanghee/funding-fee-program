@@ -5,6 +5,7 @@ import { Zap, Crosshair, Check, Clock, TrendingDown, TrendingUp, ChevronDown, Ch
 import {
   buildSchedulerConfig,
   buildServerSimSchedulerConfig,
+  mergeServerSimScheduledOpportunities,
   useFundingStore,
 } from '@/store/fundingStore';
 import {
@@ -407,27 +408,35 @@ export default function OpportunityCard() {
             success?: boolean;
             error?: string;
             status?: {
+              scheduledEntries?: Array<{
+                opportunityId?: string;
+                opportunity?: ManagedOpportunityItem['opp'] | null;
+              }>;
               snipeTargets?: Record<string, number>;
               snipeAllocations?: Record<string, number>;
             };
           };
           if (!json.success) throw new Error(json.error || 'sim scheduler start failed');
-          useFundingStore.setState({
+          useFundingStore.setState((current) => ({
             simSnipeActive: true,
             simSnipeStartCapital: totalCapital,
+            opportunities: mergeServerSimScheduledOpportunities(
+              current.opportunities,
+              json.status?.scheduledEntries,
+            ),
             snipeTargets: {
               ...Object.fromEntries(
-                Object.entries(useFundingStore.getState().snipeTargets).filter(([key]) => !key.startsWith('sim:')),
+                Object.entries(current.snipeTargets).filter(([key]) => !key.startsWith('sim:')),
               ),
               ...(json.status?.snipeTargets ?? {}),
             },
             snipeAllocations: {
               ...Object.fromEntries(
-                Object.entries(useFundingStore.getState().snipeAllocations).filter(([key]) => !key.startsWith('sim:')),
+                Object.entries(current.snipeAllocations).filter(([key]) => !key.startsWith('sim:')),
               ),
               ...(json.status?.snipeAllocations ?? {}),
             },
-          });
+          }));
         } catch (err) {
           setToastMsg({ text: `[SIM] 서버 시뮬 스케줄러 시작 실패: ${(err as Error).message}`, type: 'error' });
           return;
@@ -575,7 +584,7 @@ export default function OpportunityCard() {
       });
       // realSpread 기반 필터: 실질 수익이 마이너스면 예약/후보 숨김
       return items.filter(item => {
-        if (item.status === 'active') return true;
+        if (item.status === 'active' || item.status === 'scheduled') return true;
         const rs = realSpreads[item.id] ?? realSpreads[item.asset];
         if (!rs) return true; // realSpread 없으면 estimateProfit 기반 필터 결과를 그대로 사용
         // effectiveSpread로 실질 수익 직접 계산

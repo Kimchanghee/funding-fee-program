@@ -41,10 +41,10 @@ The SIM scheduler is started with:
 ```text
 investmentUSDT=250
 leverage=17
-minSpreadPercent=0.12
+minSpreadPercent=0.03
 enabledExchanges=binance,bybit,okx,bitget,gate,bingx
 useDynamicNotional=true
-dynamicNotionalCap=100000
+dynamicNotionalCap=300000
 useIocLimitOnly=true
 useStrictHedge=true
 ```
