@@ -96,6 +96,8 @@ const NEAR_DUE_GRACE_MS = 5_000;
 const SCHEDULE_REPLAN_FREEZE_MS = 10 * 60 * 1000;
 /** Keep previously profitable schedules alive until execution-time guards can revalidate them. */
 const SCHEDULE_STICKY_KEEP_MS = 8 * 60 * 60 * 1000;
+/** Cancel stale scheduled entries before funding if they are no longer executable by orderbook EV. */
+const EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS = 5 * 60 * 1000;
 /** Tiny tolerance for boundary noise on entry-gap drift checks. */
 const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FULL_REVALIDATE_CAP = 20;
@@ -112,6 +114,7 @@ const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
 const MIN_EV_ALLOCATION_USDT = 2;
 const MIN_EV_ALLOCATION_FRACTION = 0.01;
+const MIN_EXECUTABLE_NOTIONAL_USDT = 100;
 const LIQUIDITY_SIZING_CANDIDATE_CAP = 72;
 const PROFITABLE_SIZING_SEARCH_STEPS = 16;
 const FUNDING_REVALIDATE_CACHE_MAX_AGE_MS = 15_000;
@@ -410,6 +413,7 @@ function mapSimEntryErrorToGuardReason(error?: string): string {
   if (normalized.includes('funding timestamp mismatch')) return 'funding_timestamp_mismatch';
   if (normalized.includes('runtime fee unavailable')) return 'fee_cache_unavailable';
   if (normalized.includes('funding revalidate error')) return 'funding_revalidate_failed';
+  if (normalized.includes('no profitable executable size')) return 'orderbook_ev_negative';
   if (normalized.includes('slippage exceeded')) return 'slippage_exceeded';
   if (normalized.includes('impact exceeded')) return 'impact_exceeded';
   if (normalized.includes('entry gap')) return 'entry_gap_exceeded';
@@ -514,8 +518,8 @@ type ProfitableOrderbookSizing = {
 
 type LiquiditySizedCandidate = {
   opportunity: ArbitrageOpportunity;
-  shortBook: OrderbookSnapshot | null;
-  longBook: OrderbookSnapshot | null;
+  shortBook: OrderbookSnapshot;
+  longBook: OrderbookSnapshot;
   sizing: ProfitableOrderbookSizing;
   score: number;
 };
@@ -822,7 +826,11 @@ async function planWindowAllocations(
   const selectedForSizing = baseCandidates.slice(0, LIQUIDITY_SIZING_CANDIDATE_CAP);
 
   const minAllocation = Math.min(
-    Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT * MIN_EV_ALLOCATION_FRACTION),
+    Math.max(
+      MIN_EV_ALLOCATION_USDT,
+      MIN_EXECUTABLE_NOTIONAL_USDT / Math.max(1, strategyConfig.leverage),
+      strategyConfig.investmentUSDT * MIN_EV_ALLOCATION_FRACTION,
+    ),
     Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT),
   );
   const getCostFactor = (exchange: ExchangeId) => (
@@ -864,35 +872,7 @@ async function planWindowAllocations(
         shortBook,
         longBook,
       );
-      if (!sizing) {
-        const fallbackInvestment = Math.min(maxInvestment, strategyConfig.investmentUSDT);
-        const fallbackSizing = passesPreEntryEVAtAllocation(
-          candidate.opportunity,
-          strategyConfig,
-          fallbackInvestment,
-        );
-        if (!fallbackSizing) return null;
-        return {
-          opportunity: candidate.opportunity,
-          shortBook: null,
-          longBook: null,
-          sizing: {
-            investmentUSDT: fallbackInvestment,
-            notionalUSDT: fallbackInvestment * strategyConfig.leverage,
-            expectedNetUSD: fallbackSizing.expectedNetUSD,
-            expectedRoiPercent: calcExpectedRoiPercent(fallbackSizing.expectedNetUSD, fallbackInvestment, strategyConfig.leverage),
-            evRatio: fallbackSizing.evRatio,
-            shortEntrySlippagePercent: 0,
-            longEntrySlippagePercent: 0,
-            shortExitSlippagePercent: 0,
-            longExitSlippagePercent: 0,
-            entryGapLivePercent: 0,
-            entryGapDriftPercent: 0,
-            ev: fallbackSizing,
-          },
-          score: candidate.preScore * 0.5,
-        };
-      }
+      if (!sizing || sizing.notionalUSDT < MIN_EXECUTABLE_NOTIONAL_USDT) return null;
       const intervalHours = Math.max(1, getOpportunityIntervalHours(candidate.opportunity));
       const roiBoost = 1 + Math.max(0, sizing.expectedNetUSD / Math.max(1, sizing.investmentUSDT));
       return {
@@ -904,33 +884,7 @@ async function planWindowAllocations(
           * getOpportunityBalanceEqualizationMultiplier(balancePlan, candidate.opportunity),
       };
     } catch {
-      const fallbackSizing = passesPreEntryEVAtAllocation(
-        candidate.opportunity,
-        strategyConfig,
-        Math.min(maxInvestment, strategyConfig.investmentUSDT),
-      );
-      if (!fallbackSizing) return null;
-      const fallbackInvestment = Math.min(maxInvestment, strategyConfig.investmentUSDT);
-      return {
-        opportunity: candidate.opportunity,
-        shortBook: null,
-        longBook: null,
-        sizing: {
-          investmentUSDT: fallbackInvestment,
-          notionalUSDT: fallbackInvestment * strategyConfig.leverage,
-          expectedNetUSD: fallbackSizing.expectedNetUSD,
-          expectedRoiPercent: calcExpectedRoiPercent(fallbackSizing.expectedNetUSD, fallbackInvestment, strategyConfig.leverage),
-          evRatio: fallbackSizing.evRatio,
-          shortEntrySlippagePercent: 0,
-          longEntrySlippagePercent: 0,
-          shortExitSlippagePercent: 0,
-          longExitSlippagePercent: 0,
-          entryGapLivePercent: 0,
-          entryGapDriftPercent: 0,
-          ev: fallbackSizing,
-        },
-        score: candidate.preScore,
-      };
+      return null;
     }
     }),
   );
@@ -976,16 +930,13 @@ async function planWindowAllocations(
       );
       if (remainingCap < minAllocation) return false;
       const nextInvestment = allocated + Math.min(allocationStep, remainingCap);
-      if (candidate.shortBook && candidate.longBook) {
-        return (evaluateOrderbookSizing(
-          opportunity,
-          strategyConfig,
-          nextInvestment,
-          candidate.shortBook,
-          candidate.longBook,
-        )?.expectedNetUSD ?? 0) > 0;
-      }
-      return !!passesPreEntryEVAtAllocation(opportunity, strategyConfig, nextInvestment);
+      return (evaluateOrderbookSizing(
+        opportunity,
+        strategyConfig,
+        nextInvestment,
+        candidate.shortBook,
+        candidate.longBook,
+      )?.expectedNetUSD ?? 0) > 0;
     });
     if (eligible.length === 0) break;
 
@@ -1045,10 +996,8 @@ async function planWindowAllocations(
     }))
     .filter((candidate) => (
       candidate.investmentUSDT >= minAllocation
-      && (
-        (candidate.sizing.expectedNetUSD > 0 && candidate.investmentUSDT <= candidate.sizing.investmentUSDT + 0.0001)
-        || !!passesPreEntryEVAtAllocation(candidate.opportunity, strategyConfig, candidate.investmentUSDT)
-      )
+      && candidate.sizing.expectedNetUSD > 0
+      && candidate.investmentUSDT <= candidate.sizing.investmentUSDT + 0.0001
     ));
 }
 
@@ -2704,27 +2653,133 @@ class ServerSimScheduler {
       }
     }
 
-    await Promise.allSettled(batch.map(async ([, entry]) => {
+    const revalidationResults = await Promise.allSettled(batch.map(async ([, entry]) => {
       try {
-        const notional = entry.investmentUSDT * this.config.leverage;
-        if (notional <= 0) return;
+        const maxInvestment = Math.max(0, entry.investmentUSDT);
+        if (maxInvestment <= 0) return { entry, sizing: null };
 
-        const [shortFill, longFill] = await Promise.all([
-          fetchMarketFillPrice(entry.opportunity.shortExchange, entry.opportunity.shortSymbol, 'sell', notional),
-          fetchMarketFillPrice(entry.opportunity.longExchange, entry.opportunity.longSymbol, 'buy', notional),
-        ]);
-        const probeState = this.ensureProbeState(entry, now);
-        if (probeState.status === 'scheduled') {
-          probeState.lastShortSlippagePercent = shortFill.slippagePercent;
-          probeState.lastLongSlippagePercent = longFill.slippagePercent;
-          this.scheduleProbeStates.set(probeState.probeId, probeState);
-        }
+        const [shortBook, longBook] = await retryTransientFetch(() => Promise.all([
+          fetchOrderbook(entry.opportunity.shortExchange, entry.opportunity.shortSymbol, 50),
+          fetchOrderbook(entry.opportunity.longExchange, entry.opportunity.longSymbol, 50),
+        ]));
+        const minInvestment = Math.min(
+          maxInvestment,
+          Math.max(
+            MIN_EV_ALLOCATION_USDT,
+            MIN_EXECUTABLE_NOTIONAL_USDT / Math.max(1, this.config.leverage),
+            maxInvestment * MIN_EV_ALLOCATION_FRACTION,
+          ),
+        );
+        const shortLiveRate = this.findLatestFundingRate(
+          entry.opportunity.shortExchange,
+          entry.opportunity.shortSymbol,
+          entry.opportunity.baseAsset,
+        );
+        const longLiveRate = this.findLatestFundingRate(
+          entry.opportunity.longExchange,
+          entry.opportunity.longSymbol,
+          entry.opportunity.baseAsset,
+        );
+        const sizing = findMaxProfitableOrderbookSizing(
+          entry.opportunity,
+          buildStrategyLikeConfig(this.config),
+          maxInvestment,
+          minInvestment,
+          shortBook,
+          longBook,
+          {
+            shortRate: shortLiveRate?.rate,
+            longRate: longLiveRate?.rate,
+          },
+        );
+        return { entry, sizing };
 
       } catch {
-        // ??삳쐭??鈺곌퀬????쎈솭 ???醫? (??쎈뻬 ??뽰젎?癒?퐣 ??쇰뻻 野꺜筌?
+        return { entry, sizing: undefined };
       }
     }));
 
+    const events: TradeEvent[] = [];
+    for (const result of revalidationResults) {
+      if (result.status !== 'fulfilled' || !result.value) continue;
+      const { entry, sizing } = result.value;
+      const liveEntry = this.scheduledEntries.get(entry.opportunityId);
+      if (!liveEntry || liveEntry.probeId !== entry.probeId) continue;
+
+      const probeState = this.ensureProbeState(liveEntry, now);
+      if (sizing) {
+        if (probeState.status === 'scheduled') {
+          probeState.lastShortSlippagePercent = sizing.shortEntrySlippagePercent;
+          probeState.lastLongSlippagePercent = sizing.longEntrySlippagePercent;
+          this.scheduleProbeStates.set(probeState.probeId, probeState);
+        }
+        if (
+          sizing.notionalUSDT >= MIN_EXECUTABLE_NOTIONAL_USDT
+          && sizing.investmentUSDT > 0
+          && sizing.investmentUSDT < liveEntry.investmentUSDT - 0.0001
+        ) {
+          this.scheduledEntries.set(liveEntry.opportunityId, {
+            ...liveEntry,
+            investmentUSDT: sizing.investmentUSDT,
+          });
+        }
+        continue;
+      }
+
+      const timeToExecutionMs = liveEntry.targetTime - now;
+      if (sizing === undefined || timeToExecutionMs > EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS) {
+        continue;
+      }
+
+      this.scheduledEntries.delete(liveEntry.opportunityId);
+      if (probeState.status === 'scheduled') {
+        probeState.status = 'canceled';
+        probeState.finalizedAt = now;
+        probeState.lastReason = 'orderbook_ev_negative';
+        this.scheduleProbeStates.set(probeState.probeId, probeState);
+      }
+      events.push(
+        this.buildScheduleProbeEvent(
+          'canceled_before_execute',
+          liveEntry.opportunity,
+          liveEntry.investmentUSDT,
+          now,
+          {
+            status: 'canceled',
+            reason: 'orderbook_ev_negative',
+            timeToExecutionMs,
+            analysis: {
+              opportunityId: liveEntry.opportunityId,
+              probeId: liveEntry.probeId,
+              revalidationGate: 'pre_execution_orderbook_ev',
+              cancelWindowMs: EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS,
+              minExecutableNotionalUSDT: MIN_EXECUTABLE_NOTIONAL_USDT,
+            },
+          },
+        ),
+        {
+          timestamp: now,
+          type: 'guard_block',
+          simulation: true,
+          baseAsset: liveEntry.opportunity.baseAsset,
+          shortExchange: liveEntry.opportunity.shortExchange,
+          longExchange: liveEntry.opportunity.longExchange,
+          spread: liveEntry.opportunity.spread,
+          spreadPercent: liveEntry.opportunity.spreadPercent,
+          reason: 'orderbook_ev_negative',
+          analysis: {
+            opportunityId: liveEntry.opportunityId,
+            probeId: liveEntry.probeId,
+            revalidationGate: 'pre_execution_orderbook_ev',
+            cancelWindowMs: EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS,
+          },
+          detail: 'no profitable executable size during pre-execution orderbook revalidation',
+        },
+      );
+    }
+    if (events.length > 0) {
+      this.recordTrades(events);
+    }
   }
 
   private getFundingRevalidateCacheKey(exchange: ExchangeId, symbol: string) {
@@ -2974,7 +3029,11 @@ class ServerSimScheduler {
       }
       const preEntryProbeInvestment = Math.min(
         this.config.investmentUSDT,
-        Math.max(MIN_EV_ALLOCATION_USDT, this.config.investmentUSDT * MIN_EV_ALLOCATION_FRACTION),
+        Math.max(
+          MIN_EV_ALLOCATION_USDT,
+          MIN_EXECUTABLE_NOTIONAL_USDT / Math.max(1, this.config.leverage),
+          this.config.investmentUSDT * MIN_EV_ALLOCATION_FRACTION,
+        ),
       );
       const preEntryEv = passesPreEntryEVAtAllocation(
         opportunity,
@@ -3112,15 +3171,17 @@ class ServerSimScheduler {
       return true;
     };
 
-    // Keep previously profitable schedules alive through transient scan churn.
-    // The execution path still revalidates live rates/orderbooks and records
-    // execute_failed if the route is no longer viable at the actual entry time.
+    // Keep previous schedules only outside the final executable-EV window.
+    // Within five minutes, a route must still be present in the orderbook-sized
+    // plan; otherwise it is canceled before the final execution path.
     for (const [opportunityId, previousEntry] of previousEntries.entries()) {
       if (nextEntries.has(opportunityId)) continue;
       if (
-        (!options.fullRefresh && previousEntry.targetTime > now + NEAR_DUE_GRACE_MS)
-        || previousEntry.targetTime <= now + SCHEDULE_REPLAN_FREEZE_MS
-        || canRetainPreviousEntry(previousEntry)
+        previousEntry.targetTime > now + EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS
+        && (
+          (!options.fullRefresh && previousEntry.targetTime > now + NEAR_DUE_GRACE_MS)
+          || canRetainPreviousEntry(previousEntry)
+        )
       ) {
         nextEntries.set(opportunityId, previousEntry);
         reserveEntry(previousEntry);
@@ -4327,7 +4388,11 @@ class ServerSimScheduler {
         );
         const minDynamicInvestment = Math.min(
           maxDynamicInvestment,
-          Math.max(MIN_EV_ALLOCATION_USDT, requestedMargin * MIN_EV_ALLOCATION_FRACTION),
+          Math.max(
+            MIN_EV_ALLOCATION_USDT,
+            MIN_EXECUTABLE_NOTIONAL_USDT / Math.max(1, leverage),
+            requestedMargin * MIN_EV_ALLOCATION_FRACTION,
+          ),
         );
         const sizing = findMaxProfitableOrderbookSizing(
           opportunity,
@@ -4341,7 +4406,7 @@ class ServerSimScheduler {
             longRate: longRateForDecision,
           },
         );
-        if (!sizing || sizing.notionalUSDT < 100) {
+        if (!sizing || sizing.notionalUSDT < MIN_EXECUTABLE_NOTIONAL_USDT) {
           return {
             success: false,
             error: `no profitable executable size: minMargin=$${minDynamicInvestment.toFixed(2)} maxMargin=$${maxDynamicInvestment.toFixed(2)}`,

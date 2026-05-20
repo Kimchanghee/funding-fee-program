@@ -49,6 +49,11 @@ useIocLimitOnly=true
 useStrictHedge=true
 ```
 
+Scheduling uses executable orderbook EV. If no positive-EV size is available
+down to the minimum executable notional, the route is not scheduled; stale
+scheduled routes are canceled before execution during the final revalidation
+window instead of being carried into a guaranteed guard block.
+
 ## Check status
 
 ```bash

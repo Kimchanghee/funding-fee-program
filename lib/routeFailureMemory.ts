@@ -2,7 +2,7 @@ import type { TradeEvent } from './fileLogger';
 
 const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
 const MIN_BLOCK_MS = 30 * 1000;
-const MAX_BLOCK_MS = 15 * 60 * 1000;
+const MAX_BLOCK_MS = 2 * 60 * 60 * 1000;
 
 interface RouteFailureState {
   timestamps: number[];
@@ -17,6 +17,9 @@ function normalizeReason(reason?: string): string {
 
 function getReasonPolicy(reasonRaw?: string): { cooldownMs: number; weight: number } {
   const reason = normalizeReason(reasonRaw);
+  if (reason.includes('orderbook_ev_negative') || reason.includes('no_profitable_executable_size')) {
+    return { cooldownMs: 30 * 60 * 1000, weight: 2.2 };
+  }
   if (reason.includes('revalidate_spread_reverted')) return { cooldownMs: 2 * 60 * 1000, weight: 1.0 };
   if (reason.includes('profitability')) return { cooldownMs: 45 * 1000, weight: 0.25 };
   if (reason.includes('depth')) return { cooldownMs: 12 * 60 * 1000, weight: 1.8 };

@@ -85,7 +85,7 @@ default_config = {
 }
 
 
-def request_json(method, path, body=None):
+def request_json(method, path, body=None, timeout=15):
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{base_url}{path}",
@@ -93,7 +93,7 @@ def request_json(method, path, body=None):
         method=method,
         headers=headers,
     )
-    with urllib.request.urlopen(req, timeout=15) as response:
+    with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -120,7 +120,7 @@ try:
         "useStrictHedge": True,
     }
     action = "update" if status.get("active") else "start"
-    result = request_json("POST", "/api/sim-scheduler", {"action": action, "config": config})
+    result = request_json("POST", "/api/sim-scheduler", {"action": action, "config": config}, timeout=60)
     next_status = result.get("status", {})
     scheduled = len(next_status.get("scheduledEntries") or [])
     print(
