@@ -104,6 +104,12 @@ const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
 const FULL_FUNDING_SCAN_INTERVAL_MS = 60 * 1000;
 const FAST_SYMBOL_CAP_PER_EXCHANGE = 120;
 const FAST_SYMBOL_MIN_PER_EXCHANGE = 40;
+const FAST_SYMBOL_CAP_BY_EXCHANGE: Partial<Record<ExchangeId, number>> = {
+  bitget: 60,
+};
+const FAST_SYMBOL_MIN_BY_EXCHANGE: Partial<Record<ExchangeId, number>> = {
+  bitget: 20,
+};
 const MAX_ANALYSIS_CANDIDATES_PER_POLL = 300;
 const COMPOUND_BALANCE_USAGE_PCT = 0.9;
 const MIN_ENTRY_NOTIONAL_USDT = 100;
@@ -131,6 +137,14 @@ const TRANSIENT_DATA_ERROR_PATTERNS = [
   /EAI_AGAIN/i,
   /5\d{2}/,
 ];
+
+function getFastSymbolCap(exchange: ExchangeId): number {
+  return FAST_SYMBOL_CAP_BY_EXCHANGE[exchange] ?? FAST_SYMBOL_CAP_PER_EXCHANGE;
+}
+
+function getFastSymbolMin(exchange: ExchangeId): number {
+  return FAST_SYMBOL_MIN_BY_EXCHANGE[exchange] ?? FAST_SYMBOL_MIN_PER_EXCHANGE;
+}
 
 function clampBps(value: number, minBps: number, maxBps: number): number {
   if (!Number.isFinite(value)) return minBps;
@@ -577,7 +591,7 @@ class ServerScheduler {
         set = new Set<string>();
         byExchange.set(exchange, set);
       }
-      if (set.size >= FAST_SYMBOL_CAP_PER_EXCHANGE) return;
+      if (set.size >= getFastSymbolCap(exchange)) return;
       set.add(symbol);
     };
 
@@ -599,7 +613,7 @@ class ServerScheduler {
       }
       const universe = this.getFreshUniverseSymbols(exchange, now);
       if (!universe) continue;
-      const minTarget = Math.min(FAST_SYMBOL_MIN_PER_EXCHANGE, FAST_SYMBOL_CAP_PER_EXCHANGE);
+      const minTarget = Math.min(getFastSymbolMin(exchange), getFastSymbolCap(exchange));
       for (const symbol of universe) {
         if (set.size >= minTarget) break;
         set.add(symbol);
@@ -610,7 +624,7 @@ class ServerScheduler {
     for (const exchange of this.config.enabledExchanges) {
       const symbols = Array.from(byExchange.get(exchange) ?? []);
       if (symbols.length === 0) continue;
-      output.set(exchange, symbols.slice(0, FAST_SYMBOL_CAP_PER_EXCHANGE));
+      output.set(exchange, symbols.slice(0, getFastSymbolCap(exchange)));
     }
     return output;
   }

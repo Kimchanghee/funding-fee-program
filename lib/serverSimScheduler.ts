@@ -105,8 +105,14 @@ const PROBE_STATE_RETENTION_MS = 2 * 60 * 60 * 1000;
 const FUNDING_UNIVERSE_CACHE_TTL_MS = 60 * 60 * 1000;
 const FULL_FUNDING_REFRESH_INTERVAL_MS = 30 * 1000;
 const LIVE_FUNDING_TIME_DRIFT_MS = 60_000;
-const FAST_SYMBOL_CAP_PER_EXCHANGE = 320;
-const FAST_SYMBOL_MIN_PER_EXCHANGE = 100;
+const FAST_SYMBOL_CAP_PER_EXCHANGE = 240;
+const FAST_SYMBOL_MIN_PER_EXCHANGE = 80;
+const FAST_SYMBOL_CAP_BY_EXCHANGE: Partial<Record<ExchangeId, number>> = {
+  bitget: 80,
+};
+const FAST_SYMBOL_MIN_BY_EXCHANGE: Partial<Record<ExchangeId, number>> = {
+  bitget: 30,
+};
 const FAST_OPPORTUNITY_SEED_COUNT = 160;
 const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
@@ -137,6 +143,14 @@ const TRANSIENT_DATA_ERROR_PATTERNS = [
   /EAI_AGAIN/i,
   /5\d{2}/,
 ];
+
+function getFastSymbolCap(exchange: ExchangeId): number {
+  return FAST_SYMBOL_CAP_BY_EXCHANGE[exchange] ?? FAST_SYMBOL_CAP_PER_EXCHANGE;
+}
+
+function getFastSymbolMin(exchange: ExchangeId): number {
+  return FAST_SYMBOL_MIN_BY_EXCHANGE[exchange] ?? FAST_SYMBOL_MIN_PER_EXCHANGE;
+}
 
 const PRE_EXECUTION_PROBE_POINTS = [
   { key: 'pre_30m', thresholdMs: 30 * 60 * 1000 },
@@ -1692,7 +1706,7 @@ class ServerSimScheduler {
         set = new Set<string>();
         byExchange.set(exchange, set);
       }
-      if (set.size >= FAST_SYMBOL_CAP_PER_EXCHANGE) return;
+      if (set.size >= getFastSymbolCap(exchange)) return;
       set.add(symbol);
     };
 
@@ -1719,7 +1733,7 @@ class ServerSimScheduler {
       }
       const universe = this.getFreshUniverseSymbols(exchange, now);
       if (!universe) continue;
-      const minTarget = Math.min(FAST_SYMBOL_MIN_PER_EXCHANGE, FAST_SYMBOL_CAP_PER_EXCHANGE);
+      const minTarget = Math.min(getFastSymbolMin(exchange), getFastSymbolCap(exchange));
       for (const symbol of universe) {
         if (set.size >= minTarget) break;
         set.add(symbol);
@@ -1730,7 +1744,7 @@ class ServerSimScheduler {
     for (const exchange of this.config.enabledExchanges) {
       const symbols = Array.from(byExchange.get(exchange) ?? []);
       if (symbols.length === 0) continue;
-      output.set(exchange, symbols.slice(0, FAST_SYMBOL_CAP_PER_EXCHANGE));
+      output.set(exchange, symbols.slice(0, getFastSymbolCap(exchange)));
     }
     return output;
   }

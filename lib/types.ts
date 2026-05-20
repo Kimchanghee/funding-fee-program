@@ -248,7 +248,7 @@ export interface TimingConfig {
 }
 
 export const DEFAULT_TIMING_CONFIG: TimingConfig = {
-  entryLeadMs: 3_500,
+  entryLeadMs: 30_000,
   closeDelayMs: 1_000,
   fundingVerifyRetryMs: 5_000,
   fundingVerifyAttempts: 3,

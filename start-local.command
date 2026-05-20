@@ -64,7 +64,7 @@ default_config = {
     "compoundInvesting": True,
     "enabledExchanges": ["binance", "bybit", "okx", "bitget", "gate", "bingx"],
     "timingConfig": {
-        "entryLeadMs": 3500,
+        "entryLeadMs": 30000,
         "closeDelayMs": 1000,
         "fundingVerifyRetryMs": 5000,
         "fundingVerifyAttempts": 3,
@@ -104,6 +104,14 @@ try:
     config["enabledExchanges"] = default_config["enabledExchanges"]
     config["minSpreadPercent"] = min(float(config.get("minSpreadPercent") or 0.03), 0.03)
     config["maxSlippagePercent"] = max(float(config.get("maxSlippagePercent") or 0), 4)
+    current_timing = ((current_config or {}).get("timingConfig") or {})
+    timing_config = {**default_config["timingConfig"], **current_timing}
+    try:
+        current_entry_lead = float(timing_config.get("entryLeadMs") or 0)
+    except (TypeError, ValueError):
+        current_entry_lead = 0
+    timing_config["entryLeadMs"] = max(30000, min(60000, current_entry_lead))
+    config["timingConfig"] = timing_config
     config["confirmedSnipeConfig"] = {
         **default_config["confirmedSnipeConfig"],
         **((current_config or {}).get("confirmedSnipeConfig") or {}),
@@ -126,7 +134,8 @@ try:
     print(
         "[start-local] SIM scheduler "
         f"{action} ok | active={next_status.get('active')} | scheduled={scheduled} | "
-        f"investment=${config['investmentUSDT']} | leverage={config['leverage']}x"
+        f"investment=${config['investmentUSDT']} | leverage={config['leverage']}x | "
+        f"entryLeadMs={config['timingConfig']['entryLeadMs']}"
     )
 except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError) as exc:
     print(f"[start-local] WARN: SIM scheduler auto-start failed: {exc}")
