@@ -94,10 +94,12 @@ const FINAL_REVALIDATE_GUARD_MS = 1_000;
 const NEAR_DUE_GRACE_MS = 5_000;
 /** Freeze near-due schedules to prevent profitable entries from being churn-canceled by frequent replans. */
 const SCHEDULE_REPLAN_FREEZE_MS = 10 * 60 * 1000;
+/** Preserve entries that became due while a refresh/rebuild tick was running. */
+const OVERDUE_EXECUTION_KEEP_MS = 90_000;
 /** Keep previously profitable schedules alive until execution-time guards can revalidate them. */
 const SCHEDULE_STICKY_KEEP_MS = 8 * 60 * 60 * 1000;
-/** Cancel stale scheduled entries before funding if they are no longer executable by orderbook EV. */
-const EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS = 5 * 60 * 1000;
+/** Keep scheduled entries alive until their target time; final execution guards decide. */
+const EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS = 0;
 /** Tiny tolerance for boundary noise on entry-gap drift checks. */
 const ENTRY_GAP_TOLERANCE_PCT = 0.05;
 const FULL_REVALIDATE_CAP = 20;
@@ -3185,11 +3187,21 @@ class ServerSimScheduler {
       return true;
     };
 
-    // Keep previous schedules only outside the final executable-EV window.
-    // Within five minutes, a route must still be present in the orderbook-sized
-    // plan; otherwise it is canceled before the final execution path.
+    // Keep previous schedules alive until their target time. The final
+    // executeDueEntries path performs the orderbook EV check at the actual
+    // entry moment, so interim EV flips should not cancel the route early.
     for (const [opportunityId, previousEntry] of previousEntries.entries()) {
       if (nextEntries.has(opportunityId)) continue;
+      if (previousEntry.targetTime <= now && now - previousEntry.targetTime <= OVERDUE_EXECUTION_KEEP_MS) {
+        nextEntries.set(opportunityId, previousEntry);
+        reserveEntry(previousEntry);
+        continue;
+      }
+      if (previousEntry.targetTime > now && previousEntry.targetTime <= now + NEAR_DUE_GRACE_MS) {
+        nextEntries.set(opportunityId, previousEntry);
+        reserveEntry(previousEntry);
+        continue;
+      }
       if (
         previousEntry.targetTime > now + EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS
         && (
