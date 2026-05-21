@@ -24,6 +24,9 @@ import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } f
 import { buildManagedOpportunityItems, type ManagedOpportunityItem } from '@/lib/managedOpportunities';
 import { hasRequiredApiCredentials, getMissingApiCredentialFields } from '@/lib/apiCredentials';
 
+const OPPORTUNITY_TABLE_COLUMNS = '24px 64px minmax(128px, 1.2fr) 76px 76px 64px 84px 78px 68px 82px 68px 86px 120px';
+const OPPORTUNITY_TABLE_MIN_WIDTH = 1050;
+
 // Why a row is listed as "후보" instead of "예약됨". Kept client-side so the
 // table can surface it next to each opportunity without another API round-trip.
 //
@@ -114,11 +117,11 @@ function ExBadge({ ex, size = 'sm' }: { ex: ExchangeId; size?: 'sm' | 'xs' }) {
   const fontSize = size === 'xs' ? 9 : 10;
   const pad = size === 'xs' ? '1px 5px' : '2px 7px';
   return (
-    <span style={{
+    <span className="opp-exchange-badge" style={{
       display: 'inline-flex', alignItems: 'center',
       padding: pad, borderRadius: 4, fontSize, fontWeight: 700,
       background: `${color}22`, color, border: `1px solid ${color}33`,
-      letterSpacing: '0.05em', lineHeight: 1.2,
+      letterSpacing: '0.05em', lineHeight: 1.2, whiteSpace: 'nowrap',
     }}>
       {name}
     </span>
@@ -1010,8 +1013,8 @@ export default function OpportunityCard() {
             {/* Table Header */}
             <div className="opp-table-header" style={{
               display: 'grid',
-              gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px 120px',
-              minWidth: 1060,
+              gridTemplateColumns: OPPORTUNITY_TABLE_COLUMNS,
+              minWidth: OPPORTUNITY_TABLE_MIN_WIDTH,
               gap: 4, padding: '6px 10px', marginBottom: 4,
               fontSize: 10, fontWeight: 600, color: 'var(--color-text-muted)',
               borderBottom: '1px solid var(--color-border)',
@@ -1026,8 +1029,6 @@ export default function OpportunityCard() {
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>투자금</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩수익</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>수수료</span>
-              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>수수료 페이백</span>
-              <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>레퍼럴 페이백</span>
               <span style={{ textAlign: 'right' }}>순수익</span>
               <span style={{ textAlign: 'right' }}>수익률</span>
               <span className="opp-hide-mobile" style={{ textAlign: 'right' }}>펀딩까지</span>
@@ -1145,8 +1146,6 @@ export default function OpportunityCard() {
               });
               const executionProfit = displayFeeProfit;
               const displayRawFees = displayFeeProfit.rawTotalFees;
-              const displayTraderPayback = displayFeeProfit.traderFeePayback;
-              const displayReferralPayback = displayFeeProfit.referralFeePayback;
               if (executionProfit.netPerFunding <= 0 && item.status !== 'active') return null;
 
               visibleIdx++;
@@ -1175,8 +1174,8 @@ export default function OpportunityCard() {
                     onClick={() => setExpandedAsset(isExpanded ? null : item.id)}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px 120px',
-                      minWidth: 1060,
+                      gridTemplateColumns: OPPORTUNITY_TABLE_COLUMNS,
+                      minWidth: OPPORTUNITY_TABLE_MIN_WIDTH,
                       gap: 4, padding: '8px 10px',
                       alignItems: 'center',
                       cursor: 'pointer',
@@ -1200,9 +1199,9 @@ export default function OpportunityCard() {
                     <StatusBadge status={item.status} />
 
                     {/* Coin + Interval Badge + Mobile Exchange Badges */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--color-text)' }}>
+                    <div className="opp-symbol-cell" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                      <div className="opp-symbol-main" style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                        <span className="opp-asset-name" style={{ fontSize: 14, fontWeight: 800, color: 'var(--color-text)' }}>
                           {item.asset}
                         </span>
                         <span style={{
@@ -1216,7 +1215,7 @@ export default function OpportunityCard() {
                         {isExpanded ? <ChevronUp size={12} color="var(--color-text-muted)" /> : <ChevronDown size={12} color="var(--color-text-muted)" />}
                       </div>
                       {/* 모바일: 거래소 뱃지 인라인 */}
-                      <div className="opp-show-mobile" style={{ display: 'none', alignItems: 'center', gap: 4, fontSize: 9 }}>
+                      <div className="opp-show-mobile opp-mobile-exchange-route" style={{ display: 'none', alignItems: 'center', gap: 4, fontSize: 9 }}>
                         <ExBadge ex={item.opp.shortExchange} />
                         <span style={{ color: 'var(--color-text-muted)' }}>↔</span>
                         <ExBadge ex={item.opp.longExchange} />
@@ -1279,20 +1278,8 @@ export default function OpportunityCard() {
                       </span>
                     </div>
 
-                    <div className="opp-hide-mobile" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
-                      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: '#22c55e' }}>
-                        +${fmtNum(displayTraderPayback)}
-                      </span>
-                    </div>
-
-                    <div className="opp-hide-mobile" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
-                      <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: '#14b8a6' }}>
-                        +${fmtNum(displayReferralPayback)}
-                      </span>
-                    </div>
-
                     {/* 순수익 */}
-                    <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
+                    <div className="opp-net-cell" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
                       <span className="mono" style={{
                         fontSize: 12, fontWeight: 700,
                         color: displayFeeProfit.netPerFunding > 0 ? '#10b981' : '#ef4444',
@@ -1302,7 +1289,7 @@ export default function OpportunityCard() {
                     </div>
 
                     {/* 수익률 */}
-                    <div style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
+                    <div className="opp-roi-cell" style={{ textAlign: 'right', opacity: item.status === 'opportunity' ? 0.5 : 1 }}>
                       <span className="mono" style={{
                         fontSize: 11, fontWeight: 700,
                         color: displayFeeProfit.roiPerFunding >= 0 ? '#10b981' : '#ef4444',
@@ -1393,8 +1380,8 @@ export default function OpportunityCard() {
                 emptyRows.push(
                   <div key={`empty-${i}`} className="opp-empty-row" style={{
                     display: 'grid',
-                    gridTemplateColumns: '24px 54px 110px 68px 68px 50px 72px 64px 54px 66px 66px 66px 56px 66px 120px',
-                    minWidth: 1060,
+                    gridTemplateColumns: OPPORTUNITY_TABLE_COLUMNS,
+                    minWidth: OPPORTUNITY_TABLE_MIN_WIDTH,
                     gap: 4, padding: '8px 10px', height: ROW_HEIGHT,
                     alignItems: 'center', opacity: 0.2,
                   }}>
@@ -1403,8 +1390,6 @@ export default function OpportunityCard() {
                     <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>-</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
-                    <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
-                    <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
                     <span className="opp-hide-mobile" style={{ textAlign: 'right', fontSize: 10, color: 'var(--color-text-muted)' }}>-</span>
@@ -1648,7 +1633,7 @@ function StatusBadge({ status }: { status: 'scheduled' | 'active' | 'opportunity
   }[status];
 
   return (
-    <span style={{
+    <span className="opp-status-badge" style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
       padding: '2px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700,
       background: config.bg, color: config.color, border: `1px solid ${config.border}`,
@@ -1877,15 +1862,13 @@ function CoinDetail({ item, profit, compoundMode, setCompoundMode, simPositions,
         background: 'rgba(255,255,255,0.02)',
       }}>
         <span>Raw Fee: <span className="mono" style={{ color: '#ef4444' }}>-${fmtNum(profit.rawTotalFees)}</span></span>
-        <span>Trader Payback: <span className="mono" style={{ color: '#22c55e' }}>+${fmtNum(profit.traderFeePayback)}</span></span>
-        <span>Referral Payback: <span className="mono" style={{ color: '#14b8a6' }}>+${fmtNum(profit.referralFeePayback)}</span></span>
         <span>Net Fee: <span className="mono" style={{ color: '#ef4444' }}>-${fmtNum(profit.totalFees)}</span></span>
         <span>8h Net: <span className="mono" style={{ fontWeight: 700, color: profit.netPerFunding > 0 ? '#10b981' : '#ef4444' }}>
           {profit.netPerFunding > 0 ? '+' : ''}${fmtNum(profit.netPerFunding)}
         </span></span>
       </div>
       <div style={{ marginTop: 4, fontSize: 10, color: 'var(--color-text-muted)' }}>
-        Formula: 8h Net = Funding - Raw Fee + Trader Payback + Referral Payback
+        Formula: 8h Net = Funding - Net Fee
       </div>
 
       {/* Entry gap & slippage analysis */}

@@ -1693,3 +1693,102 @@ body {
     max-width: calc(100vw - 24px) !important;
   }
 }
+
+/* Opportunity table repair: keep the trading table readable on laptop widths. */
+.opp-table-wrap {
+  overflow-x: auto !important;
+}
+
+.opp-table-header,
+.opp-table-row,
+.opp-empty-row {
+  min-width: 1050px;
+  max-width: none;
+}
+
+.opp-symbol-cell,
+.opp-symbol-main,
+.opp-status-badge,
+.opp-exchange-badge,
+.opp-mobile-exchange-route {
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+}
+
+.opp-status-badge,
+.opp-exchange-badge,
+.opp-mobile-exchange-route {
+  white-space: nowrap !important;
+}
+
+.opp-asset-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+.opp-symbol-main {
+  flex-wrap: nowrap;
+}
+
+@media (max-width: 1280px) and (min-width: 769px) {
+  .opp-table-wrap {
+    overflow-x: auto !important;
+  }
+
+  .opp-table-header,
+  .opp-empty-row {
+    display: grid !important;
+  }
+
+  .opp-table-row,
+  .opp-table-header,
+  .opp-empty-row {
+    grid-template-columns: 24px 64px minmax(122px, 1.2fr) 76px 76px 64px 76px 72px 62px 76px 62px 76px !important;
+    min-width: 960px !important;
+    max-width: none !important;
+  }
+
+  .opp-table-row > * {
+    overflow-wrap: normal !important;
+  }
+
+  .opp-hide-mobile:not(.opp-hide-tablet) {
+    display: block !important;
+  }
+
+  .opp-show-mobile {
+    display: none !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .opp-table-wrap {
+    overflow-x: visible !important;
+  }
+
+  .opp-table-row {
+    grid-template-columns: minmax(64px, auto) minmax(0, 1fr) minmax(82px, auto) !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    gap: 8px !important;
+  }
+
+  .opp-roi-cell {
+    display: none !important;
+  }
+
+  .opp-net-cell {
+    min-width: 82px !important;
+  }
+
+  .opp-mobile-exchange-route {
+    flex-wrap: nowrap !important;
+    white-space: nowrap !important;
+  }
+}
