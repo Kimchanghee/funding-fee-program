@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   listTradeHistoryDates,
   readTradeHistory,
+  type TradeHistoryScope,
   type TradeEvent,
 } from '@/lib/fileLogger';
 import { getServerScheduler } from '@/lib/serverScheduler';
+import { getServerSimScheduler } from '@/lib/serverSimScheduler';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
 export const dynamic = 'force-dynamic';
@@ -15,11 +17,18 @@ interface CountItem {
   count: number;
 }
 
+type DiagnosticsMode = 'all' | 'real' | 'sim';
+
 function parseHours(value: string | null): number {
   if (!value) return 24;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 24;
   return Math.max(1, Math.min(168, Math.floor(parsed)));
+}
+
+function parseMode(value: string | null): DiagnosticsMode {
+  if (value === 'real' || value === 'sim' || value === 'all') return value;
+  return 'all';
 }
 
 function countBy(items: string[]): CountItem[] {
@@ -44,10 +53,10 @@ function normalizeTimestamp(value: unknown): number | null {
   return null;
 }
 
-function collectRealEvents(from: number, to: number): TradeEvent[] {
+function collectEvents(scope: TradeHistoryScope, from: number, to: number): TradeEvent[] {
   const events: TradeEvent[] = [];
-  for (const date of listTradeHistoryDates('real')) {
-    for (const event of readTradeHistory('real', date)) {
+  for (const date of listTradeHistoryDates(scope)) {
+    for (const event of readTradeHistory(scope, date)) {
       const timestamp = normalizeTimestamp((event as { timestamp?: unknown }).timestamp);
       if (timestamp === null || timestamp < from || timestamp > to) continue;
       events.push({ ...event, timestamp });
@@ -91,7 +100,6 @@ function isSelectedProbe(event: TradeEvent): boolean {
 
 function isExecutionSuccess(event: TradeEvent): boolean {
   return (event.type === 'entry' || event.type === 'snipe_entry')
-    && event.simulation === false
     && event.success !== false;
 }
 
@@ -101,6 +109,8 @@ function buildNoEntrySample(event: TradeEvent) {
     timestamp: event.timestamp,
     timestampText: formatTimestampYmdHmsMs(event.timestamp),
     type: event.type,
+    mode: event.simulation ? 'sim' : 'real',
+    simulation: event.simulation,
     status: event.type === 'schedule_probe' ? getProbeStatus(event) : event.reason ?? event.type,
     baseAsset: event.baseAsset ?? null,
     pair: getPairKey(event),
@@ -115,9 +125,22 @@ function buildNoEntrySample(event: TradeEvent) {
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const hours = parseHours(url.searchParams.get('hours'));
+  const mode = parseMode(url.searchParams.get('mode'));
+  const scope: TradeHistoryScope = mode;
   const now = Date.now();
   const from = now - hours * 60 * 60 * 1000;
-  const events = collectRealEvents(from, now);
+  const events = collectEvents(scope, from, now);
+
+  const realScheduler = getServerScheduler().getStatus();
+  const simScheduler = getServerSimScheduler().getStatus();
+  const schedulerMode = mode === 'sim'
+    ? 'sim'
+    : mode === 'real'
+      ? 'real'
+      : simScheduler.active
+        ? 'sim'
+        : 'real';
+  const scheduler = schedulerMode === 'sim' ? simScheduler : realScheduler;
 
   const scheduleProbes = events.filter((event) => event.type === 'schedule_probe');
   const selectedProbes = scheduleProbes.filter(isSelectedProbe);
@@ -140,12 +163,18 @@ export async function GET(req: NextRequest) {
     generatedAtText: formatTimestampYmdHmsMs(now),
     window: {
       hours,
+      mode,
       from,
       to: now,
       fromText: formatTimestampYmdHmsMs(from),
       toText: formatTimestampYmdHmsMs(now),
     },
-    scheduler: getServerScheduler().getStatus(),
+    schedulerMode,
+    scheduler,
+    schedulers: {
+      real: realScheduler,
+      sim: simScheduler,
+    },
     totals: {
       tradeEvents: events.length,
       analysisEvents: scheduleProbes.length,
