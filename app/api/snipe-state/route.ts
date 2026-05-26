@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import type { SnipeStateSnapshot } from '@/lib/types';
 import { getDataDir } from '@/lib/dataDir';
-import { getServerScheduler } from '@/lib/serverScheduler';
 import { getServerSimScheduler } from '@/lib/serverSimScheduler';
 
 const STATE_FILE = path.join(getDataDir(), 'snipe-state.json');
@@ -20,8 +19,8 @@ function buildDefaultState(): SnipeStateSnapshot {
 function normalizeState(raw?: Partial<SnipeStateSnapshot> | null): SnipeStateSnapshot {
   return {
     simSnipeActive: typeof raw?.simSnipeActive === 'boolean' ? raw.simSnipeActive : false,
-    realSnipeActive: typeof raw?.realSnipeActive === 'boolean' ? raw.realSnipeActive : false,
-    simulationMode: typeof raw?.simulationMode === 'boolean' ? raw.simulationMode : true,
+    realSnipeActive: false,
+    simulationMode: true,
     updatedAt: typeof raw?.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
   };
 }
@@ -33,8 +32,7 @@ function ensureDir() {
 
 function resolveSchedulerState() {
   const simActive = !!getServerSimScheduler().getStatus().active;
-  const realActive = !!getServerScheduler().isActive();
-  return { simActive, realActive };
+  return { simActive, realActive: false };
 }
 
 function reconcileWithRuntime(state: SnipeStateSnapshot) {
@@ -90,8 +88,8 @@ export async function POST(request: Request) {
     } catch { /* start fresh */ }
 
     if (typeof body.simSnipeActive === 'boolean') current.simSnipeActive = body.simSnipeActive;
-    if (typeof body.realSnipeActive === 'boolean') current.realSnipeActive = body.realSnipeActive;
-    if (typeof body.simulationMode === 'boolean') current.simulationMode = body.simulationMode;
+    current.realSnipeActive = false;
+    current.simulationMode = true;
     current.updatedAt = Date.now();
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(current, null, 2));

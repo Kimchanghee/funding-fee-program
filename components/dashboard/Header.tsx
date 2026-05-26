@@ -1,6 +1,6 @@
 'use client';
 
-import { RefreshCw, Key, Settings, Zap, FlaskConical } from 'lucide-react';
+import { RefreshCw, Settings, Zap, FlaskConical } from 'lucide-react';
 import KSTClock from '@/components/ui/KSTClock';
 import { useFundingStore } from '@/store/fundingStore';
 import {
@@ -25,23 +25,15 @@ export default function Header() {
     refreshRates,
     refreshPositions,
     refreshBalances,
-    setShowApiPanel,
-    openApiPanelFor,
-    simulationMode,
-    toggleSimulationMode,
     resetSimulation,
     simSnipeActive,
-    realSnipeActive,
     schedulerRuntime,
     simPositions,
-    positions,
     simBalances,
-    apiConfigs,
   } = useFundingStore();
 
-  const runtimeRealActive = schedulerRuntime?.realActive ?? realSnipeActive;
   const runtimeSimActive = schedulerRuntime?.simActive ?? simSnipeActive;
-  const anySnipeActive = runtimeSimActive || runtimeRealActive;
+  const anySnipeActive = runtimeSimActive;
   const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
   const appBuildDateRaw = process.env.NEXT_PUBLIC_APP_BUILD_DATE;
   const appBuildDateCompact = appBuildDateRaw
@@ -72,11 +64,7 @@ export default function Header() {
       hour12: false,
     })
     : '-';
-  const schedulerRuntimeMismatch = !!schedulerRuntime
-    && (
-      schedulerRuntime.realActive !== realSnipeActive
-      || schedulerRuntime.simActive !== simSnipeActive
-    );
+  const schedulerRuntimeMismatch = !!schedulerRuntime && schedulerRuntime.simActive !== simSnipeActive;
 
   const handleRefresh = async () => {
     await Promise.all([refreshRates(), refreshPositions(), refreshBalances()]);
@@ -91,7 +79,7 @@ export default function Header() {
         zIndex: 50,
         background: 'rgba(10,14,23,0.95)',
         backdropFilter: 'blur(12px)',
-        borderBottom: `2px solid ${simulationMode ? 'rgba(167,139,250,0.4)' : 'rgba(239,68,68,0.6)'}`,
+        borderBottom: '2px solid rgba(167,139,250,0.4)',
         padding: '0 24px',
         height: 56,
         display: 'flex',
@@ -190,26 +178,16 @@ export default function Header() {
       {/* Spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* Exchange ON/OFF toggles (+ REAL mode: click unconfigured = open API-key popup) */}
+      {/* Exchange ON/OFF toggles */}
       <div className="header-exchanges" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         {OPERABLE_EXCHANGES.map((ex) => {
           const enabled = enabledExchanges.includes(ex);
           const color = EXCHANGE_COLORS[ex];
-          const hasApiKey = !!apiConfigs[ex];
-          // In REAL mode, if the exchange has no API key, clicking the pill opens the API-key
-          // popup pre-selected for that exchange instead of toggling ON/OFF. In SIM mode or
-          // when a key is already configured, keep the existing toggle behavior.
-          const clickOpensApiPanel = !simulationMode && !hasApiKey;
-          const handleClick = clickOpensApiPanel
-            ? () => openApiPanelFor(ex)
-            : () => toggleExchange(ex);
-          const titleText = clickOpensApiPanel
-            ? `${EXCHANGE_NAMES[ex]} API 키 미설정 — 클릭해서 입력`
-            : `${EXCHANGE_NAMES[ex]} ${enabled ? 'OFF' : 'ON'} (클릭하여 전환)${enabled && simulationMode ? `\n잔고: $${fmtNum(simBalances[ex] ?? 0, 0)}` : ''}`;
+          const titleText = `${EXCHANGE_NAMES[ex]} ${enabled ? 'OFF' : 'ON'} (클릭하여 전환)${enabled ? `\nSIM 잔고: $${fmtNum(simBalances[ex] ?? 0, 0)}` : ''}`;
           return (
             <button
               key={ex}
-              onClick={handleClick}
+              onClick={() => toggleExchange(ex)}
               title={titleText}
               style={{
                 display: 'flex',
@@ -217,8 +195,8 @@ export default function Header() {
                 gap: 4,
                 padding: '3px 8px',
                 borderRadius: 6,
-                background: clickOpensApiPanel ? `${color}12` : enabled ? `${color}18` : 'var(--bg-accent)',
-                border: `1px solid ${clickOpensApiPanel ? `${color}66` : enabled ? `${color}55` : 'var(--color-border)'}`,
+                background: enabled ? `${color}18` : 'var(--bg-accent)',
+                border: `1px solid ${enabled ? `${color}55` : 'var(--color-border)'}`,
                 cursor: 'pointer',
                 opacity: enabled ? 1 : 0.4,
                 transition: 'all 0.2s ease',
@@ -232,22 +210,6 @@ export default function Header() {
               <span style={{ fontSize: 10, fontWeight: 600, color: enabled ? color : 'var(--color-text-muted)' }}>
                 {EXCHANGE_NAMES[ex]}
               </span>
-              {clickOpensApiPanel && (
-                <span
-                  aria-label="API 키 미설정"
-                  style={{
-                    fontSize: 9,
-                    fontWeight: 800,
-                    marginLeft: 2,
-                    padding: '0 4px',
-                    borderRadius: 4,
-                    background: `${color}33`,
-                    color,
-                  }}
-                >
-                  + 키
-                </span>
-              )}
             </button>
           );
         })}
@@ -260,40 +222,20 @@ export default function Header() {
 
       {/* Mode + Status 그룹 */}
       <div className="header-mode-group" style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-        {/* SIM / REAL 세그먼트 */}
         <div style={{
           display: 'flex', alignItems: 'center',
-          borderRadius: 8, overflow: 'hidden',
-          border: `2px solid ${simulationMode ? '#a78bfa' : '#ef4444'}`,
-          background: 'rgba(0,0,0,0.3)',
+          gap: 4,
+          padding: '4px 10px',
+          borderRadius: 8,
+          border: '2px solid #a78bfa',
+          background: 'rgba(167,139,250,0.15)',
+          color: '#fff',
+          fontSize: 11,
+          fontWeight: 800,
           flexShrink: 0,
         }}>
-          <button
-            onClick={() => { if (!simulationMode) void toggleSimulationMode(); }}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '4px 10px', border: 'none', cursor: 'pointer',
-              background: simulationMode ? '#a78bfa' : 'transparent',
-              color: simulationMode ? '#fff' : 'var(--color-text-muted)',
-              fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap',
-            }}
-          >
-            <FlaskConical size={11} />
-            SIM
-          </button>
-          <button
-            onClick={() => { if (simulationMode) void toggleSimulationMode(); }}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '4px 10px', border: 'none', cursor: 'pointer',
-              background: !simulationMode ? '#ef4444' : 'transparent',
-              color: !simulationMode ? '#fff' : 'var(--color-text-muted)',
-              fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap',
-            }}
-          >
-            <Zap size={11} />
-            REAL
-          </button>
+          <FlaskConical size={11} />
+          SIM ONLY
         </div>
 
         {/* Snipe status — 컴팩트 (양쪽 모드 표시) */}
@@ -312,10 +254,6 @@ export default function Header() {
               if (runtimeSimActive) {
                 const simCount = simPositions.length;
                 parts.push(`SIM${simCount > 0 ? ` ${simCount}P` : ''}`);
-              }
-              if (runtimeRealActive) {
-                const realCount = positions.filter(p => p.positionType !== 'manual').length;
-                parts.push(`REAL${realCount > 0 ? ` ${realCount}P` : ''}`);
               }
               return `투자중 ${parts.join(' | ')}`;
             })() : '대기'}
@@ -354,25 +292,23 @@ export default function Header() {
               whiteSpace: 'nowrap',
             }}
           >
-            런타임 R:{runtimeRealActive ? 'ON' : 'OFF'} S:{runtimeSimActive ? 'ON' : 'OFF'}
+            런타임 SIM:{runtimeSimActive ? 'ON' : 'OFF'}
           </span>
         </div>
 
-        {simulationMode && (
-          <button
-            onClick={resetSimulation}
-            title={`시뮬레이션 초기화 ($${(strategyConfig.investmentUSDT * 2).toLocaleString()} 리셋)`}
-            style={{
-              padding: '4px 8px', borderRadius: 6, flexShrink: 0,
-              border: '1px solid rgba(167,139,250,0.3)',
-              background: 'transparent',
-              color: '#a78bfa', fontSize: 10, fontWeight: 700,
-              cursor: 'pointer', whiteSpace: 'nowrap',
-            }}
-          >
-            리셋
-          </button>
-        )}
+        <button
+          onClick={resetSimulation}
+          title={`시뮬레이션 초기화 ($${(strategyConfig.investmentUSDT * 2).toLocaleString()} 리셋)`}
+          style={{
+            padding: '4px 8px', borderRadius: 6, flexShrink: 0,
+            border: '1px solid rgba(167,139,250,0.3)',
+            background: 'transparent',
+            color: '#a78bfa', fontSize: 10, fontWeight: 700,
+            cursor: 'pointer', whiteSpace: 'nowrap',
+          }}
+        >
+          리셋
+        </button>
       </div>
 
       {/* Action buttons */}
@@ -385,15 +321,6 @@ export default function Header() {
           title="새로고침"
         >
           <RefreshCw size={14} style={{ animation: isLoadingRates ? 'spin 1s linear infinite' : 'none' }} />
-        </button>
-
-        <button
-          className="btn btn-ghost"
-          style={{ padding: '6px 10px' }}
-          onClick={() => setShowApiPanel(true)}
-          title="API 키 설정"
-        >
-          <Key size={14} />
         </button>
 
         <Link href="/settings">

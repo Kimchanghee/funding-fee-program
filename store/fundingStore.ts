@@ -18,7 +18,7 @@ import type {
   SnipeStateSnapshot,
 } from '@/lib/types';
 import { OPERABLE_EXCHANGES, SUPPORTED_EXCHANGES, isExchangeOperable, sanitizeEnabledExchanges } from '@/lib/types';
-import { saveApiConfigs, loadApiConfigs, saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, loadSimMode, saveRealPositionMeta, loadRealPositionMeta, saveSimHistoryResetAt, loadSimHistoryResetAt, runLocalStorageMigrations } from '@/lib/keyStore';
+import { saveEnabledExchanges, loadEnabledExchanges, saveStrategyConfig, loadStrategyConfig, saveLogs, loadLogs, saveFundingHistory, loadFundingHistory, saveSimState, loadSimState, clearSimState, saveSimMode, saveSimHistoryResetAt, loadSimHistoryResetAt, runLocalStorageMigrations } from '@/lib/keyStore';
 import {
   estimateProfit,
   findOpportunities,
@@ -90,21 +90,10 @@ function resolveRuntimeActiveWithGrace(
   return now - runtimeInactiveSince[mode]! >= RUNTIME_INACTIVE_CONFIRM_MS ? false : true;
 }
 
-/** 서버 스케줄러 정지 — 재시도 2회, 실패 시 경고 로그 */
+/** REAL scheduler has been removed; this is kept as a no-op for old UI paths. */
 async function stopServerScheduler(addLog?: (level: LogLevel, msg: string, exchange?: ExchangeId, detail?: string) => void): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const res = await fetch('/api/scheduler', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'stop' }),
-      });
-      if (res.ok) return true;
-    } catch { /* retry */ }
-    if (attempt < 2) await new Promise(r => setTimeout(r, 1_000));
-  }
-  addLog?.('error', '[스케줄러] 서버 스케줄러 정지 실패 (3회 재시도) — 수동 확인 필요');
-  return false;
+  void addLog;
+  return true;
 }
 let _lastBalanceWarnAt = 0;  // 텔레그램 잔고 경고 쿨다운 (30분)
 // 최소 스프레드는 사용자 설정값을 그대로 쓰고,
@@ -240,28 +229,9 @@ async function syncServerSchedulerConfig(
   enabledExchanges: ExchangeId[],
   addLog: (level: LogLevel, message: string, exchange?: ExchangeId, detail?: string) => void,
 ) {
-  try {
-    const response = await fetch('/api/scheduler', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'update',
-        config: buildSchedulerConfig(strategyConfig, enabledExchanges),
-      }),
-    });
-
-    const payload = await response.json().catch(() => null) as { success?: boolean; error?: string } | null;
-    if (!response.ok || !payload?.success) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-  } catch (error) {
-    addLog(
-      'error',
-      '[스케줄러] 설정 동기화 실패',
-      undefined,
-      (error as Error).message,
-    );
-  }
+  void strategyConfig;
+  void enabledExchanges;
+  void addLog;
 }
 
 export function buildServerSimSchedulerConfig(
@@ -536,11 +506,11 @@ function applySharedSnipeStateSnapshot(
   const includeMode = options?.includeMode ?? true;
   const partial: Partial<FundingState> = {};
   if (includeMode) {
-    partial.simulationMode = snapshot.simulationMode;
+    partial.simulationMode = true;
   }
   if (includeActives) {
     partial.simSnipeActive = snapshot.simSnipeActive;
-    partial.realSnipeActive = snapshot.realSnipeActive;
+    partial.realSnipeActive = false;
   }
   if (Object.keys(partial).length > 0) {
     setState(partial);
@@ -959,16 +929,6 @@ interface FundingState {
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
-function makeApiHeaders(config: ApiConfig): Record<string, string> {
-  const h: Record<string, string> = {
-    'x-api-key': config.apiKey,
-    'x-api-secret': config.secret,
-    'Content-Type': 'application/json',
-  };
-  if (config.passphrase) h['x-api-passphrase'] = config.passphrase;
-  return h;
-}
-
 let logCounter = 0;
 let ratesRefreshInFlight = false;
 let ratesRefreshStartedAt = 0;
@@ -1802,10 +1762,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }).catch(() => { /* silent */ });
       }
 
-      const saved = loadApiConfigs();
-      set({ apiConfigs: saved });
-      const connected = (Object.keys(saved) as ExchangeId[]).filter((exchange) => isExchangeOperable(exchange));
-      set({ connectedExchanges: connected });
+      set({ apiConfigs: {}, connectedExchanges: [], balances: {}, positions: [], realPositionMeta: {} });
 
       // 저장된 전략 설정 로드
       const savedStrategy = loadStrategyConfig();
@@ -1831,47 +1788,15 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         }
       }
 
-      // 저장된 모드 복원 (SIM/REAL)
-      const savedMode = loadSimMode();
-      if (savedMode !== null) {
-        set({ simulationMode: savedMode });
-      }
-
-      // 저장된 REAL 포지션 메타 복원
-      const savedRealMeta = loadRealPositionMeta();
-      if (savedRealMeta) {
-        set({ realPositionMeta: savedRealMeta as Record<string, RealPositionMeta> });
-      }
+      set({ simulationMode: true, realSnipeActive: false });
+      saveSimMode(true);
 
       // 서버에 저장된 자동투자 상태 복원 (PC↔모바일 동기화)
       fetchSharedSnipeStateSnapshot().then(async (sharedState) => {
         applySharedSnipeStateSnapshot(set, sharedState, { includeActives: false, includeMode: false });
-
-        // REAL: 서버 스케줄러가 실제로 돌고 있는지 확인 후에만 UI 상태를 ON으로
-        let realConfirmed = false;
-        {
-          try {
-            const schedulerRes = await fetch('/api/scheduler');
-            if (schedulerRes.ok) {
-              const schedulerData = await schedulerRes.json() as { active?: boolean };
-              realConfirmed = !!schedulerData.active;
-            }
-          } catch { /* 확인 불가 → OFF 유지 */ }
-          if (!realConfirmed && sharedState.realSnipeActive) {
-            // 서버 스케줄러가 안 돌고 있으면 snipe-state도 정정
-            void updateSharedSnipeStateSnapshot({ realSnipeActive: false }).catch(() => {});
-            get().addLog('warning', '[복원] REAL 자동투자 상태 OFF — 서버 스케줄러 미실행');
-          }
-        }
-
-        set({ realSnipeActive: realConfirmed });
-        if (realConfirmed) {
-          void syncServerSchedulerConfig(
-            getResolvedStrategyConfig(get().strategyConfig),
-            get().enabledExchanges,
-            get().addLog,
-          );
-          get().addLog('info', '[복원] 자동투자 상태 복원 — REAL');
+        set({ simulationMode: true, realSnipeActive: false });
+        if (sharedState.realSnipeActive || !sharedState.simulationMode) {
+          void updateSharedSnipeStateSnapshot({ realSnipeActive: false, simulationMode: true }).catch(() => {});
         }
       }).catch(() => { /* silent */ });
 
@@ -1982,40 +1907,14 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   // ── API config ────────────────────────────────
   setApiConfig(exchange, config) {
     const exchangeLabel = String(exchange).toUpperCase();
-    if (!isExchangeOperable(exchange)) {
-      get().addLog('warning', `${exchangeLabel} currently disabled`, exchange);
-      return;
-    }
-    const prev = get().apiConfigs;
-    const next = { ...prev, [exchange]: config };
-    set({ apiConfigs: next });
-    saveApiConfigs(next);
-    // 서버 측 암호화 저장소에도 저장
-    fetch('/api/keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ exchange, config }),
-    }).catch(() => {});
-    const connected = (Object.keys(next) as ExchangeId[]).filter((ex) => isExchangeOperable(ex));
-    set({ connectedExchanges: connected });
-    get().addLog('success', `${exchange.toUpperCase()} API 키 저장됨 (서버 암호화)`, exchange);
+    void config;
+    set({ apiConfigs: {}, connectedExchanges: [] });
+    get().addLog('warning', `${exchangeLabel} API 키 저장은 제거됨 — SIM 전용으로만 실행됩니다`, exchange);
   },
 
   removeApiConfig(exchange) {
-    const prev = get().apiConfigs;
-    const next = { ...prev };
-    delete next[exchange];
-    set({ apiConfigs: next });
-    saveApiConfigs(next);
-    // 서버 측에서도 삭제
-    fetch('/api/keys', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ exchange }),
-    }).catch(() => {});
-    const connected = (Object.keys(next) as ExchangeId[]).filter((ex) => isExchangeOperable(ex));
-    set({ connectedExchanges: connected });
-    get().addLog('warning', `${exchange.toUpperCase()} API 키 삭제됨`, exchange);
+    set({ apiConfigs: {}, connectedExchanges: [] });
+    get().addLog('warning', `${exchange.toUpperCase()} API 키 기능은 제거됨`, exchange);
   },
 
   setStrategyConfig(config) {
@@ -2413,54 +2312,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── Refresh positions (활성 거래소만) ─────────────
   async refreshPositions() {
-    const configs = get().apiConfigs;
-    const enabled = get().enabledExchanges;
-    const activeConfigs = (Object.entries(configs) as [ExchangeId, ApiConfig][])
-      .filter(([exchange]) => enabled.includes(exchange) && isExchangeOperable(exchange));
-    if (activeConfigs.length === 0) return;
-    set({ isLoadingPositions: true });
-
-    const allPositions: Position[] = [];
-
-    await Promise.allSettled(
-      activeConfigs.map(async ([exchange, config]) => {
-        const res = await fetch(`/api/exchanges/${exchange}/positions`, {
-          headers: makeApiHeaders(config),
-        });
-        const json = await res.json() as { success: boolean; data: Position[] };
-        if (json.success && json.data) allPositions.push(...json.data);
-      }),
-    );
-
-    const metaMap = get().realPositionMeta;
-
-    // 기존 포지션의 positionType / 메타 보존 (exchange+symbol+side 기준 매칭)
-    const prevPositions = get().positions;
-    for (const pos of allPositions) {
-      const meta = metaMap[makePositionKey(pos.exchange, pos.symbol, pos.side)];
-      if (meta) {
-        pos.positionType = meta.positionType;
-        pos.openedAt = meta.openedAt;
-        pos.pairId = meta.pairId;
-        pos.entryFee = meta.entryFee;
-        pos.entryOrderLiquidity = meta.entryOrderLiquidity;
-        pos.entryFilledNotional = meta.entryFilledNotional;
-      }
-
-      const prev = prevPositions.find(p =>
-        p.exchange === pos.exchange && p.symbol === pos.symbol && p.side === pos.side,
-      );
-      if (prev && prev.positionType !== 'manual') {
-        pos.positionType = prev.positionType;
-        pos.openedAt = prev.openedAt;
-        pos.pairId = prev.pairId;
-        pos.entryFee = prev.entryFee;
-        pos.entryOrderLiquidity = prev.entryOrderLiquidity;
-        pos.entryFilledNotional = prev.entryFilledNotional;
-      }
-    }
-
-    set({ positions: allPositions, isLoadingPositions: false, lastPositionsUpdate: Date.now() });
+    set({ positions: [], isLoadingPositions: false, lastPositionsUpdate: Date.now(), realPositionMeta: {} });
   },
 
   // refreshPositions 후 새로 생긴 포지션에만 positionType 세팅
@@ -2491,48 +2343,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── Refresh balances (활성 거래소만) ──────────────
   async refreshBalances() {
-    const configs = get().apiConfigs;
-    const enabled = get().enabledExchanges;
-    const activeConfigs = (Object.entries(configs) as [ExchangeId, ApiConfig][])
-      .filter(([exchange]) => enabled.includes(exchange) && isExchangeOperable(exchange));
-    if (activeConfigs.length === 0) return;
-
-    const previous = get().balances;
-    const next: Partial<Record<ExchangeId, Balance>> = { ...previous };
-
-    await Promise.allSettled(
-      activeConfigs.map(async ([exchange, config]) => {
-        try {
-          const res = await fetch(`/api/exchanges/${exchange}/balance`, {
-            headers: makeApiHeaders(config),
-          });
-          const json = await res.json().catch(() => null) as {
-            success?: boolean;
-            data?: Balance;
-            error?: string;
-          } | null;
-          if (!res.ok || !json?.success || !json.data || json.data.status !== 'connected') {
-            throw new Error(json?.error || `HTTP ${res.status}`);
-          }
-          next[exchange] = json.data;
-        } catch {
-          // Keep last good snapshot to avoid transient API errors being interpreted as $0 balance.
-          if (!next[exchange]) {
-            next[exchange] = {
-              exchange,
-              totalUSDT: 0,
-              availableUSDT: 0,
-              usedUSDT: 0,
-              unrealizedPnl: 0,
-              status: 'error',
-              updatedAt: Date.now(),
-            };
-          }
-        }
-      }),
-    );
-
-    set({ balances: next });
+    set({ balances: {} });
   },
 
   async refreshSchedulerRuntime() {
@@ -2540,7 +2351,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       const snapshot = await fetchSchedulerRuntimeActives();
       const state = get();
       const now = Date.now();
-      const realActive = resolveRuntimeActiveWithGrace('real', state.realSnipeActive, snapshot.realActive, now);
+      void now;
+      const realActive = false;
       const simActive = resolveRuntimeActiveWithGrace('sim', state.simSnipeActive, snapshot.simActive, now);
       const appliedSnapshot: SchedulerRuntimeActiveSnapshot = {
         ...snapshot,
@@ -2564,7 +2376,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       // already-running scheduler to OFF in the UI.
       const state = get();
       const fallback: SchedulerRuntimeActiveSnapshot = {
-        realActive: state.schedulerRuntime?.realActive ?? state.realSnipeActive,
+        realActive: false,
         simActive: state.schedulerRuntime?.simActive ?? state.simSnipeActive,
         fetchedAt: Date.now(),
       };
@@ -2777,7 +2589,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       }
 
       get().refreshRates({ silent: true });
-      if (get().simSnipeActive || get().realSnipeActive) {
+      if (get().simSnipeActive) {
         get().refreshRealSpreads();
       }
       void fetchSharedSnipeStateSnapshot()
@@ -2793,10 +2605,7 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
     // 1초 간격 재검증 + 스케줄링 (로컬 데이터만 사용, API 호출 없음)
     const snipeCheckInterval = setInterval(() => {
-      if (get().realSnipeActive) {
-        get().revalidateScheduledSnipes();
-        get().scheduleAllSnipes();
-      }
+      set({ realSnipeActive: false });
     }, SNIPE_CHECK_INTERVAL_MS);
 
     // 3초 간격 SIM 서버 상태 동기화 (API 호출 — 매초는 과도)
@@ -2839,12 +2648,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     }, SIM_SYNC_INTERVAL_MS);
 
     const positionsInterval = setInterval(() => {
-      const shouldPollRealAccountData = !get().simulationMode || get().realSnipeActive;
-      if (shouldPollRealAccountData) {
-        get().refreshPositions();
-        get().refreshBalances();
-        get().fetchFundingHistory();
-      }
       if (get().simulationMode || get().simSnipeActive) {
         void fetchServerSimStateSnapshot()
           .then((snapshot) => applyServerSimStateSnapshot(set, snapshot, { getState: get }))
@@ -2877,8 +2680,9 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── Execute strategy (hedge only) ─────────────
   async executeStrategy(opportunity, simModeOverride?, investmentOverrideUSDT?) {
-    const { apiConfigs, strategyConfig, simBalances, balances } = get();
-    const simulationMode = simModeOverride ?? get().simulationMode;
+    const { strategyConfig, simBalances } = get();
+    void simModeOverride;
+    const simulationMode = true;
     const plannedInvestmentUSDT = investmentOverrideUSDT ?? strategyConfig.investmentUSDT;
 
     // Guard: execution only needs a positive live spread; profitability gates handle costs.
@@ -2901,17 +2705,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
     const notionalEst = (() => {
       if (investmentOverrideUSDT != null) return plannedInvestmentUSDT * strategyConfig.leverage;
       if (!strategyConfig.compoundInvesting) return plannedInvestmentUSDT * strategyConfig.leverage;
-      if (simulationMode) {
-        return Math.min(
-          (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
-          (simBalances[opportunity.longExchange] ?? 0) * 0.9,
-        ) * strategyConfig.leverage;
-      } else {
-        return Math.min(
-          (balances[opportunity.shortExchange]?.availableUSDT ?? 0) * 0.9,
-          (balances[opportunity.longExchange]?.availableUSDT ?? 0) * 0.9,
-        ) * strategyConfig.leverage;
-      }
+      return Math.min(
+        (simBalances[opportunity.shortExchange] ?? 0) * 0.9,
+        (simBalances[opportunity.longExchange] ?? 0) * 0.9,
+      ) * strategyConfig.leverage;
     })();
     // 실측 스프레드 기반 수익성 검증 (effectiveSpread는 표시용 — 안전마진 별도 적용)
     const rs = getRealSpreadForOpportunity(get().realSpreads, opportunity);
@@ -3239,349 +3036,20 @@ export const useFundingStore = create<FundingState>((set, get) => ({
       return { success: true };
     }
 
-    // ── Real trading branch ────────────────────
-    const shortConfig = apiConfigs[opportunity.shortExchange];
-    const longConfig = apiConfigs[opportunity.longExchange];
-
-    if (!shortConfig) {
-      get().addLog('error', `${opportunity.shortExchange.toUpperCase()} API 키 없음`, opportunity.shortExchange);
-      return { success: false, error: `${opportunity.shortExchange.toUpperCase()} API 키 없음` };
-    }
-    if (!longConfig) {
-      get().addLog('error', `${opportunity.longExchange.toUpperCase()} API 키 없음`, opportunity.longExchange);
-      return { success: false, error: `${opportunity.longExchange.toUpperCase()} API 키 없음` };
-    }
-
-    let realInvestment = plannedInvestmentUSDT;
-    if (strategyConfig.compoundInvesting && investmentOverrideUSDT == null) {
-      const shortBal = balances[opportunity.shortExchange]?.availableUSDT ?? 0;
-      const longBal = balances[opportunity.longExchange]?.availableUSDT ?? 0;
-      realInvestment = Math.min(shortBal, longBal) * 0.9;
-      if (realInvestment < plannedInvestmentUSDT) {
-        // 잔고 부족 시 진입 스킵 (폴백 없음 — 잔고 재분배로 해결해야 함)
-        get().addLog('warning', `[복리] 실잔고 부족 — 진입 스킵`,
-          undefined,
-          `숏(${opportunity.shortExchange.toUpperCase()}): $${fmtNum(shortBal, 0)} | 롱(${opportunity.longExchange.toUpperCase()}): $${fmtNum(longBal, 0)} | 필요: $${fmtNum(plannedInvestmentUSDT, 0)}`);
-        return { success: false, error: '실잔고 부족 — 거래소 간 잔고 재분배 필요' };
-      }
-    }
-
-    const previewProfit = estimateProfit(opportunity, realInvestment, strategyConfig.leverage, {
-      feeOverrides: strategyConfig.feeOverrides,
-      paybackOverrides: strategyConfig.paybackOverrides,
-      useDriftBuffer: strategyConfig.confirmedSnipeConfig?.useDriftBuffer,
-    });
-    get().addLog('info',
-      `전략 실행 시작: ${opportunity.baseAsset} | 숏:${opportunity.shortExchange.toUpperCase()} 롱:${opportunity.longExchange.toUpperCase()}`,
-      undefined,
-      `투자금: $${fmtNum(realInvestment, 0)} | 예상 8h순수익: $${fmtNum(previewProfit.netPerFunding)} (수수료: -$${fmtNum(previewProfit.totalFees)})`,
-    );
-
-    const pairId = `pair-${Date.now()}-${opportunity.baseAsset}`;
-    set({ strategyRunning: true });
-
-    try {
-      // ── 헷징 실거래: 숏+롱 동시 진입 ──
-      const res = await fetch('/api/strategy/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          opportunity,
-          investmentUSDT: realInvestment,
-          leverage: strategyConfig.leverage,
-          pairId,
-          feeOverrides: strategyConfig.feeOverrides,
-          paybackOverrides: strategyConfig.paybackOverrides,
-          maxSlippagePercent: strategyConfig.maxSlippagePercent,
-          confirmedSnipeConfig: strategyConfig.confirmedSnipeConfig,
-          // apiConfigs는 서버 측 암호화 저장소에서 로드 (클라이언트 전송 X)
-        }),
-      });
-
-      const json = await res.json() as ExecuteStrategyResult;
-      const result: ExecuteStrategyResult = { ...json, pairId: json.pairId ?? pairId };
-
-      // Guard 차단 응답 처리 (슬리피지 초과, 수익성 미달 등)
-      if (!result.success && !result.short && !result.long) {
-        const { reason, error: errorMsg } = result;
-        const detailParts: string[] = [];
-        if (
-          typeof result.shortSlippage === 'number'
-          || typeof result.longSlippage === 'number'
-          || typeof result.maxSlippage === 'number'
-        ) {
-          detailParts.push(
-            `shortSlippage:${result.shortSlippage?.toFixed(4) ?? 'n/a'} ` +
-            `longSlippage:${result.longSlippage?.toFixed(4) ?? 'n/a'} ` +
-            `maxSlippage:${result.maxSlippage?.toFixed(4) ?? 'n/a'}`,
-          );
-        }
-        if (
-          typeof result.realNetSpread === 'number'
-          || typeof result.entryGapPct === 'number'
-          || typeof result.hedgeFeePct === 'number'
-        ) {
-          detailParts.push(
-            `realNetSpread:${result.realNetSpread?.toFixed(4) ?? 'n/a'} ` +
-            `entryGapPct:${result.entryGapPct?.toFixed(4) ?? 'n/a'} ` +
-            `hedgeFeePct:${result.hedgeFeePct?.toFixed(4) ?? 'n/a'}`,
-          );
-        }
-        get().addLog('warning',
-          `${opportunity.baseAsset} 진입 차단: ${errorMsg || '사전 검증 실패'}`,
-          undefined,
-          `reason: ${reason || 'unknown'}${detailParts.length > 0 ? ` | ${detailParts.join(' | ')}` : ''}`,
-        );
-        queueTrade({
-          timestamp: Date.now(), type: 'guard_block', simulation: false,
-          baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
-          spread: opportunity.spread, spreadPercent: opportunity.spreadPercent,
-          reason: errorMsg || reason || 'pre_execution_guard',
-          detail: detailParts.join(' | ') || undefined,
-        });
-        set({ strategyRunning: false });
-        return result;
-      }
-
-      if (result.short?.success) {
-        get().addLog('success',
-          `${opportunity.shortExchange.toUpperCase()} 숏 포지션 진입 성공`,
-          opportunity.shortExchange,
-          `${opportunity.baseAsset} Short @${fmtNum(result.short.data?.price ?? opportunity.shortMarkPrice, 4)} | fee -$${fmtNum(result.short.data?.estimatedFee ?? 0, 4)} | ${result.short.data?.liquidity ?? 'unknown'}`,
-        );
-      } else {
-        get().addLog('error',
-          `${opportunity.shortExchange.toUpperCase()} 숏 포지션 진입 실패`,
-          opportunity.shortExchange,
-          result.short?.error,
-        );
-      }
-
-      if (result.long?.success) {
-        get().addLog('success',
-          `${opportunity.longExchange.toUpperCase()} 롱 포지션 진입 성공`,
-          opportunity.longExchange,
-          `${opportunity.baseAsset} Long @${fmtNum(result.long.data?.price ?? opportunity.longMarkPrice, 4)} | fee -$${fmtNum(result.long.data?.estimatedFee ?? 0, 4)} | ${result.long.data?.liquidity ?? 'unknown'}`,
-        );
-      } else {
-        get().addLog('error',
-          `${opportunity.longExchange.toUpperCase()} 롱 포지션 진입 실패`,
-          opportunity.longExchange,
-          result.long?.error,
-        );
-      }
-
-      const shortData = result.short?.data;
-      const longData = result.long?.data;
-      const shortRateForDecision = typeof result.shortRateForDecision === 'number'
-        ? result.shortRateForDecision
-        : opportunity.shortRate;
-      const longRateForDecision = typeof result.longRateForDecision === 'number'
-        ? result.longRateForDecision
-        : opportunity.longRate;
-
-      if (result.success && shortData && longData) {
-        const openedAt = Date.now();
-        set(s => ({
-          realPositionMeta: {
-            ...s.realPositionMeta,
-            [makePositionKey(opportunity.shortExchange, opportunity.shortSymbol, 'short')]: {
-              pairId,
-              positionType: 'hedge_short',
-              openedAt,
-              entryFee: shortData.estimatedFee,
-              entryOrderLiquidity: shortData.liquidity,
-              entryFilledNotional: shortData.filledNotional,
-            },
-            [makePositionKey(opportunity.longExchange, opportunity.longSymbol, 'long')]: {
-              pairId,
-              positionType: 'hedge_long',
-              openedAt,
-              entryFee: longData.estimatedFee,
-              entryOrderLiquidity: longData.liquidity,
-              entryFilledNotional: longData.filledNotional,
-            },
-          },
-        }));
-        saveRealPositionMeta(get().realPositionMeta);
-      }
-
-      setTimeout(() => get().refreshAndStampPositions(
-        opportunity.baseAsset, [opportunity.shortExchange, opportunity.longExchange],
-      ), 2000);
-      const expectedPerFunding = shortData && longData
-        ? shortData.filledNotional * shortRateForDecision - longData.filledNotional * longRateForDecision
-        : previewProfit.perFunding;
-      const expectedTotalRoundTripFees = shortData && longData
-        ? result.expectedTotalRoundTripFees
-          ?? shortData.estimatedFee
-          + longData.estimatedFee
-          + shortData.filledNotional * getConfiguredExchangeFee(strategyConfig, opportunity.shortExchange, 'taker')
-          + longData.filledNotional * getConfiguredExchangeFee(strategyConfig, opportunity.longExchange, 'taker')
-        : previewProfit.totalFees;
-      const expectedNetProfit = result.conservativeEV?.expectedNetUSD ?? expectedPerFunding - expectedTotalRoundTripFees;
-      const executedNotional = shortData && longData
-        ? Math.min(shortData.filledNotional, longData.filledNotional)
-        : result.short?.data?.filledNotional ?? result.long?.data?.filledNotional ?? (realInvestment * strategyConfig.leverage);
-
-      queueTrade({
-        timestamp: Date.now(), type: 'entry', simulation: false,
-        baseAsset: opportunity.baseAsset, shortExchange: opportunity.shortExchange, longExchange: opportunity.longExchange,
-        spread: opportunity.spread, spreadPercent: opportunity.spreadPercent,
-        margin: realInvestment, leverage: strategyConfig.leverage,
-        notional: executedNotional,
-        shortRate: shortRateForDecision,
-        longRate: longRateForDecision,
-        entryFee: (result.short?.data?.estimatedFee ?? 0) + (result.long?.data?.estimatedFee ?? 0),
-        netProfit: expectedNetProfit,
-        perFunding: expectedPerFunding,
-        totalRoundTripFees: expectedTotalRoundTripFees,
-        shortPrice: result.short?.data?.price,
-        longPrice: result.long?.data?.price,
-        shortLiquidity: result.short?.data?.liquidity,
-        longLiquidity: result.long?.data?.liquidity,
-        analysis: result.conservativeEV
-          ? {
-            conservativeEvUSD: result.conservativeEV.expectedNetUSD,
-            expectedPerFundingBeforeReserves: expectedPerFunding,
-            totalRoundTripFees: expectedTotalRoundTripFees,
-            entryImpactUSD: result.conservativeEV.entryImpactUSD,
-            exitImpactUSD: result.conservativeEV.exitImpactUSD,
-            basisConvergenceReserveUSD: result.conservativeEV.basisConvergenceReserveUSD,
-            volumeLiquidityReserveUSD: result.conservativeEV.volumeLiquidityReserveUSD,
-            evRatio: result.conservativeEV.evRatio,
-          }
-          : undefined,
-        detail: `conservativeEV:${expectedNetProfit.toFixed(8)} expectedPerFunding:${expectedPerFunding.toFixed(8)} totalRoundTripFees:${expectedTotalRoundTripFees.toFixed(8)} short:${result.short?.success ? 'OK' : result.short?.error} long:${result.long?.success ? 'OK' : result.long?.error}${result.hedgeTrim ? ` | trim:${result.hedgeTrim}` : ''}${result.rollback ? ` | rollback:${result.rollback}` : ''}`,
-        success: result.success,
-        pairId,
-      });
-      return result;
-    } catch (err) {
-      get().addLog('error', '전략 실행 중 오류 발생', undefined, (err as Error).message);
-      queueTrade({
-        timestamp: Date.now(), type: 'error', simulation: false,
-        baseAsset: opportunity.baseAsset, reason: (err as Error).message,
-      });
-      return { success: false, error: (err as Error).message };
-    } finally {
-      set({ strategyRunning: false });
-    }
+    get().addLog('error', 'REAL strategy execution has been removed; use SIM only');
+    return { success: false, error: 'REAL strategy execution removed' };
   },
 
   // ── Close position ────────────────────────────
   async closePosition(position) {
-    const { apiConfigs } = get();
-    const config = apiConfigs[position.exchange];
-    if (!config) {
-      get().addLog('error', `${position.exchange.toUpperCase()} API 키 없음`, position.exchange);
-      throw new Error(`${position.exchange.toUpperCase()} API 키 없음`);
-    }
-
-    get().addLog('info', `포지션 청산 시도: ${position.displaySymbol} ${position.side}`, position.exchange);
-
-    try {
-      const res = await fetch(`/api/exchanges/${position.exchange}/close`, {
-        method: 'POST',
-        headers: makeApiHeaders(config),
-        body: JSON.stringify({
-          symbol: position.symbol,
-          side: position.side,
-          amount: position.size,
-          feeOverrides: get().strategyConfig.feeOverrides,
-          paybackOverrides: get().strategyConfig.paybackOverrides,
-        }),
-      });
-      const json = await res.json() as { success: boolean; data?: StrategyOrderExecution; error?: string };
-
-      if (json.success && json.data) {
-        const entryNotional = position.entryFilledNotional ?? (position.entryPrice * position.size);
-        const entryFee = position.entryFee ?? (entryNotional * TAKER_FEE_FALLBACK);
-        const exitFee = json.data.estimatedFee;
-        const pricePnl = position.side === 'short'
-          ? (position.entryPrice - json.data.price) * json.data.amount
-          : (json.data.price - position.entryPrice) * json.data.amount;
-        const pnl = pricePnl - entryFee - exitFee;
-        const pairId = position.pairId;
-        const closeResult: ClosePositionResult = {
-          ...json.data,
-          exchange: position.exchange,
-          baseAsset: position.baseAsset,
-          symbol: position.symbol,
-          side: position.side,
-          pairId,
-          entryFee,
-          exitFee,
-          pricePnl,
-          pnl,
-          fundingAmount: 0,
-        };
-
-        get().addLog('success',
-          `${position.displaySymbol} ${position.side.toUpperCase()} 청산 완료`,
-          position.exchange,
-          `exit @${fmtNum(json.data.price, 4)} | pricePnL ${pricePnl >= 0 ? '+' : ''}$${fmtNum(pricePnl, 4)} | fees -$${fmtNum(entryFee + exitFee, 4)}`,
-        );
-        set(s => {
-          const nextMeta = { ...s.realPositionMeta };
-          delete nextMeta[makePositionKey(position.exchange, position.symbol, position.side)];
-          return { realPositionMeta: nextMeta };
-        });
-        saveRealPositionMeta(get().realPositionMeta);
-        queueTrade({
-          timestamp: Date.now(),
-          type: 'exit',
-          simulation: false,
-          baseAsset: position.baseAsset,
-          exchange: position.exchange,
-          side: position.side,
-          symbol: position.symbol,
-          pairId: pairId ?? `exit-${Date.now()}-${position.baseAsset}`,
-          entryFee,
-          exitFee,
-          pricePnl,
-          pnl,
-          fundingAmount: 0,
-          exitPrice: json.data.price,
-          liquidity: json.data.liquidity,
-          detail: `entry:${fmtNum(position.entryPrice, 4)} exit:${fmtNum(json.data.price, 4)} amount:${fmtNum(json.data.amount, 6)} liquidity:${json.data.liquidity}`,
-        });
-        setTimeout(() => get().refreshPositions(), 2000);
-        return closeResult;
-      } else {
-        get().addLog('error', `청산 실패: ${json.error}`, position.exchange);
-        throw new Error(`청산 실패: ${json.error}`);
-      }
-    } catch (err) {
-      get().addLog('error', '청산 중 오류', position.exchange, (err as Error).message);
-      throw err;
-    }
+    get().addLog('error', 'REAL 포지션 청산 기능은 제거됨 — SIM 포지션만 사용하세요', position.exchange);
+    throw new Error('REAL close removed; use closeSimPosition');
   },
 
   // ── Test connection ───────────────────────────
   async testConnection(exchange) {
-    const config = get().apiConfigs[exchange];
-    if (!config) return false;
-
-    get().addLog('info', `${exchange.toUpperCase()} 연결 테스트 중...`, exchange);
-
-    try {
-      const res = await fetch(`/api/exchanges/${exchange}/test`, {
-        method: 'POST',
-        headers: makeApiHeaders(config),
-      });
-      const json = await res.json() as { success: boolean; error?: string };
-
-      if (json.success) {
-        get().addLog('success', `${exchange.toUpperCase()} 연결 성공`, exchange);
-      } else {
-        get().addLog('error', `${exchange.toUpperCase()} 연결 실패`, exchange, json.error);
-      }
-      return json.success;
-    } catch (err) {
-      get().addLog('error', `${exchange.toUpperCase()} 연결 오류`, exchange, (err as Error).message);
-      return false;
-    }
+    get().addLog('warning', `${exchange.toUpperCase()} API 연결 테스트는 제거됨 — SIM 전용입니다`, exchange);
+    return false;
   },
 
   // ── Logs ──────────────────────────────────────
@@ -3602,13 +3070,10 @@ export const useFundingStore = create<FundingState>((set, get) => ({
 
   // ── Simulation ────────────────────────────────
   async toggleSimulationMode() {
-    const current = get().simulationMode;
-    const next = !current;
-    // 모드 전환 시 스나이프를 취소하지 않음 — 각 모드가 독립적으로 동시 실행
-    set({ simulationMode: next });
-    // 모드 상태 영속화
-    saveSimMode(next);
-    if (next && !fundingStateHasSimSessionData(get())) {
+    const next = true;
+    set({ simulationMode: true, realSnipeActive: false });
+    saveSimMode(true);
+    if (!fundingStateHasSimSessionData(get())) {
       // Keep SIM balances aligned with config on SIM mode entry when no open positions.
       void fetch('/api/sim-state', {
         method: 'POST',
@@ -3628,19 +3093,17 @@ export const useFundingStore = create<FundingState>((set, get) => ({
         .catch(() => {});
     }
     try {
-      const sharedState = await updateSharedSnipeStateSnapshot({ simulationMode: next });
+      const sharedState = await updateSharedSnipeStateSnapshot({ simulationMode: true, realSnipeActive: false });
       applySharedSnipeStateSnapshot(set, sharedState, { includeActives: false });
       saveSimMode(sharedState.simulationMode);
       get().addLog(
         'info',
-        sharedState.simulationMode
-          ? `[SIM] shared mode ON ($${get().strategyConfig.investmentUSDT * 2} virtual balance per exchange)`
-          : '[REAL] shared mode ON',
+        `[SIM] shared mode ON ($${get().strategyConfig.investmentUSDT * 2} virtual balance per exchange)`,
       );
     } catch (err) {
-      set({ simulationMode: current });
-      saveSimMode(current);
-      get().addLog('error', '[shared-state] failed to sync SIM/REAL mode', undefined, (err as Error).message);
+      set({ simulationMode: true, realSnipeActive: false });
+      saveSimMode(true);
+      get().addLog('error', '[shared-state] failed to sync SIM mode', undefined, (err as Error).message);
     }
   },
 
@@ -4122,8 +3585,8 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   // ── UI ────────────────────────────────────────
-  setShowApiPanel: (v) => set({ showApiPanel: v, ...(v ? {} : { apiPanelInitialTab: null }) }),
-  openApiPanelFor: (exchange) => set({ showApiPanel: true, apiPanelInitialTab: exchange }),
+  setShowApiPanel: () => set({ showApiPanel: false, apiPanelInitialTab: null }),
+  openApiPanelFor: () => set({ showApiPanel: false, apiPanelInitialTab: null }),
   setShowStrategyPanel: (v) => set({ showStrategyPanel: v }),
   setRateFilter: (v) => set({ rateFilter: v }),
   setExchangeFilter: (v) => set({ exchangeFilter: v }),
@@ -5068,67 +4531,6 @@ export const useFundingStore = create<FundingState>((set, get) => ({
   },
 
   async fetchFundingHistory() {
-    // 시뮬레이션 모드에서는 실거래 API 조회하지 않음 (tickSimFunding에서 자체 기록)
-    if (get().simulationMode) return;
-    set({ isLoadingHistory: true });
-    const { apiConfigs, enabledExchanges, fundingHistory: previousHistory } = get();
-    const targetExchanges = Array.from(new Set<ExchangeId>([
-      ...enabledExchanges,
-      ...(Object.keys(apiConfigs) as ExchangeId[]),
-    ].filter((exchange) => isExchangeOperable(exchange))));
-
-    const apiHistory: FundingPayment[] = [];
-    const failures: string[] = [];
-    let apiSuccessCount = 0;
-
-    const fallbackHistory = await loadFundingHistoryFromTradeLog(false).catch((err) => {
-      get().addLog('warning', '[거래내역] 거래 로그 fallback 로드 실패', undefined, (err as Error).message);
-      return [] as FundingPayment[];
-    });
-
-    await Promise.allSettled(
-      targetExchanges.map(async (exchange) => {
-        const config = apiConfigs[exchange];
-        const res = await fetch(
-          `/api/exchanges/${exchange}/funding-history?limit=50`,
-          config ? { headers: makeApiHeaders(config) } : undefined,
-        );
-        const json = await res.json().catch(() => ({})) as { success?: boolean; data?: FundingPayment[]; error?: string };
-
-        if (json.success && json.data) {
-          apiHistory.push(...json.data);
-          apiSuccessCount++;
-          return;
-        }
-
-        if (res.status === 401 && !config) return;
-        failures.push(`${exchange}:${json.error || `HTTP ${res.status}`}`);
-      }),
-    );
-
-    const mergedHistory = mergeFundingHistory(apiHistory, fallbackHistory);
-
-    if (failures.length > 0) {
-      get().addLog('warning', '[거래내역] 일부 거래소 조회 실패', undefined, failures.join(' | '));
-    }
-
-    if (apiSuccessCount === 0 && fallbackHistory.length > 0) {
-      get().addLog('info', `[거래내역] 거래 로그 fallback으로 ${fallbackHistory.length}건 복원`);
-    }
-
-    if (mergedHistory.length > 0) {
-      saveFundingHistory(mergedHistory);
-      set({ fundingHistory: mergedHistory, isLoadingHistory: false });
-      return;
-    }
-
-    if (previousHistory.length > 0 && failures.length > 0) {
-      set({ isLoadingHistory: false });
-      get().addLog('warning', '[거래내역] 실패로 기존 이력을 유지');
-      return;
-    }
-
-    saveFundingHistory([]);
-    set({ fundingHistory: [], isLoadingHistory: false });
+    set({ isLoadingHistory: false });
   },
 }));

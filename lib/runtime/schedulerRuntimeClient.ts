@@ -16,13 +16,10 @@ export async function fetchSchedulerRuntimeActiveSnapshot(): Promise<SchedulerRu
     }
   };
 
-  const [realActive, simActive] = await Promise.all([
-    fetchActive('/api/scheduler'),
-    fetchActive('/api/sim-scheduler'),
-  ]);
+  const simActive = await fetchActive('/api/sim-scheduler');
 
   return {
-    realActive,
+    realActive: false,
     simActive,
     fetchedAt: Date.now(),
   };

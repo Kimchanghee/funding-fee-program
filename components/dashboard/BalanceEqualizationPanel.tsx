@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowRightLeft, MoveRight, Scale, Wallet } from 'lucide-react';
+import { ArrowRightLeft, MoveRight, Scale } from 'lucide-react';
 import { useMemo } from 'react';
 import { buildBalanceEqualizationPlan } from '@/lib/balanceEqualization';
 import { fmtNum } from '@/lib/format';
@@ -77,7 +77,7 @@ function ModeBalancePlanCard({
   accentColor,
   plan,
 }: {
-  label: 'SIM' | 'REAL';
+  label: 'SIM';
   active: boolean;
   accentColor: string;
   plan: ReturnType<typeof buildBalanceEqualizationPlan>;
@@ -119,7 +119,7 @@ function ModeBalancePlanCard({
               border: `1px solid ${accentColor}44`,
             }}
           >
-            {label === 'SIM' ? <Scale size={14} color={accentColor} /> : <Wallet size={14} color={accentColor} />}
+            <Scale size={14} color={accentColor} />
           </div>
           <div>
             <div style={{ fontSize: 13, fontWeight: 800, color: active ? accentColor : 'var(--color-text)' }}>
@@ -237,23 +237,11 @@ function ModeBalancePlanCard({
 }
 
 export default function BalanceEqualizationPanel() {
-  const { enabledExchanges, simulationMode, simBalances, balances } = useFundingStore();
-
-  const realBalanceMap = useMemo(() => {
-    const next = {} as Partial<Record<ExchangeId, number>>;
-    for (const exchange of enabledExchanges) {
-      next[exchange] = balances[exchange]?.availableUSDT ?? 0;
-    }
-    return next;
-  }, [balances, enabledExchanges]);
+  const { enabledExchanges, simBalances } = useFundingStore();
 
   const simPlan = useMemo(
     () => buildBalanceEqualizationPlan(enabledExchanges, simBalances),
     [enabledExchanges, simBalances],
-  );
-  const realPlan = useMemo(
-    () => buildBalanceEqualizationPlan(enabledExchanges, realBalanceMap),
-    [enabledExchanges, realBalanceMap],
   );
 
   return (
@@ -272,7 +260,7 @@ export default function BalanceEqualizationPanel() {
             Exchange Balance Flow
           </div>
           <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>
-            실제 송금이 아니라 평균 잔고 기준의 계획 배분과 우선순위 요약입니다.
+            SIM 잔고 기준의 계획 배분과 우선순위 요약입니다.
           </div>
         </div>
         <div
@@ -281,27 +269,21 @@ export default function BalanceEqualizationPanel() {
             borderRadius: 999,
             fontSize: 10,
             fontWeight: 800,
-            color: simulationMode ? '#a78bfa' : '#ef4444',
-            border: `1px solid ${simulationMode ? 'rgba(167,139,250,0.35)' : 'rgba(239,68,68,0.35)'}`,
-            background: simulationMode ? 'rgba(167,139,250,0.12)' : 'rgba(239,68,68,0.12)',
+            color: '#a78bfa',
+            border: '1px solid rgba(167,139,250,0.35)',
+            background: 'rgba(167,139,250,0.12)',
           }}
         >
-          viewing {simulationMode ? 'SIM' : 'REAL'}
+          SIM ONLY
         </div>
       </div>
 
       <div className="balance-equalization-cards" style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
         <ModeBalancePlanCard
           label="SIM"
-          active={simulationMode}
+          active
           accentColor="#a78bfa"
           plan={simPlan}
-        />
-        <ModeBalancePlanCard
-          label="REAL"
-          active={!simulationMode}
-          accentColor="#ef4444"
-          plan={realPlan}
         />
       </div>
     </section>

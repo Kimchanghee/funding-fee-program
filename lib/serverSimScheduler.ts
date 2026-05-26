@@ -22,7 +22,6 @@ import {
   type TradeEvent,
 } from './fileLogger';
 import { RouteFailureMemory, makeRouteFailureKey } from './routeFailureMemory';
-import { loadAllServerApiConfigs } from './serverKeyStore';
 import { sendTelegramMessage } from './telegramServer';
 import { buildTradePairsFromEvents, formatTradePairTelegramMessage } from './tradeEvents';
 import {
@@ -2881,8 +2880,7 @@ class ServerSimScheduler {
     const now = Date.now();
     if (now - this.lastFeeCacheRefresh > ServerSimScheduler.FEE_CACHE_REFRESH_INTERVAL_MS) {
       this.lastFeeCacheRefresh = now;
-      const apiConfigs = loadAllServerApiConfigs();
-      refreshAllFeeCaches(apiConfigs).catch(() => {});
+      refreshAllFeeCaches({}).catch(() => {});
     }
 
     const fullRefresh = this.shouldRunFullFundingRefresh(now);

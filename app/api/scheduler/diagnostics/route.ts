@@ -5,7 +5,6 @@ import {
   type TradeHistoryScope,
   type TradeEvent,
 } from '@/lib/fileLogger';
-import { getServerScheduler } from '@/lib/serverScheduler';
 import { getServerSimScheduler } from '@/lib/serverSimScheduler';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
@@ -17,7 +16,7 @@ interface CountItem {
   count: number;
 }
 
-type DiagnosticsMode = 'all' | 'real' | 'sim';
+type DiagnosticsMode = 'sim';
 
 function parseHours(value: string | null): number {
   if (!value) return 24;
@@ -27,8 +26,8 @@ function parseHours(value: string | null): number {
 }
 
 function parseMode(value: string | null): DiagnosticsMode {
-  if (value === 'real' || value === 'sim' || value === 'all') return value;
-  return 'all';
+  void value;
+  return 'sim';
 }
 
 function countBy(items: string[]): CountItem[] {
@@ -126,21 +125,14 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const hours = parseHours(url.searchParams.get('hours'));
   const mode = parseMode(url.searchParams.get('mode'));
-  const scope: TradeHistoryScope = mode;
+  const scope: TradeHistoryScope = 'sim';
   const now = Date.now();
   const from = now - hours * 60 * 60 * 1000;
   const events = collectEvents(scope, from, now);
 
-  const realScheduler = getServerScheduler().getStatus();
   const simScheduler = getServerSimScheduler().getStatus();
-  const schedulerMode = mode === 'sim'
-    ? 'sim'
-    : mode === 'real'
-      ? 'real'
-      : simScheduler.active
-        ? 'sim'
-        : 'real';
-  const scheduler = schedulerMode === 'sim' ? simScheduler : realScheduler;
+  const schedulerMode = 'sim';
+  const scheduler = simScheduler;
 
   const scheduleProbes = events.filter((event) => event.type === 'schedule_probe');
   const selectedProbes = scheduleProbes.filter(isSelectedProbe);
@@ -172,7 +164,7 @@ export async function GET(req: NextRequest) {
     schedulerMode,
     scheduler,
     schedulers: {
-      real: realScheduler,
+      real: { active: false, removed: true },
       sim: simScheduler,
     },
     totals: {

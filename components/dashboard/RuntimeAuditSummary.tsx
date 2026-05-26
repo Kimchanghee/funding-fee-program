@@ -161,7 +161,6 @@ export default function RuntimeAuditSummary() {
 
   const diagnosisCode = payload?.diagnosis?.code;
   const diagnosisColor = pickColorByDiagnosis(diagnosisCode);
-  const runtimeRealActive = !!payload?.runtime?.real?.active;
   const runtimeSimActive = !!payload?.runtime?.sim?.active;
   const executionTotal = payload?.report?.execution?.total ?? 0;
   const guardTotal = payload?.report?.guardBlocks?.total ?? 0;
@@ -249,16 +248,6 @@ export default function RuntimeAuditSummary() {
             }}
           >
             진단 {diagnosisCode ?? 'unknown'}
-          </span>
-
-          <span
-            style={{
-              fontSize: 10,
-              color: runtimeRealActive ? '#10b981' : '#f59e0b',
-              fontWeight: 700,
-            }}
-          >
-            REAL {runtimeRealActive ? 'ON' : 'OFF'}
           </span>
 
           <span

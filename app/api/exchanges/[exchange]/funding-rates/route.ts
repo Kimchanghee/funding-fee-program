@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { ExchangeId } from '@/lib/types';
 import { fetchFundingRates } from '@/lib/exchanges';
 import { TRACKED_SYMBOLS, isExchangeOperable } from '@/lib/types';
-import { getApiConfigFromRequest } from '@/lib/getApiConfigFromRequest';
 
 export async function GET(
   req: NextRequest,
@@ -13,7 +12,7 @@ export async function GET(
     return NextResponse.json({ success: false, error: 'Unsupported exchange' }, { status: 400 });
   }
   const id = exchange as ExchangeId;
-  const config = getApiConfigFromRequest(req, id);
+  void req;
 
   // Build symbol list for this exchange
   const symbols = TRACKED_SYMBOLS.map((base) => {
@@ -28,7 +27,7 @@ export async function GET(
   });
 
   try {
-    const rates = await fetchFundingRates(id, config, symbols);
+    const rates = await fetchFundingRates(id, undefined, symbols);
     return NextResponse.json({ success: true, data: rates });
   } catch (err) {
     return NextResponse.json(

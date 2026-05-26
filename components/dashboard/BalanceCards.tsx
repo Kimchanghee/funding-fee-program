@@ -1,9 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { FlaskConical, RotateCcw, TrendingUp, Wallet } from 'lucide-react';
+import { FlaskConical, RotateCcw } from 'lucide-react';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
-import StatusDot from '@/components/ui/StatusDot';
 import { useFundingStore } from '@/store/fundingStore';
 import { EXCHANGE_COLORS, EXCHANGE_NAMES, type ExchangeId } from '@/lib/types';
 import { fmtNum } from '@/lib/format';
@@ -141,66 +140,6 @@ function ExchangeMiniCard({ exchange }: { exchange: ExchangeId }) {
   );
 }
 
-function RealCard({ exchange }: { exchange: ExchangeId }) {
-  const { balances, apiConfigs, openApiPanelFor } = useFundingStore();
-  const color = EXCHANGE_COLORS[exchange];
-  const balance = balances[exchange];
-  const hasConfig = !!apiConfigs[exchange];
-  const status = !hasConfig ? 'disconnected' : balance?.status ?? 'disconnected';
-  const isClickableToConfigure = !hasConfig;
-
-  return (
-    <div
-      className="glass-card balance-real-card"
-      onClick={isClickableToConfigure ? () => openApiPanelFor(exchange) : undefined}
-      role={isClickableToConfigure ? 'button' : undefined}
-      tabIndex={isClickableToConfigure ? 0 : undefined}
-      onKeyDown={isClickableToConfigure ? (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          openApiPanelFor(exchange);
-        }
-      } : undefined}
-      title={isClickableToConfigure ? `${EXCHANGE_NAMES[exchange]} API 설정하기` : undefined}
-      style={{
-        minWidth: 200,
-        minHeight: 142,
-        padding: '16px 20px',
-        borderColor: status === 'connected' ? `${color}44` : 'var(--color-border)',
-        background: status === 'connected' ? `linear-gradient(135deg, ${color}0a, var(--bg-card))` : 'var(--bg-card)',
-        flexShrink: 0,
-        cursor: isClickableToConfigure ? 'pointer' : 'default',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: '0.08em', padding: '2px 8px', borderRadius: 6, background: `${color}22` }}>
-          {EXCHANGE_NAMES[exchange]}
-        </span>
-        <StatusDot status={status} />
-      </div>
-      {status === 'connected' && balance ? (
-        <>
-          <div className="mono" style={{ fontSize: 20, fontWeight: 800, color: 'var(--color-text)', marginBottom: 4 }}>
-            ${balance.totalUSDT.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8 }}>총 자산 (USDT)</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <MiniRow label="가용" value={`$${balance.availableUSDT.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
-            <MiniRow label="사용중" value={`$${balance.usedUSDT.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
-          </div>
-        </>
-      ) : (
-        <div style={{ minHeight: 80, display: 'flex', flexDirection: 'column', justifyContent: 'center', textAlign: 'center' }}>
-          <Wallet size={20} color={hasConfig ? 'var(--color-text-muted)' : color} style={{ margin: '0 auto 8px' }} />
-          <div style={{ fontSize: 12, color: hasConfig ? 'var(--color-text-muted)' : color, fontWeight: hasConfig ? 400 : 700 }}>
-            {hasConfig ? '잔고 로딩 중...' : '+ API 키 설정'}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function SimModeColumn({
   title,
   accentColor,
@@ -306,8 +245,6 @@ function SimModeColumn({
 
 export default function BalanceCards() {
   const {
-    balances,
-    simulationMode,
     simPositions,
     simTotalFundingEarned,
     simTotalFees,
@@ -316,36 +253,6 @@ export default function BalanceCards() {
     strategyConfig,
   } = useFundingStore();
   const [showResetConfirm, setShowResetConfirm] = useState(false);
-  const totalUSDT = Object.values(balances)
-    .filter(b => b?.status === 'connected')
-    .reduce((sum, b) => sum + (b?.totalUSDT || 0), 0);
-
-  if (!simulationMode) {
-    return (
-      <div className="balance-cards-container balance-cards-real" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4, minHeight: 150 }}>
-        <div
-          className="glass-card"
-          style={{
-            minWidth: 220,
-            minHeight: 142,
-            padding: '16px 20px',
-            flexShrink: 0,
-            background: 'linear-gradient(135deg, rgba(59,130,246,0.08), var(--bg-card))',
-            borderColor: 'rgba(59,130,246,0.3)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <TrendingUp size={13} color="#3b82f6" />
-            <span style={{ fontSize: 11, fontWeight: 700, color: '#3b82f6' }}>총 자산</span>
-          </div>
-          <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--color-text)' }}>
-            ${totalUSDT.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-        </div>
-        {enabledExchanges.map(ex => <RealCard key={ex} exchange={ex} />)}
-      </div>
-    );
-  }
 
   return (
     <>

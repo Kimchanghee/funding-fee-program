@@ -1,9 +1,7 @@
 /**
- * Runtime fee cache — fetches actual account trading fees from exchange APIs
- * and provides a resolution function that falls back through:
- *   runtimeFees → feeOverrides → EXCHANGE_FEES preset
+ * Runtime fee resolver for simulation-only execution.
+ * Account-level fee fetching has been removed with REAL trading.
  */
-import { fetchAccountFees } from './exchanges';
 import {
   getExchangeFee,
   getRawExchangeFee,
@@ -34,20 +32,11 @@ export async function refreshFeeCache(
   symbol?: string,
   forceFresh = false,
 ): Promise<boolean> {
-  const existing = runtimeFees.get(exchange);
-  if (!forceFresh && existing && Date.now() - existing.fetchedAt < FEE_CACHE_TTL_MS) {
-    return true; // cache still fresh
-  }
-
-  const result = await fetchAccountFees(exchange, config, symbol);
-  if (!result) return false;
-
-  runtimeFees.set(exchange, {
-    maker: result.maker,
-    taker: result.taker,
-    fetchedAt: Date.now(),
-  });
-  return true;
+  void exchange;
+  void config;
+  void symbol;
+  void forceFresh;
+  return false;
 }
 
 /**
@@ -56,12 +45,7 @@ export async function refreshFeeCache(
 export async function refreshAllFeeCaches(
   configs: Partial<Record<ExchangeId, ApiConfig>>,
 ): Promise<void> {
-  const entries = Object.entries(configs) as Array<[ExchangeId, ApiConfig]>;
-  await Promise.allSettled(
-    entries
-      .filter(([, config]) => config?.apiKey)
-      .map(([exchange, config]) => refreshFeeCache(exchange, config)),
-  );
+  void configs;
 }
 
 /**
@@ -84,7 +68,7 @@ export function resolveRuntimeFee(
 export type FeeSource = 'runtime' | 'override' | 'preset';
 
 /**
- * Resolve fee with source information — used to enforce runtime fee availability in REAL mode.
+ * Resolve fee with source information.
  */
 export function resolveRuntimeFeeDetailed(
   exchange: ExchangeId,

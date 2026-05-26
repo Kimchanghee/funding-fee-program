@@ -10,7 +10,7 @@ import type {
   FeeOverrides,
   PaybackOverrides,
 } from '../types';
-import { TRACKED_SYMBOLS, getExchangeFee } from '../types';
+import { TRACKED_SYMBOLS } from '../types';
 import { normalizeFundingRate } from './utils';
 import { fetchFundingRatesViaWs, fetchOrderbookViaWs } from './wsPublicData';
 
@@ -22,8 +22,6 @@ export interface ExecutedOrderSummary {
   liquidity: OrderLiquidity;
   estimatedFee: number;
 }
-
-const MIN_EXECUTION_FILL_RATIO = 0.9;
 
 export class OrderExecutionError extends Error {
   partialExecution?: ExecutedOrderSummary;
@@ -40,24 +38,6 @@ export function getPartialExecution(error: unknown): ExecutedOrderSummary | null
   const partial = (error as { partialExecution?: ExecutedOrderSummary }).partialExecution;
   if (!partial || typeof partial.amount !== 'number' || partial.amount <= 0) return null;
   return partial;
-}
-
-function buildExecutionSummary(
-  orderId: string,
-  price: number,
-  amount: number,
-  filledNotional: number,
-  liquidity: OrderLiquidity,
-  estimatedFee: number,
-): ExecutedOrderSummary {
-  return {
-    orderId,
-    price,
-    amount,
-    filledNotional,
-    liquidity,
-    estimatedFee,
-  };
 }
 
 // ── Exchange instance cache ──
@@ -374,59 +354,9 @@ export async function fetchFundingRates(
 }
 
 export async function fetchBalance(id: ExchangeId, config: ApiConfig): Promise<Balance> {
-  const ex = makeExchange(id, config);
-  const toFiniteNumber = (value: unknown): number | undefined => {
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string' && value.trim() !== '') {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) return parsed;
-    }
-    return undefined;
-  };
-  const pickNumber = (...values: unknown[]): number => {
-    for (const value of values) {
-      const parsed = toFiniteNumber(value);
-      if (parsed !== undefined) return parsed;
-    }
-    return 0;
-  };
-  try {
-    const bal = await ex.fetchBalance();
-    const usdt = bal['USDT'] ?? bal['usdt'];
-    const totalUSDT = pickNumber(
-      usdt?.total,
-      bal?.total?.USDT,
-      bal?.total?.usdt,
-      bal?.USDT?.total,
-      bal?.usdt?.total,
-    );
-    const availableUSDT = pickNumber(
-      usdt?.free,
-      bal?.free?.USDT,
-      bal?.free?.usdt,
-      bal?.USDT?.free,
-      bal?.usdt?.free,
-    );
-    const usedUSDT = pickNumber(
-      usdt?.used,
-      bal?.used?.USDT,
-      bal?.used?.usdt,
-      bal?.USDT?.used,
-      bal?.usdt?.used,
-    );
-    return {
-      exchange: id,
-      totalUSDT,
-      availableUSDT,
-      usedUSDT,
-      unrealizedPnl: 0,
-      status: 'connected',
-      updatedAt: Date.now(),
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`[${id}] fetchBalance failed: ${message}`);
-  }
+  void id;
+  void config;
+  throw new Error('REAL balance fetching has been removed. Use simulation balances.');
 }
 
 /**
@@ -434,82 +364,24 @@ export async function fetchBalance(id: ExchangeId, config: ApiConfig): Promise<B
  * Returns maker/taker fees for the account's current VIP/fee tier.
  * Falls back to null if the exchange doesn't support fee queries or if it fails.
  */
+/**
+ * Account fee fetching was removed with REAL trading.
+ */
 export async function fetchAccountFees(
   id: ExchangeId,
   config: ApiConfig,
   symbol?: string,
 ): Promise<{ maker: number; taker: number } | null> {
-  const ex = makeExchange(id, config);
-  try {
-    await ensureMarkets(ex, id, config);
-    // CCXT's fetchTradingFee returns { maker, taker } for the account's tier
-    const fee = await Promise.race([
-      symbol
-        ? ex.fetchTradingFee(symbol) as Promise<any>
-        : ex.fetchTradingFees() as Promise<any>,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
-    ]);
-
-    if (!fee) return null;
-
-    // fetchTradingFees returns a map; pick a representative symbol or first entry
-    if (!symbol && typeof fee === 'object') {
-      const firstKey = Object.keys(fee).find(k => k.includes('USDT'));
-      const entry = firstKey ? fee[firstKey] : Object.values(fee)[0];
-      if (entry && typeof entry === 'object') {
-        const maker = (entry as any).maker;
-        const taker = (entry as any).taker;
-        if (typeof maker === 'number' && typeof taker === 'number') {
-          return { maker, taker };
-        }
-      }
-      return null;
-    }
-
-    if (typeof fee.maker === 'number' && typeof fee.taker === 'number') {
-      return { maker: fee.maker, taker: fee.taker };
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  void id;
+  void config;
+  void symbol;
+  return null;
 }
 
 export async function fetchPositions(id: ExchangeId, config: ApiConfig): Promise<Position[]> {
-  const ex = makeExchange(id, config);
-  try {
-    const raw: any[] = await ex.fetchPositions();
-    return raw
-      .filter((p: any) => p.contracts && (p.contracts as number) > 0)
-      .map((p: any) => {
-        const contracts = (p.contracts as number) || 0;
-        const contractSize = (p.contractSize as number) || 1;
-        return {
-        exchange: id,
-        symbol: (p.symbol as string) || '',
-        displaySymbol: ((p.symbol as string) || '').replace(':USDT', '').replace(':USD', ''),
-        baseAsset: ((p.symbol as string) || '').split('/')[0] || '',
-        side: (p.side === 'long' ? 'long' : 'short') as 'long' | 'short',
-        size: contracts * contractSize, // contracts → base asset 수량 변환
-        sizeUSD: (p.notional as number) || 0,
-        entryPrice: (p.entryPrice as number) || 0,
-        markPrice: (p.markPrice as number) || 0,
-        leverage: (p.leverage as number) || 1,
-        margin: (p.initialMargin as number) || 0,
-        unrealizedPnl: (p.unrealizedPnl as number) || 0,
-        unrealizedPnlPercent:
-          (p.initialMargin as number) > 0
-            ? ((p.unrealizedPnl as number) / (p.initialMargin as number)) * 100
-            : 0,
-        liquidationPrice: (p.liquidationPrice as number) || 0,
-        fundingRate: 0,
-        openedAt: Date.now(),
-        positionType: 'manual' as const,
-      };
-      });
-  } catch {
-    return [];
-  }
+  void id;
+  void config;
+  throw new Error('REAL position fetching has been removed. Use simulation positions.');
 }
 
 /**
@@ -666,43 +538,12 @@ export async function checkFundingSettled(
   expectedFundingTime: number,
   toleranceMs = 60_000,
 ): Promise<{ settled: boolean; payment?: { amount: number; rate: number; timestamp: number } }> {
-  const ex = makeExchange(id, config);
-  try {
-    const history = await Promise.race([
-      ex.fetchFundingHistory(symbol, undefined, 5) as Promise<any[]>,
-      new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 5000)),
-    ]);
-
-    for (const entry of history) {
-      const ts = (entry.timestamp as number) || new Date(entry.datetime as string).getTime();
-      if (Math.abs(ts - expectedFundingTime) <= toleranceMs) {
-        return {
-          settled: true,
-          payment: {
-            amount: (entry.amount as number) || 0,
-            rate: (entry.rate as number) || (entry.fundingRate as number) || 0,
-            timestamp: ts,
-          },
-        };
-      }
-    }
-
-    return { settled: false };
-  } catch {
-    return { settled: false };
-  }
-}
-
-function estimateExecutionFee(
-  exchange: ExchangeId,
-  parts: Array<{ notional: number; liquidity: Exclude<OrderLiquidity, 'mixed'> }>,
-  feeOverrides?: FeeOverrides,
-  paybackOverrides?: PaybackOverrides,
-): number {
-  return parts.reduce(
-    (sum, part) => sum + (part.notional * getExchangeFee(exchange, part.liquidity, feeOverrides, paybackOverrides)),
-    0,
-  );
+  void id;
+  void config;
+  void symbol;
+  void expectedFundingTime;
+  void toleranceMs;
+  return { settled: false };
 }
 
 /**
@@ -720,198 +561,15 @@ export async function openPosition(
   feeOverrides?: FeeOverrides,
   paybackOverrides?: PaybackOverrides,
 ): Promise<ExecutedOrderSummary> {
-  let ex = makeExchange(id, config);
-  try {
-    ex = await ensureMarkets(ex, id, config);
-    await ex.setLeverage(leverage, symbol).catch(() => {});
-
-    // 1. Fetch orderbook for price analysis
-    const ob = await fetchOrderbook(id, symbol, 50);
-
-    const levels = side === 'long' ? ob.asks : ob.bids;
-    if (!levels || levels.length === 0) {
-      throw new Error(`[${id}] Empty orderbook for ${symbol} (${side})`);
-    }
-
-    const notional = amountUSDT * leverage;
-    const obSide = side === 'long' ? 'buy' : 'sell';
-    const analysis = analyzeOrderbook(levels, notional, obSide);
-
-    // 2. Calculate contract amount
-    let contractAmount = notional / analysis.fillPrice;
-    if (ex.markets && ex.markets[symbol]) {
-      const market = ex.markets[symbol];
-      if (market.contractSize && market.contractSize !== 1) {
-        contractAmount = contractAmount / market.contractSize;
-      }
-      contractAmount = parseFloat(ex.amountToPrecision(symbol, contractAmount));
-    }
-
-    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
-    const orderSide = side === 'long' ? 'buy' : 'sell';
-
-    // 3. Try Post-Only maker order at best bid/ask (0% spread from BBO)
-    //    Long: place at best bid (we join the bid), Short: place at best ask (we join the ask)
-    const bestBid = ob.bids?.[0]?.[0];
-    const bestAsk = ob.asks?.[0]?.[0];
-    const makerPrice = side === 'long' ? bestBid : bestAsk;
-
-    if (makerPrice && makerPrice > 0) {
-      try {
-        console.log(
-          `[${id}] ${symbol} ${side} POST-ONLY: price=${makerPrice.toFixed(4)}, ` +
-          `qty=${contractAmount.toFixed(6)}, notional=$${notional.toFixed(2)}`,
-        );
-
-        const makerOrder = await Promise.race([
-          ex.createOrder(symbol, 'limit', orderSide, contractAmount, makerPrice, {
-            postOnly: true,
-            reduceOnly: false,
-          }),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Post-Only timeout')), 3000),
-          ),
-        ]);
-
-        const filledAmount = (makerOrder.filled as number) || 0;
-        const filledPrice = (makerOrder.average as number) || makerPrice;
-
-        // Post-Only succeeded and filled (at least partially)
-        if (filledAmount >= contractAmount * 0.90) {
-          const filledNotional = filledAmount * cSize * filledPrice;
-          console.log(
-            `[${id}] ${symbol} ${side} MAKER FILLED: price=${filledPrice.toFixed(4)}, ` +
-            `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}, fee=MAKER`,
-          );
-          return {
-            orderId: (makerOrder.id as string) || '',
-            price: filledPrice,
-            amount: filledAmount * cSize,
-            filledNotional,
-            liquidity: 'maker',
-            estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }], feeOverrides, paybackOverrides),
-          };
-        }
-
-        // Partial or zero fill — cancel resting maker order before IOC fallback
-        if (filledAmount < contractAmount * 0.90) {
-          // Cancel any resting portion of the maker order
-          if (makerOrder.id) {
-            try {
-              await ex.cancelOrder(makerOrder.id, symbol);
-              console.log(`[${id}] ${symbol} ${side} cancelled resting maker order ${makerOrder.id}`);
-            } catch { /* already filled or cancelled */ }
-          }
-
-          if (filledAmount > 0) {
-            const remaining = contractAmount - filledAmount;
-            const iocPrice = side === 'long'
-              ? analysis.worstPrice * 1.0005
-              : analysis.worstPrice * 0.9995;
-
-            console.log(
-              `[${id}] ${symbol} ${side} MAKER partial ${((filledAmount / contractAmount) * 100).toFixed(1)}%, ` +
-              `IOC-filling remaining ${remaining.toFixed(6)}`,
-            );
-
-            const iocOrder = await Promise.race([
-              ex.createOrder(symbol, 'limit', orderSide, remaining, iocPrice, {
-                timeInForce: 'IOC', reduceOnly: false,
-              }),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('IOC fallback timeout')), 3000),
-              ),
-            ]);
-
-            const iocFilled = (iocOrder.filled as number) || 0;
-            const iocFilledPrice = (iocOrder.average as number) || iocPrice;
-            const totalFilled = filledAmount + iocFilled;
-            const avgPrice = totalFilled > 0
-              ? (filledAmount * filledPrice + iocFilled * iocFilledPrice) / totalFilled
-              : filledPrice;
-
-            return {
-              orderId: (makerOrder.id as string) || (iocOrder.id as string) || '',
-              price: avgPrice,
-              amount: totalFilled * cSize,
-              filledNotional: totalFilled * cSize * avgPrice,
-              liquidity: 'mixed',
-              estimatedFee: estimateExecutionFee(id, [
-                { notional: filledAmount * cSize * filledPrice, liquidity: 'maker' },
-                { notional: iocFilled * cSize * iocFilledPrice, liquidity: 'taker' },
-              ], feeOverrides, paybackOverrides),
-            };
-          }
-          // filledAmount === 0 → order cancelled, fall through to IOC
-        }
-      } catch (makerErr) {
-        // Post-Only rejected (crossing book) or timeout — fall through to IOC
-        console.log(
-          `[${id}] ${symbol} ${side} Post-Only rejected/timeout: ${(makerErr as Error).message} — falling back to IOC`,
-        );
-      }
-    }
-
-    // 4. Fallback: IOC taker order (original strategy)
-    const PRICE_BUFFER = 0.0005;
-    const limitPrice = side === 'long'
-      ? analysis.worstPrice * (1 + PRICE_BUFFER)
-      : analysis.worstPrice * (1 - PRICE_BUFFER);
-
-    console.log(
-      `[${id}] ${symbol} ${side} IOC FALLBACK: limit=${limitPrice.toFixed(4)}, ` +
-      `qty=${contractAmount.toFixed(6)}, notional=$${notional.toFixed(2)}`,
-    );
-
-    const order = await Promise.race([
-      ex.createOrder(symbol, 'limit', orderSide, contractAmount, limitPrice, {
-        timeInForce: 'IOC', reduceOnly: false,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] IOC order timeout`)), 3000),
-      ),
-    ]);
-
-    const filledAmount = (order.filled as number) || 0;
-    const filledPrice = (order.average as number) || limitPrice;
-    const filledNotional = filledAmount * cSize * filledPrice;
-
-    if (filledAmount < contractAmount * 0.90) {
-      const remaining = contractAmount - filledAmount;
-      console.log(
-        `[${id}] ${symbol} ${side} IOC partial fill ${((filledAmount / contractAmount) * 100).toFixed(1)}%, ` +
-        `market-filling remaining ${remaining.toFixed(6)}`,
-      );
-      const mktOrder = await Promise.race([
-        ex.createMarketOrder(symbol, orderSide, remaining, undefined, { reduceOnly: false }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Market order timeout')), 3000)),
-      ]);
-      const mktFilled = (mktOrder.filled as number) || remaining;
-      const mktPrice = (mktOrder.average as number) || limitPrice;
-      const totalFilled = filledAmount + mktFilled;
-      const avgPrice = (filledAmount * filledPrice + mktFilled * mktPrice) / totalFilled;
-
-      return {
-        orderId: (order.id as string) || (mktOrder.id as string) || '',
-        price: avgPrice,
-        amount: totalFilled * cSize,
-        filledNotional: totalFilled * cSize * avgPrice,
-        liquidity: 'taker',
-        estimatedFee: estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-      };
-    }
-
-    return {
-      orderId: (order.id as string) || '',
-      price: filledPrice,
-      amount: filledAmount * cSize,
-      filledNotional,
-      liquidity: 'taker',
-      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-    };
-  } catch (err) {
-    throw new Error(`[${id}] openPosition failed: ${(err as Error).message}`);
-  }
+  void id;
+  void config;
+  void symbol;
+  void side;
+  void amountUSDT;
+  void leverage;
+  void feeOverrides;
+  void paybackOverrides;
+  throw new Error('REAL position opening has been removed. Use simulation execution.');
 }
 
 /**
@@ -939,255 +597,17 @@ export async function openPositionExact(
   useIocLimitOnly = false,
   paybackOverrides?: PaybackOverrides,
 ): Promise<ExecutedOrderSummary> {
-  let ex = makeExchange(id, config);
-  try {
-    ex = await ensureMarkets(ex, id, config);
-    await ex.setLeverage(leverage, symbol).catch(() => {});
-
-    if (ex.markets && ex.markets[symbol]) {
-      const market = ex.markets[symbol];
-      if (market.contractSize && market.contractSize !== 1) {
-        qty = qty / market.contractSize;
-      }
-      qty = parseFloat(ex.amountToPrecision(symbol, qty));
-    }
-
-    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
-    const orderSide = side === 'long' ? 'buy' : 'sell';
-    const minFilledQty = qty * MIN_EXECUTION_FILL_RATIO;
-
-    // ── v2.1: IOC-limit only path (no Post-Only, no market fallback) ──
-    if (useIocLimitOnly) {
-      console.log(
-        `[${id}] ${symbol} ${side} IOC-LIMIT-ONLY: limit=${limitPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
-      );
-
-      const order = await Promise.race([
-        ex.createOrder(symbol, 'limit', orderSide, qty, limitPrice, {
-          timeInForce: 'IOC', reduceOnly: false,
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`[${id}] IOC order timeout`)), 5000),
-        ),
-      ]);
-
-      const filledAmount = (order.filled as number) || 0;
-      const filledPrice = (order.average as number) || limitPrice;
-
-      if (filledAmount < minFilledQty) {
-        const partialExecution = filledAmount > 0
-          ? buildExecutionSummary(
-              (order.id as string) || '',
-              filledPrice,
-              filledAmount * cSize,
-              filledAmount * cSize * filledPrice,
-              'taker',
-              estimateExecutionFee(id, [{ notional: filledAmount * cSize * filledPrice, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-            )
-          : undefined;
-
-        throw new OrderExecutionError(
-          `[${id}] ${symbol} ${side} IOC insufficient fill: ` +
-          `${((filledAmount / qty) * 100).toFixed(1)}% filled (min ${(MIN_EXECUTION_FILL_RATIO * 100).toFixed(0)}%)`,
-          partialExecution,
-        );
-      }
-
-      const filledNotional = filledAmount * cSize * filledPrice;
-      console.log(
-        `[${id}] ${symbol} ${side} IOC FILLED: price=${filledPrice.toFixed(4)}, ` +
-        `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}`,
-      );
-
-      return buildExecutionSummary(
-        (order.id as string) || '',
-        filledPrice,
-        filledAmount * cSize,
-        filledNotional,
-        'taker',
-        estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-      );
-    }
-
-    // ── Legacy path: Post-Only maker → IOC taker fallback ──
-
-    // 1. Try Post-Only maker at the provided limit price (best bid/ask from caller)
-    try {
-      // Post-Only maker price: for buy, use slightly below limitPrice; for sell, slightly above
-      // This ensures we're providing liquidity, not taking it
-      const ob = await fetchOrderbook(id, symbol, 5);
-
-      const makerPrice = side === 'long'
-        ? Math.min(ob.bids?.[0]?.[0] || limitPrice * 0.999, limitPrice)
-        : Math.max(ob.asks?.[0]?.[0] || limitPrice * 1.001, limitPrice);
-
-      console.log(
-        `[${id}] ${symbol} ${side} EXACT POST-ONLY: price=${makerPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
-      );
-
-      const makerOrder = await Promise.race([
-        ex.createOrder(symbol, 'limit', orderSide, qty, makerPrice, {
-          postOnly: true, reduceOnly: false,
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Post-Only timeout')), 3000),
-        ),
-      ]);
-
-      const filledAmount = (makerOrder.filled as number) || 0;
-      const filledPrice = (makerOrder.average as number) || makerPrice;
-
-      if (filledAmount >= minFilledQty) {
-        const filledNotional = filledAmount * cSize * filledPrice;
-        console.log(
-          `[${id}] ${symbol} ${side} EXACT MAKER FILLED: price=${filledPrice.toFixed(4)}, ` +
-          `qty=${filledAmount.toFixed(6)}, notional=$${filledNotional.toFixed(2)}`,
-        );
-        return buildExecutionSummary(
-          (makerOrder.id as string) || '',
-          filledPrice,
-          filledAmount * cSize,
-          filledNotional,
-          'maker',
-          estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }], feeOverrides, paybackOverrides),
-        );
-      }
-
-      // Partial or zero fill — cancel resting maker order before IOC fallback
-      if (filledAmount < minFilledQty) {
-        if (makerOrder.id) {
-          try {
-            await ex.cancelOrder(makerOrder.id, symbol);
-            console.log(`[${id}] ${symbol} ${side} cancelled resting maker order ${makerOrder.id}`);
-          } catch { /* already filled or cancelled */ }
-        }
-
-        if (filledAmount > 0) {
-          const remaining = qty - filledAmount;
-          console.log(
-            `[${id}] ${symbol} ${side} EXACT MAKER partial ${((filledAmount / qty) * 100).toFixed(1)}%, IOC remaining`,
-          );
-          const iocOrder = await Promise.race([
-            ex.createOrder(symbol, 'limit', orderSide, remaining, limitPrice, {
-              timeInForce: 'IOC', reduceOnly: false,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('IOC timeout')), 3000),
-            ),
-          ]);
-          const iocFilled = (iocOrder.filled as number) || 0;
-          const iocPrice = (iocOrder.average as number) || limitPrice;
-          const totalFilled = filledAmount + iocFilled;
-          const avgPrice = totalFilled > 0
-            ? (filledAmount * filledPrice + iocFilled * iocPrice) / totalFilled
-            : filledPrice;
-          const partialExecution = totalFilled > 0
-            ? buildExecutionSummary(
-                (makerOrder.id as string) || (iocOrder.id as string) || '',
-                avgPrice,
-                totalFilled * cSize,
-                totalFilled * cSize * avgPrice,
-                iocFilled > 0 ? 'mixed' : 'maker',
-                estimateExecutionFee(id, [
-                  { notional: filledAmount * cSize * filledPrice, liquidity: 'maker' },
-                  { notional: iocFilled * cSize * iocPrice, liquidity: 'taker' },
-                ], feeOverrides, paybackOverrides),
-              )
-            : undefined;
-
-          if (totalFilled < minFilledQty) {
-            throw new OrderExecutionError(
-              `[${id}] ${symbol} ${side} insufficient fill within limit price: ` +
-              `${((totalFilled / qty) * 100).toFixed(1)}% filled`,
-              partialExecution,
-            );
-          }
-
-          return partialExecution!;
-        }
-        // filledAmount === 0 → cancelled, fall through to IOC
-      }
-    } catch (makerErr) {
-      if (makerErr instanceof OrderExecutionError) throw makerErr;
-      console.log(
-        `[${id}] ${symbol} ${side} EXACT Post-Only failed: ${(makerErr as Error).message} — IOC fallback`,
-      );
-    }
-
-    // 2. Fallback: IOC taker
-    console.log(
-      `[${id}] ${symbol} ${side} EXACT IOC FALLBACK: limit=${limitPrice.toFixed(4)}, qty=${qty.toFixed(6)}`,
-    );
-
-    const order = await Promise.race([
-      ex.createOrder(symbol, 'limit', orderSide, qty, limitPrice, {
-        timeInForce: 'IOC', reduceOnly: false,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`[${id}] IOC order timeout`)), 3000),
-      ),
-    ]);
-
-    const filledAmount = (order.filled as number) || 0;
-    const filledPrice = (order.average as number) || limitPrice;
-
-    if (filledAmount < minFilledQty) {
-      const remaining = qty - filledAmount;
-      // 슬리피지 제한: market order 대신 limitPrice 기준 limit IOC로 재시도
-      // limitPrice는 사전 오더북 스캔의 worst level + 0.05% 버퍼 — 이 가격 이상 체결 방지
-      console.log(
-        `[${id}] ${symbol} ${side} IOC partial fill ${((filledAmount / qty) * 100).toFixed(1)}%, ` +
-        `limit-IOC remaining ${remaining.toFixed(6)} @${limitPrice.toFixed(4)} (no market fallback)`,
-      );
-      const retryOrder = await Promise.race([
-        ex.createOrder(symbol, 'limit', orderSide, remaining, limitPrice, {
-          timeInForce: 'IOC', reduceOnly: false,
-        }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Retry IOC timeout')), 3000)),
-      ]);
-      const retryFilled = (retryOrder.filled as number) || 0;
-      const retryPrice = (retryOrder.average as number) || limitPrice;
-      const totalFilled = filledAmount + retryFilled;
-      if (totalFilled === 0) {
-        throw new Error(`[${id}] ${symbol} ${side} 체결 실패: IOC + retry 모두 0 filled`);
-      }
-      const avgPrice = totalFilled > 0
-        ? (filledAmount * filledPrice + retryFilled * retryPrice) / totalFilled
-        : filledPrice;
-
-      const partialExecution = buildExecutionSummary(
-        (order.id as string) || (retryOrder.id as string) || '',
-        avgPrice,
-        totalFilled * cSize,
-        totalFilled * cSize * avgPrice,
-        'taker',
-        estimateExecutionFee(id, [{ notional: totalFilled * cSize * avgPrice, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-      );
-
-      if (totalFilled < minFilledQty) {
-        throw new OrderExecutionError(
-          `[${id}] ${symbol} ${side} insufficient fill within limit price: ` +
-          `${((totalFilled / qty) * 100).toFixed(1)}% filled`,
-          partialExecution,
-        );
-      }
-
-      return partialExecution;
-    }
-
-    const filledNotional = filledAmount * cSize * filledPrice;
-    return buildExecutionSummary(
-      (order.id as string) || '',
-      filledPrice,
-      filledAmount * cSize,
-      filledNotional,
-      'taker',
-      estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-    );
-  } catch (err) {
-    if (err instanceof OrderExecutionError) throw err;
-    throw new Error(`[${id}] openPositionExact failed: ${(err as Error).message}`);
-  }
+  void id;
+  void config;
+  void symbol;
+  void side;
+  void qty;
+  void limitPrice;
+  void leverage;
+  void feeOverrides;
+  void useIocLimitOnly;
+  void paybackOverrides;
+  throw new Error('REAL exact position opening has been removed. Use simulation execution.');
 }
 
 export async function closePosition(
@@ -1199,188 +619,14 @@ export async function closePosition(
   feeOverrides?: FeeOverrides,
   paybackOverrides?: PaybackOverrides,
 ): Promise<ExecutedOrderSummary> {
-  let ex = makeExchange(id, config);
-  let cSize = 1;
-  try {
-    ex = await ensureMarkets(ex, id, config);
-    const ob = await fetchOrderbook(id, symbol, 50);
-
-    const levels = side === 'long' ? ob.bids : ob.asks;
-    if (!levels || levels.length === 0) throw new Error('empty orderbook');
-
-    if (ex.markets && ex.markets[symbol]) {
-      const market = ex.markets[symbol];
-      if (market.contractSize && market.contractSize !== 1) {
-        amount = amount / market.contractSize;
-      }
-      amount = parseFloat(ex.amountToPrecision(symbol, amount));
-    }
-    cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
-
-    const closeSide: 'buy' | 'sell' = side === 'long' ? 'sell' : 'buy';
-    const estimatedNotional = amount * levels[0][0];
-    const analysis = analyzeOrderbook(levels, estimatedNotional, closeSide);
-
-    // 1. Try Post-Only maker close at best bid/ask
-    const makerPrice = side === 'long'
-      ? (ob.bids?.[0]?.[0] || analysis.fillPrice)   // close long = sell at best bid
-      : (ob.asks?.[0]?.[0] || analysis.fillPrice);   // close short = buy at best ask
-
-    try {
-      console.log(`[${id}] ${symbol} CLOSE ${side} POST-ONLY: price=${makerPrice.toFixed(4)}, qty=${amount.toFixed(6)}`);
-
-      const makerOrder = await Promise.race([
-        ex.createOrder(symbol, 'limit', closeSide, amount, makerPrice, {
-          postOnly: true, reduceOnly: true,
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Close Post-Only timeout')), 3000),
-        ),
-      ]);
-
-      const filledAmount = (makerOrder.filled as number) || 0;
-      if (filledAmount >= amount * 0.90) {
-        const filledPrice = (makerOrder.average as number) || makerPrice;
-        const filledNotional = filledAmount * cSize * filledPrice;
-        console.log(`[${id}] ${symbol} CLOSE ${side} MAKER complete`);
-        return {
-          orderId: (makerOrder.id as string) || '',
-          price: filledPrice,
-          amount: filledAmount * cSize,
-          filledNotional,
-          liquidity: 'maker',
-          estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'maker' }], feeOverrides, paybackOverrides),
-        };
-      }
-
-      // Partial or zero fill — cancel resting maker order before fallback
-      if (filledAmount < amount * 0.90) {
-        if (makerOrder.id) {
-          try {
-            await ex.cancelOrder(makerOrder.id, symbol);
-            console.log(`[${id}] ${symbol} CLOSE ${side} cancelled resting maker order ${makerOrder.id}`);
-          } catch { /* already filled or cancelled */ }
-        }
-
-        if (filledAmount > 0) {
-          const remaining = amount - filledAmount;
-          const PRICE_BUFFER = 0.0005;
-          const iocPrice = side === 'long'
-            ? analysis.worstPrice * (1 - PRICE_BUFFER)
-            : analysis.worstPrice * (1 + PRICE_BUFFER);
-          const iocOrder = await Promise.race([
-            ex.createOrder(symbol, 'limit', closeSide, remaining, iocPrice, {
-              timeInForce: 'IOC', reduceOnly: true,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('Close IOC timeout')), 3000),
-            ),
-          ]);
-          const makerPriceFilled = (makerOrder.average as number) || makerPrice;
-          const iocFilled = (iocOrder.filled as number) || 0;
-          const iocFilledPrice = (iocOrder.average as number) || iocPrice;
-          const totalFilled = filledAmount + iocFilled;
-          const avgPrice = totalFilled > 0
-            ? (filledAmount * makerPriceFilled + iocFilled * iocFilledPrice) / totalFilled
-            : makerPriceFilled;
-          const makerNotional = filledAmount * cSize * makerPriceFilled;
-          const iocNotional = iocFilled * cSize * iocFilledPrice;
-          console.log(`[${id}] ${symbol} CLOSE ${side} MAKER+IOC complete`);
-          return {
-            orderId: (makerOrder.id as string) || (iocOrder.id as string) || '',
-            price: avgPrice,
-            amount: totalFilled * cSize,
-            filledNotional: makerNotional + iocNotional,
-            liquidity: 'mixed',
-            estimatedFee: estimateExecutionFee(id, [
-              { notional: makerNotional, liquidity: 'maker' },
-              { notional: iocNotional, liquidity: 'taker' },
-            ], feeOverrides, paybackOverrides),
-          };
-        }
-        // filledAmount === 0 → cancelled, fall through to IOC
-      }
-    } catch (makerErr) {
-      console.log(`[${id}] ${symbol} CLOSE ${side} Post-Only failed: ${(makerErr as Error).message} — IOC fallback`);
-    }
-
-    // 2. Fallback: IOC taker close
-    const PRICE_BUFFER = 0.0005;
-    const limitPrice = side === 'long'
-      ? analysis.worstPrice * (1 - PRICE_BUFFER)
-      : analysis.worstPrice * (1 + PRICE_BUFFER);
-
-    console.log(`[${id}] ${symbol} CLOSE ${side} IOC: limit=${limitPrice.toFixed(4)}, qty=${amount.toFixed(6)}`);
-
-    const order = await Promise.race([
-      ex.createOrder(symbol, 'limit', closeSide, amount, limitPrice, {
-        timeInForce: 'IOC', reduceOnly: true,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Close IOC timeout`)), 3000),
-      ),
-    ]);
-
-    const filledAmount = (order.filled as number) || 0;
-    if (filledAmount < amount * 0.90) {
-      const remaining = amount - filledAmount;
-      const mktOrder = await Promise.race([
-        ex.createMarketOrder(symbol, closeSide, remaining, undefined, { reduceOnly: true }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Close market timeout')), 3000)),
-      ]);
-      const filledPrice = (order.average as number) || limitPrice;
-      const marketFilled = (mktOrder.filled as number) || remaining;
-      const marketPrice = (mktOrder.average as number) || limitPrice;
-      const totalFilled = filledAmount + marketFilled;
-      const avgPrice = totalFilled > 0
-        ? (filledAmount * filledPrice + marketFilled * marketPrice) / totalFilled
-        : filledPrice;
-      const filledNotional = (filledAmount * cSize * filledPrice) + (marketFilled * cSize * marketPrice);
-      console.log(`[${id}] ${symbol} CLOSE ${side} complete`);
-      return {
-        orderId: (order.id as string) || (mktOrder.id as string) || '',
-        price: avgPrice,
-        amount: totalFilled * cSize,
-        filledNotional,
-        liquidity: 'taker',
-        estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-      };
-    }
-    const filledPrice = (order.average as number) || limitPrice;
-    const filledNotional = filledAmount * cSize * filledPrice;
-    console.log(`[${id}] ${symbol} CLOSE ${side} complete`);
-    return {
-      orderId: (order.id as string) || '',
-      price: filledPrice,
-      amount: filledAmount * cSize,
-      filledNotional,
-      liquidity: 'taker',
-      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-    };
-  } catch (err) {
-    console.error(`[${id}] closePosition failed, fallback to market: ${(err as Error).message}`);
-    const marketOrder = await Promise.race([
-      ex.createMarketOrder(
-        symbol,
-        side === 'long' ? 'sell' : 'buy',
-        amount,
-        undefined,
-        { reduceOnly: true },
-      ),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Emergency close timeout')), 3000)),
-    ]);
-    const filledAmount = (marketOrder.filled as number) || amount;
-    const filledPrice = (marketOrder.average as number) || 0;
-    const filledNotional = filledAmount * cSize * filledPrice;
-    return {
-      orderId: (marketOrder.id as string) || '',
-      price: filledPrice,
-      amount: filledAmount * cSize,
-      filledNotional,
-      liquidity: 'taker',
-      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-    };
-  }
+  void id;
+  void config;
+  void symbol;
+  void side;
+  void amount;
+  void feeOverrides;
+  void paybackOverrides;
+  throw new Error('REAL position closing has been removed. Use simulation execution.');
 }
 
 export async function closePositionIocOnly(
@@ -1392,64 +638,14 @@ export async function closePositionIocOnly(
   feeOverrides?: FeeOverrides,
   paybackOverrides?: PaybackOverrides,
 ): Promise<ExecutedOrderSummary> {
-  let ex = makeExchange(id, config);
-  try {
-    ex = await ensureMarkets(ex, id, config);
-    const ob = await fetchOrderbook(id, symbol, 50);
-
-    const levels = side === 'long' ? ob.bids : ob.asks;
-    if (!levels || levels.length === 0) throw new Error('empty orderbook');
-
-    const baseAmount = amount;
-    let contractAmount = amount;
-    if (ex.markets && ex.markets[symbol]) {
-      const market = ex.markets[symbol];
-      if (market.contractSize && market.contractSize !== 1) {
-        contractAmount = contractAmount / market.contractSize;
-      }
-      contractAmount = parseFloat(ex.amountToPrecision(symbol, contractAmount));
-    }
-    const cSize = (ex.markets && ex.markets[symbol]?.contractSize) || 1;
-    const closeSide: 'buy' | 'sell' = side === 'long' ? 'sell' : 'buy';
-    const estimatedNotional = baseAmount * levels[0][0];
-    const analysis = analyzeOrderbook(levels, estimatedNotional, closeSide);
-    const priceBuffer = 0.0005;
-    const limitPrice = side === 'long'
-      ? analysis.worstPrice * (1 - priceBuffer)
-      : analysis.worstPrice * (1 + priceBuffer);
-
-    console.log(
-      `[${id}] ${symbol} CLOSE ${side} IOC-ONLY: limit=${limitPrice.toFixed(4)}, qty=${contractAmount.toFixed(6)}`,
-    );
-
-    const order = await Promise.race([
-      ex.createOrder(symbol, 'limit', closeSide, contractAmount, limitPrice, {
-        timeInForce: 'IOC',
-        reduceOnly: true,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Close IOC-only timeout')), 3000),
-      ),
-    ]);
-
-    const filledAmount = (order.filled as number) || 0;
-    if (filledAmount <= 0) {
-      throw new Error(`[${id}] ${symbol} close IOC-only filled 0`);
-    }
-
-    const filledPrice = (order.average as number) || limitPrice;
-    const filledNotional = filledAmount * cSize * filledPrice;
-    return {
-      orderId: (order.id as string) || '',
-      price: filledPrice,
-      amount: filledAmount * cSize,
-      filledNotional,
-      liquidity: 'taker',
-      estimatedFee: estimateExecutionFee(id, [{ notional: filledNotional, liquidity: 'taker' }], feeOverrides, paybackOverrides),
-    };
-  } catch (err) {
-    throw new Error(`[${id}] closePositionIocOnly failed: ${(err as Error).message}`);
-  }
+  void id;
+  void config;
+  void symbol;
+  void side;
+  void amount;
+  void feeOverrides;
+  void paybackOverrides;
+  throw new Error('REAL IOC-only position closing has been removed. Use simulation execution.');
 }
 
 export async function fetchFundingHistory(
@@ -1458,31 +654,11 @@ export async function fetchFundingHistory(
   symbol?: string,
   limit = 20,
 ): Promise<import('../types').FundingPayment[]> {
-  const ex = makeExchange(id, config);
-  let history: any[] = [];
-
-  if (typeof ex.fetchFundingHistory !== 'function' && typeof ex.fetchIncome !== 'function') {
-    return [];
-  }
-
-  try {
-    if (typeof ex.fetchFundingHistory === 'function') {
-      history = await ex.fetchFundingHistory(symbol, undefined, limit);
-    } else if (typeof ex.fetchIncome === 'function') {
-      history = await ex.fetchIncome({ incomeType: 'FUNDING_FEE', limit });
-    }
-  } catch (err) {
-    throw new Error(`[${id}] fetchFundingHistory failed: ${(err as Error).message}`);
-  }
-
-  return history.slice(0, limit).map((item: any) => ({
-    exchange: id,
-    symbol: (item.symbol as string) || symbol || '',
-    amount: (item.amount as number) || 0,
-    rate: (item.fundingRate as number) || 0,
-    timestamp: (item.timestamp as number) || Date.now(),
-    side: ((item.side as string) || 'long') as 'long' | 'short',
-  }));
+  void id;
+  void config;
+  void symbol;
+  void limit;
+  throw new Error('REAL funding history fetching has been removed. Use SIM trade history.');
 }
 
 /**
@@ -1548,11 +724,7 @@ export async function fetchMarketFillPrice(
 }
 
 export async function testConnection(id: ExchangeId, config: ApiConfig): Promise<boolean> {
-  const ex = makeExchange(id, config);
-  try {
-    await ex.fetchBalance();
-    return true;
-  } catch {
-    return false;
-  }
+  void id;
+  void config;
+  return false;
 }

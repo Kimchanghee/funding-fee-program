@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Zap, Crosshair, Check, Clock, TrendingDown, TrendingUp, ChevronDown, ChevronUp, Settings } from 'lucide-react';
 import {
-  buildSchedulerConfig,
   buildServerSimSchedulerConfig,
   mergeServerSimScheduledOpportunities,
   useFundingStore,
@@ -22,7 +21,7 @@ import {
 import { estimateProfit, getOpportunityLegKeys } from '@/lib/opportunities';
 import { fmtNum, fmtPctOrInfinity, fmtUsdOrInfinity, isInfiniteProfitDisplay } from '@/lib/format';
 import { buildManagedOpportunityItems, type ManagedOpportunityItem } from '@/lib/managedOpportunities';
-import { hasRequiredApiCredentials, getMissingApiCredentialFields } from '@/lib/apiCredentials';
+import { hasRequiredApiCredentials } from '@/lib/apiCredentials';
 
 const OPPORTUNITY_TABLE_COLUMNS = '24px 64px minmax(128px, 1.2fr) 76px 76px 64px 84px 78px 68px 82px 68px 86px 120px';
 const OPPORTUNITY_TABLE_MIN_WIDTH = 1050;
@@ -301,159 +300,97 @@ export default function OpportunityCard() {
   const handleSnipe = useCallback(async () => {
     const runtimeModeActive = await resolveRuntimeModeActive();
     if (runtimeModeActive) {
-      // ── 정지 ──
-      if (!simulationMode) {
-        // REAL: 서버 스케줄러 정지를 먼저 확인 → 성공 후에만 상태 갱신
-        try {
-          const res = await fetch('/api/scheduler', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'stop' }),
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        } catch (err) {
-          setToastMsg({ text: `[REAL] 서버 스케줄러 정지 실패 — 재시도 필요: ${(err as Error).message}`, type: 'error' });
-          return; // 서버 스케줄러가 멈추지 않았으면 상태를 OFF로 바꾸지 않음
-        }
-      } else {
-        try {
-          const res = await fetch('/api/sim-scheduler', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'stop' }),
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        } catch (err) {
-          setToastMsg({ text: `[SIM] 서버 시뮬 스케줄러 중지 실패: ${(err as Error).message}`, type: 'error' });
-          return;
-        }
+      try {
+        const res = await fetch('/api/sim-scheduler', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'stop' }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch (err) {
+        setToastMsg({ text: `[SIM] 서버 시뮬 스케줄러 중지 실패: ${(err as Error).message}`, type: 'error' });
+        return;
       }
-      cancelSnipe(simulationMode ? 'sim' : 'real');
-      // cancelSnipe 내부에서 /api/snipe-state + /api/scheduler stop 호출하지만,
-      // REAL은 이미 위에서 확인 완료. snipe-state만 추가 저장.
+      cancelSnipe('sim');
       try {
         await fetch('/api/snipe-state', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(simulationMode ? { simSnipeActive: false } : { realSnipeActive: false }),
+          body: JSON.stringify({ simSnipeActive: false }),
         });
       } catch { /* snipe-state 저장 실패는 비치명적 */ }
-      setToastMsg({ text: `${simulationMode ? '[SIM]' : '[REAL]'} 자동 투자 중지됨`, type: 'success' });
-    } else {
-      // ── 시작 ──
-      const state = useFundingStore.getState();
-      const realEnabledExchanges = state.enabledExchanges
-        .filter((exchange) => hasRequiredApiCredentials(exchange, state.apiConfigs[exchange]));
-      const totalCapital = simulationMode
-        ? state.strategyConfig.investmentUSDT * 2 * state.enabledExchanges.length
-        : state.strategyConfig.investmentUSDT * 2 * realEnabledExchanges.length;
-
-      // Zero-default guard: operator must supply positive investmentUSDT + leverage before starting.
-      if (!(state.strategyConfig.investmentUSDT > 0) || !(state.strategyConfig.leverage > 0)) {
-        setToastMsg({
-          text: `${simulationMode ? '[SIM]' : '[REAL]'} 설정 필요: /settings 에서 투자금·레버리지 입력 후 시작하세요.`,
-          type: 'error',
-        });
-        return;
-      }
-      // minSpreadPercent has a non-zero default profile and can be tuned in /settings.
-
-      if (!simulationMode) {
-        if (realEnabledExchanges.length < 2) {
-          const missingByExchange = state.enabledExchanges
-            .map((exchange) => {
-              const missing = getMissingApiCredentialFields(exchange, state.apiConfigs[exchange]);
-              if (missing.length === 0) return null;
-              return `${exchange.toUpperCase()}(${missing.join('/')})`;
-            })
-            .filter((item): item is string => item !== null);
-          const detail = missingByExchange.length > 0 ? ` Missing: ${missingByExchange.join(', ')}` : '';
-          setToastMsg({ text: `[REAL] Need valid API credentials on at least 2 exchanges.${detail}`, type: 'error' });
-          return;
-        }
-        // REAL: 서버 스케줄러 시작을 먼저 확인 → 성공 후에만 상태를 ON으로
-        try {
-          const res = await fetch('/api/scheduler', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              action: 'start',
-              config: buildSchedulerConfig(state.strategyConfig, realEnabledExchanges),
-            }),
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const json = await res.json() as { success?: boolean; error?: string };
-          if (!json.success) throw new Error(json.error || 'scheduler start failed');
-        } catch (err) {
-          setToastMsg({ text: `[REAL] 서버 스케줄러 시작 실패: ${(err as Error).message}`, type: 'error' });
-          return; // 서버 스케줄러가 안 떴으면 상태를 ON으로 바꾸지 않음
-        }
-        useFundingStore.setState({ realSnipeActive: true, realSnipeStartCapital: totalCapital });
-        await fetch('/api/snipe-state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ realSnipeActive: true }),
-        }).catch(() => {});
-        setToastMsg({ text: '[REAL] 스나이핑 시작! (서버 백그라운드 ON)', type: 'success' });
-      } else {
-        // SIM: 클라이언트 타이머 기반
-        try {
-          const res = await fetch('/api/sim-scheduler', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              action: 'start',
-              config: buildServerSimSchedulerConfig(state.strategyConfig, state.enabledExchanges),
-            }),
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const json = await res.json() as {
-            success?: boolean;
-            error?: string;
-            status?: {
-              scheduledEntries?: Array<{
-                opportunityId?: string;
-                opportunity?: ManagedOpportunityItem['opp'] | null;
-              }>;
-              snipeTargets?: Record<string, number>;
-              snipeAllocations?: Record<string, number>;
-            };
-          };
-          if (!json.success) throw new Error(json.error || 'sim scheduler start failed');
-          useFundingStore.setState((current) => ({
-            simSnipeActive: true,
-            simSnipeStartCapital: totalCapital,
-            opportunities: mergeServerSimScheduledOpportunities(
-              current.opportunities,
-              json.status?.scheduledEntries,
-            ),
-            snipeTargets: {
-              ...Object.fromEntries(
-                Object.entries(current.snipeTargets).filter(([key]) => !key.startsWith('sim:')),
-              ),
-              ...(json.status?.snipeTargets ?? {}),
-            },
-            snipeAllocations: {
-              ...Object.fromEntries(
-                Object.entries(current.snipeAllocations).filter(([key]) => !key.startsWith('sim:')),
-              ),
-              ...(json.status?.snipeAllocations ?? {}),
-            },
-          }));
-        } catch (err) {
-          setToastMsg({ text: `[SIM] 서버 시뮬 스케줄러 시작 실패: ${(err as Error).message}`, type: 'error' });
-          return;
-        }
-        await fetch('/api/snipe-state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ simSnipeActive: true }),
-        }).catch(() => {});
-        const count = Object.keys(useFundingStore.getState().snipeTargets).filter((key) => key.startsWith('sim:')).length;
-        setToastMsg({ text: `[SIM] 스나이핑 시작! ${count}개 코인 예약`, type: 'success' });
-      }
+      setToastMsg({ text: '[SIM] 자동 투자 중지됨', type: 'success' });
+      return;
     }
-  }, [simulationMode, cancelSnipe, resolveRuntimeModeActive]);
+
+    const state = useFundingStore.getState();
+    const totalCapital = state.strategyConfig.investmentUSDT * 2 * state.enabledExchanges.length;
+
+    if (!(state.strategyConfig.investmentUSDT > 0) || !(state.strategyConfig.leverage > 0)) {
+      setToastMsg({
+        text: '[SIM] 설정 필요: /settings 에서 투자금·레버리지 입력 후 시작하세요.',
+        type: 'error',
+      });
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/sim-scheduler', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'start',
+          config: buildServerSimSchedulerConfig(state.strategyConfig, state.enabledExchanges),
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json() as {
+        success?: boolean;
+        error?: string;
+        status?: {
+          scheduledEntries?: Array<{
+            opportunityId?: string;
+            opportunity?: ManagedOpportunityItem['opp'] | null;
+          }>;
+          snipeTargets?: Record<string, number>;
+          snipeAllocations?: Record<string, number>;
+        };
+      };
+      if (!json.success) throw new Error(json.error || 'sim scheduler start failed');
+      useFundingStore.setState((current) => ({
+        simSnipeActive: true,
+        simSnipeStartCapital: totalCapital,
+        realSnipeActive: false,
+        opportunities: mergeServerSimScheduledOpportunities(
+          current.opportunities,
+          json.status?.scheduledEntries,
+        ),
+        snipeTargets: {
+          ...Object.fromEntries(
+            Object.entries(current.snipeTargets).filter(([key]) => !key.startsWith('sim:')),
+          ),
+          ...(json.status?.snipeTargets ?? {}),
+        },
+        snipeAllocations: {
+          ...Object.fromEntries(
+            Object.entries(current.snipeAllocations).filter(([key]) => !key.startsWith('sim:')),
+          ),
+          ...(json.status?.snipeAllocations ?? {}),
+        },
+      }));
+    } catch (err) {
+      setToastMsg({ text: `[SIM] 서버 시뮬 스케줄러 시작 실패: ${(err as Error).message}`, type: 'error' });
+      return;
+    }
+
+    await fetch('/api/snipe-state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ simSnipeActive: true, realSnipeActive: false, simulationMode: true }),
+    }).catch(() => {});
+    const count = Object.keys(useFundingStore.getState().snipeTargets).filter((key) => key.startsWith('sim:')).length;
+    setToastMsg({ text: `[SIM] 스나이핑 시작! ${count}개 코인 예약`, type: 'success' });
+  }, [cancelSnipe, resolveRuntimeModeActive]);
 
   // ── Portfolio ──
 

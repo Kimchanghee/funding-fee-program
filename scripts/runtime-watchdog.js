@@ -17,11 +17,9 @@ const STARTUP_GRACE_MS = Number(process.env.WATCHDOG_STARTUP_GRACE_MS || 90000);
 const RESTART_COOLDOWN_MS = Number(process.env.WATCHDOG_RESTART_COOLDOWN_MS || 120000);
 const DATA_PROBE_INTERVAL_MS = Number(process.env.WATCHDOG_DATA_PROBE_INTERVAL_MS || 20000);
 const FUNDING_STALL_THRESHOLD_MS = Number(process.env.WATCHDOG_FUNDING_STALL_THRESHOLD_MS || 60000);
-const EXPECTED_MODE_RAW = (process.env.WATCHDOG_EXPECTED_MODE || 'either').toLowerCase();
 const AUTO_START_SIM = String(process.env.WATCHDOG_AUTO_START_SIM || 'false').toLowerCase() === 'true';
 const SIM_START_COOLDOWN_MS = Number(process.env.WATCHDOG_SIM_START_COOLDOWN_MS || 60000);
 
-const SCHEDULER_PATH = '/api/scheduler';
 const SIM_SCHEDULER_PATH = '/api/sim-scheduler';
 const HEALTH_PATH = '/api/market-data-health';
 const FUNDING_PROBE_PATH = '/api/funding-rates?exchanges=binance';
@@ -36,28 +34,7 @@ let lastRestartAt = 0;
 let lastSimStartAt = 0;
 const startedAt = Date.now();
 
-function normalizeExpectedMode(value) {
-  if (value === 'real' || value === 'sim' || value === 'both' || value === 'either') {
-    return value;
-  }
-  return 'either';
-}
-
-const EXPECTED_MODE = normalizeExpectedMode(EXPECTED_MODE_RAW);
-
-function isExpectedModeActive(realActive, simActive) {
-  switch (EXPECTED_MODE) {
-    case 'real':
-      return realActive;
-    case 'sim':
-      return simActive;
-    case 'both':
-      return realActive && simActive;
-    case 'either':
-    default:
-      return realActive || simActive;
-  }
-}
+const EXPECTED_MODE = 'sim';
 
 function formatTimestamp() {
   const date = new Date();
@@ -156,11 +133,9 @@ function shouldEnforceFailures() {
   return Date.now() - startedAt >= STARTUP_GRACE_MS;
 }
 
-function shouldAutoStartSim(realActive, simActive) {
+function shouldAutoStartSim(simActive) {
   if (!AUTO_START_SIM || simActive) return false;
-  if (EXPECTED_MODE === 'sim' || EXPECTED_MODE === 'both') return true;
-  if (EXPECTED_MODE === 'either' && !realActive) return true;
-  return false;
+  return true;
 }
 
 async function startSimScheduler(simScheduler) {
@@ -189,8 +164,7 @@ async function startSimScheduler(simScheduler) {
 }
 
 async function runHealthChecks() {
-  const [scheduler, simScheduler, health] = await Promise.all([
-    fetchJson(SCHEDULER_PATH),
+  const [simScheduler, health] = await Promise.all([
     fetchJson(SIM_SCHEDULER_PATH),
     fetchJson(HEALTH_PATH),
   ]);
@@ -242,28 +216,26 @@ async function runHealthChecks() {
     }
   }
 
-  return { scheduler, simScheduler, health };
+  return { simScheduler, health };
 }
 
 async function cycle() {
   try {
-    const { scheduler, simScheduler, health } = await runHealthChecks();
+    const { simScheduler, health } = await runHealthChecks();
     appFailCount = 0;
 
-    const realActive = scheduler?.active === true;
     const simActive = simScheduler?.active === true;
-    const targetActive = isExpectedModeActive(realActive, simActive);
+    const targetActive = simActive;
     const fundingHealth = health?.data?.funding?.binance;
     const orderbookHealth = health?.data?.orderbook;
     log(
-      `ok realActive=${realActive ? 'yes' : 'no'} `
-      + `simActive=${simActive ? 'yes' : 'no'} `
+      `ok simActive=${simActive ? 'yes' : 'no'} `
       + `targetActive(${EXPECTED_MODE})=${targetActive ? 'yes' : 'no'} `
       + `funding=${fundingHealth?.source || 'none'} `
       + `orderbookFresh=${orderbookHealth?.freshEntries ?? 0}`,
     );
 
-    if (shouldAutoStartSim(realActive, simActive)) {
+    if (shouldAutoStartSim(simActive)) {
       await startSimScheduler(simScheduler);
     }
 

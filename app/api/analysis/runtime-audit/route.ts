@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { buildRuntimeAuditReport } from '@/lib/analysis/runtime/buildRuntimeAuditReport';
-import { getServerScheduler } from '@/lib/serverScheduler';
 import { getServerSimScheduler } from '@/lib/serverSimScheduler';
 import { formatTimestampYmdHmsMs } from '@/lib/timeFormat';
 
@@ -23,7 +22,6 @@ function getTopKey(items: Array<{ key: string; count: number }>, fallback: strin
 }
 
 function buildDiagnosis(args: {
-  realActive: boolean;
   simActive: boolean;
   executionTotal: number;
   guardTotal: number;
@@ -31,18 +29,16 @@ function buildDiagnosis(args: {
   lastExecutionAt: number | null;
   now: number;
 }) {
-  const activeAny = args.realActive || args.simActive;
   const hoursSinceLastExecution = args.lastExecutionAt == null
     ? null
     : Number(((args.now - args.lastExecutionAt) / (60 * 60 * 1000)).toFixed(2));
 
-  if (!activeAny) {
+  if (!args.simActive) {
     return {
       code: 'scheduler_inactive',
-      summary: 'REAL/SIM 스케줄러가 모두 비활성이라 신규 거래가 발생하지 않았습니다.',
+      summary: 'SIM 스케줄러가 비활성이라 신규 시뮬레이션 거래가 발생하지 않았습니다.',
       hoursSinceLastExecution,
       evidence: {
-        realActive: args.realActive,
         simActive: args.simActive,
       },
     };
@@ -105,12 +101,12 @@ export async function GET(req: NextRequest) {
     now,
   });
 
-  const realStatus = getServerScheduler().getStatus();
   const simStatus = getServerSimScheduler().getStatus();
   const runtime = {
     real: {
-      active: !!realStatus.active,
-      startedAt: realStatus.startedAt ?? null,
+      active: false,
+      startedAt: null,
+      removed: true,
     },
     sim: {
       active: !!simStatus.active,
@@ -119,7 +115,6 @@ export async function GET(req: NextRequest) {
   };
 
   const diagnosis = buildDiagnosis({
-    realActive: runtime.real.active,
     simActive: runtime.sim.active,
     executionTotal: report.execution.total,
     guardTotal: report.guardBlocks.total,

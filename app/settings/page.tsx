@@ -8,7 +8,6 @@ import {
   EXCHANGE_NAMES,
   EXCHANGE_COLORS,
   OPERABLE_EXCHANGES,
-  isExchangeOperable,
   EXCHANGE_FEES,
   EXCHANGE_PAYBACKS,
   DEFAULT_TIMING_CONFIG,
@@ -17,9 +16,7 @@ import {
   EXCHANGE_PAYBACK_PRESET_LABEL,
   EXCHANGE_PAYBACK_PRESET_NOTE,
 } from '@/lib/types';
-import StatusDot from '@/components/ui/StatusDot';
 import Header from '@/components/dashboard/Header';
-import ApiPanel from '@/components/dashboard/ApiPanel';
 
 /** 수수료 입력 — onBlur/Enter 시에만 커밋, 입력 중에는 로컬 state 사용 */
 function FeeInput({ label, defaultPct, currentPct, maxPct = 10, onCommit }: {
@@ -81,12 +78,6 @@ export default function SettingsPage() {
   const {
     strategyConfig,
     setStrategyConfig,
-    connectedExchanges,
-    testConnection,
-    showApiPanel,
-    setShowApiPanel,
-    openApiPanelFor,
-    refreshBalances,
     refreshRates,
     isLoadingRates,
     lastRatesUpdate,
@@ -101,7 +92,6 @@ export default function SettingsPage() {
   }, []);
 
   const bestOpp = opportunities[0];
-  const connectedOperableCount = connectedExchanges.filter((exchange) => isExchangeOperable(exchange)).length;
   const timingConfig = strategyConfig.timingConfig ?? DEFAULT_TIMING_CONFIG;
   const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
   const appBuildDateRaw = process.env.NEXT_PUBLIC_APP_BUILD_DATE;
@@ -628,79 +618,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Exchange Status */}
-          <div className="glass-card settings-card settings-exchange-status-card" style={{ padding: 24 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: 'var(--color-text)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              거래소 연결 상태
-              <button
-                className="btn btn-ghost"
-                style={{ padding: '4px 10px', fontSize: 11 }}
-                onClick={() => setShowApiPanel(true)}
-              >
-                + API 키 추가
-              </button>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {OPERABLE_EXCHANGES.map(ex => {
-                const color = EXCHANGE_COLORS[ex];
-                const connected = connectedExchanges.includes(ex);
-                return (
-                  <div
-                    className="settings-exchange-row"
-                    key={ex}
-                    onClick={connected ? undefined : () => openApiPanelFor(ex)}
-                    role={connected ? undefined : 'button'}
-                    tabIndex={connected ? undefined : 0}
-                    onKeyDown={connected ? undefined : (e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        openApiPanelFor(ex);
-                      }
-                    }}
-                    title={connected ? undefined : `${EXCHANGE_NAMES[ex]} API 키 입력하기`}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '10px 14px',
-                      borderRadius: 8,
-                      background: connected ? `${color}0a` : 'var(--bg-accent)',
-                      border: `1px solid ${connected ? `${color}33` : 'var(--color-border)'}`,
-                      cursor: connected ? 'default' : 'pointer',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <StatusDot status={connected ? 'connected' : 'disconnected'} />
-                      <span style={{ fontSize: 13, fontWeight: 700, color }}>{EXCHANGE_NAMES[ex]}</span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 11, color: connected ? '#10b981' : color, fontWeight: connected ? 400 : 700 }}>
-                        {connected ? 'API 설정됨' : '+ 클릭해서 입력'}
-                      </span>
-                      {connected ? (
-                        <button
-                          className="btn btn-ghost"
-                          style={{ padding: '3px 8px', fontSize: 10 }}
-                          onClick={(e) => { e.stopPropagation(); testConnection(ex); }}
-                        >
-                          테스트
-                        </button>
-                      ) : (
-                        <button
-                          className="btn btn-ghost"
-                          style={{ padding: '3px 8px', fontSize: 10 }}
-                          onClick={(e) => { e.stopPropagation(); openApiPanelFor(ex); }}
-                        >
-                          입력
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
           {/* Strategy Status */}
           <div className="glass-card settings-card settings-strategy-status-card" style={{ padding: 24 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: 'var(--color-text)' }}>
@@ -708,8 +625,8 @@ export default function SettingsPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
-                <span style={{ color: 'var(--color-text-muted)' }}>연결된 거래소</span>
-                <span style={{ fontWeight: 700, color: 'var(--color-text)' }}>{connectedOperableCount} / {OPERABLE_EXCHANGES.length}</span>
+                <span style={{ color: 'var(--color-text-muted)' }}>실행 모드</span>
+                <span style={{ fontWeight: 700, color: '#a78bfa' }}>SIM ONLY</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
                 <span style={{ color: 'var(--color-text-muted)' }}>발견된 기회</span>
@@ -748,7 +665,7 @@ export default function SettingsPage() {
               <button
                 className="btn btn-ghost"
                 style={{ marginTop: 8 }}
-                onClick={() => { refreshRates(); refreshBalances(); }}
+                onClick={() => { refreshRates(); }}
                 disabled={isLoadingRates}
               >
                 <RefreshCw size={13} style={{ animation: isLoadingRates ? 'spin 1s linear infinite' : 'none' }} />
@@ -780,7 +697,6 @@ export default function SettingsPage() {
         </div>
       </main>
 
-      {showApiPanel && <ApiPanel />}
     </div>
   );
 }

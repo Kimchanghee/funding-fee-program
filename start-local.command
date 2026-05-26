@@ -40,7 +40,7 @@ disown ${NEW_PID} || true
 for i in $(seq 1 30); do
   if curl -fsS -o /dev/null "http://${HOSTNAME}:${PORT}/login" 2>/dev/null; then
     echo "[start-local] ready -> http://${HOSTNAME}:${PORT}"
-    echo "[start-local] ensuring SIM scheduler is active (REAL scheduler untouched)"
+    echo "[start-local] ensuring SIM scheduler is active (SIM-only build)"
     python3 <<'PY'
 import json
 import os

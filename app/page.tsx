@@ -8,7 +8,6 @@ import BalanceCards from '@/components/dashboard/BalanceCards';
 import BalanceEqualizationPanel from '@/components/dashboard/BalanceEqualizationPanel';
 import PositionsTable from '@/components/dashboard/PositionsTable';
 import LogPanel from '@/components/dashboard/LogPanel';
-import ApiPanel from '@/components/dashboard/ApiPanel';
 import StrategyPanel from '@/components/dashboard/StrategyPanel';
 import DataStatusBar from '@/components/dashboard/DataStatusBar';
 import RuntimeAuditSummary from '@/components/dashboard/RuntimeAuditSummary';
@@ -19,7 +18,7 @@ import { useFundingStore } from '@/store/fundingStore';
 import { getTelegramConfig, isTelegramReady, saveTelegramConfig } from '@/lib/telegram';
 
 export default function DashboardPage() {
-  const { init, showApiPanel, showStrategyPanel } = useFundingStore();
+  const { init, showStrategyPanel } = useFundingStore();
 
   useEffect(() => {
     console.log('[Page] init() 호출');
@@ -101,7 +100,6 @@ export default function DashboardPage() {
       </main>
 
       {/* Modals */}
-      {showApiPanel && <ApiPanel />}
       {showStrategyPanel && <StrategyPanel />}
     </div>
   );

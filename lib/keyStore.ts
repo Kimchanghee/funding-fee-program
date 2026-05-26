@@ -1,87 +1,5 @@
-import type { ApiConfig, ExchangeId, StrategyConfig, LogEntry, FundingPayment, SimPosition } from './types';
+import type { StrategyConfig, LogEntry, FundingPayment, SimPosition } from './types';
 import { sanitizeFeeOverrides, sanitizePaybackOverrides, getResolvedTimingConfig } from './types';
-
-const STORAGE_KEY = 'funding_fee_api_configs_v2';
-const LEGACY_STORAGE_KEY = 'funding_fee_api_configs';
-
-// Simple obfuscation to prevent casual plaintext reading of API keys in localStorage.
-// NOTE: This is NOT encryption - client-side storage is inherently vulnerable to XSS.
-// For production use, consider server-side key storage with session-based access.
-const OBF_PREFIX = 'obf:';
-
-function obfuscate(value: string): string {
-  try {
-    return OBF_PREFIX + btoa(encodeURIComponent(value));
-  } catch {
-    return value;
-  }
-}
-
-function deobfuscate(value: string): string {
-  if (!value.startsWith(OBF_PREFIX)) return value; // legacy plaintext
-  try {
-    return decodeURIComponent(atob(value.slice(OBF_PREFIX.length)));
-  } catch {
-    return value;
-  }
-}
-
-function obfuscateConfig(config: ApiConfig): ApiConfig {
-  return {
-    apiKey: obfuscate(config.apiKey),
-    secret: obfuscate(config.secret),
-    ...(config.passphrase ? { passphrase: obfuscate(config.passphrase) } : {}),
-  };
-}
-
-function deobfuscateConfig(config: ApiConfig): ApiConfig {
-  return {
-    apiKey: deobfuscate(config.apiKey),
-    secret: deobfuscate(config.secret),
-    ...(config.passphrase ? { passphrase: deobfuscate(config.passphrase) } : {}),
-  };
-}
-
-export function saveApiConfigs(configs: Partial<Record<ExchangeId, ApiConfig>>): void {
-  if (typeof window === 'undefined') return;
-  const encoded: Partial<Record<ExchangeId, ApiConfig>> = {};
-  for (const [ex, cfg] of Object.entries(configs) as [ExchangeId, ApiConfig][]) {
-    encoded[ex] = obfuscateConfig(cfg);
-  }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(encoded));
-  // Clean up legacy plaintext key
-  localStorage.removeItem(LEGACY_STORAGE_KEY);
-}
-
-export function loadApiConfigs(): Partial<Record<ExchangeId, ApiConfig>> {
-  if (typeof window === 'undefined') return {};
-  try {
-    // Try new format first, then migrate legacy
-    let raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      raw = localStorage.getItem(LEGACY_STORAGE_KEY);
-      if (!raw) return {};
-      // Migrate: re-save with obfuscation
-      const legacy = JSON.parse(raw) as Partial<Record<ExchangeId, ApiConfig>>;
-      saveApiConfigs(legacy); // saves as obfuscated + removes legacy key
-      return legacy;
-    }
-    const parsed = JSON.parse(raw) as Partial<Record<ExchangeId, ApiConfig>>;
-    const decoded: Partial<Record<ExchangeId, ApiConfig>> = {};
-    for (const [ex, cfg] of Object.entries(parsed) as [ExchangeId, ApiConfig][]) {
-      decoded[ex] = deobfuscateConfig(cfg);
-    }
-    return decoded;
-  } catch {
-    return {};
-  }
-}
-
-export function clearApiConfigs(): void {
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem(STORAGE_KEY);
-  localStorage.removeItem(LEGACY_STORAGE_KEY);
-}
 
 // Enabled exchanges persistence
 const ENABLED_EXCHANGES_KEY = 'funding_fee_enabled_exchanges';
@@ -104,8 +22,7 @@ export function loadEnabledExchanges(): string[] | null {
 
 // Storage schema version — bumped whenever default shape changes so stale
 // localStorage from prior builds gets cleared instead of overriding updated
-// strategy defaults. Only money-related keys are cleared; API keys and other
-// user-managed blobs survive the migration.
+// strategy defaults.
 const SCHEMA_VERSION_KEY = 'funding_fee_schema_version';
 // Bumped to v6 so clients carrying the aggressive profile are re-seeded with
 // the best-record 2026-04-17~20 strategy defaults.
@@ -201,7 +118,6 @@ export function loadFundingHistory(): FundingPayment[] | null {
 // Sim state persistence (balances, positions, totalEarned)
 const SIM_STATE_KEY = 'funding_fee_sim_state';
 const SIM_HISTORY_RESET_AT_KEY = 'funding_fee_sim_history_reset_at';
-const REAL_HISTORY_RESET_AT_KEY = 'funding_fee_real_history_reset_at';
 
 interface SimState {
   simBalances: Record<string, number>;
@@ -257,57 +173,12 @@ export function loadSimHistoryResetAt(): number {
   }
 }
 
-export function saveRealHistoryResetAt(timestamp: number): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(REAL_HISTORY_RESET_AT_KEY, JSON.stringify(timestamp));
-  } catch {}
-}
-
-export function loadRealHistoryResetAt(): number {
-  if (typeof window === 'undefined') return 0;
-  try {
-    const raw = localStorage.getItem(REAL_HISTORY_RESET_AT_KEY);
-    if (!raw) return 0;
-    const value = Number(JSON.parse(raw));
-    return Number.isFinite(value) && value > 0 ? value : 0;
-  } catch {
-    return 0;
-  }
-}
-
 // Simulation mode persistence
 const SIM_MODE_KEY = 'funding_fee_sim_mode';
 
 export function saveSimMode(mode: boolean): void {
   if (typeof window === 'undefined') return;
   try { localStorage.setItem(SIM_MODE_KEY, JSON.stringify(mode)); } catch {}
-}
-
-export function loadSimMode(): boolean | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(SIM_MODE_KEY);
-    if (raw === null) return null;
-    return JSON.parse(raw);
-  } catch { return null; }
-}
-
-// Real position meta persistence
-const REAL_META_KEY = 'funding_fee_real_position_meta';
-
-export function saveRealPositionMeta(meta: Record<string, unknown>): void {
-  if (typeof window === 'undefined') return;
-  try { localStorage.setItem(REAL_META_KEY, JSON.stringify(meta)); } catch {}
-}
-
-export function loadRealPositionMeta(): Record<string, unknown> | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(REAL_META_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch { return null; }
 }
 
 export function clearFundingHistory(): void {
