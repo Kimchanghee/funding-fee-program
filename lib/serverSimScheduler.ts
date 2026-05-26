@@ -119,9 +119,9 @@ const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
-const MIN_EV_ALLOCATION_USDT = 2;
+const MIN_EV_ALLOCATION_USDT = 10;
 const MIN_EV_ALLOCATION_FRACTION = 0.01;
-const MIN_EXECUTABLE_NOTIONAL_USDT = 100;
+const MIN_EXECUTABLE_NOTIONAL_USDT = 170;
 const LIQUIDITY_SIZING_CANDIDATE_CAP = 72;
 const PROFITABLE_SIZING_SEARCH_STEPS = 16;
 const FUNDING_REVALIDATE_CACHE_MAX_AGE_MS = 15_000;
@@ -4187,6 +4187,7 @@ class ServerSimScheduler {
       };
     };
 
+    let liveSpreadBelowConfiguredMin = false;
     try {
       // Live spread revalidation with one re-measurement on failure.
       // Rationale (2026-04-28 review): out of 14 live_spread_reverted blocks in 24h,
@@ -4265,16 +4266,16 @@ class ServerSimScheduler {
         };
       }
 
-      if (liveSpread <= 0 || liveSpreadPercent < this.config.minSpreadPercent) {
+      if (liveSpread <= 0) {
         return {
           success: false,
-          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% < ${this.config.minSpreadPercent.toFixed(4)}% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
+          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% <= 0.0000% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
           analysis: buildFailureAnalysis({
             attemptedNotionalUSDT: baseNotional,
             extra: {
               liveSpreadPercent,
               minSpreadPercent: this.config.minSpreadPercent,
-              executionGate: 'min_spread_then_loss_only_ev',
+              executionGate: 'positive_spread_then_ev',
               liveSpreadAttempts,
               shortRevalidateSource,
               longRevalidateSource,
@@ -4287,6 +4288,7 @@ class ServerSimScheduler {
         };
       }
 
+      liveSpreadBelowConfiguredMin = liveSpreadPercent < this.config.minSpreadPercent;
       const shortFundingShiftMs = Math.abs(shortLiveRate.nextFundingTime - targetFundingTime);
       const longFundingShiftMs = Math.abs(longLiveRate.nextFundingTime - targetFundingTime);
       const fundingIntervalMs = opportunity.fundingIntervalMs && opportunity.fundingIntervalMs > 0
@@ -4769,6 +4771,10 @@ class ServerSimScheduler {
         entryGapLivePercent: entryGap.liveGapPercent,
         entryGapDriftPercent: entryGap.driftPercent,
         basisRiskReservePct: basisConvergenceReservePct,
+        liveSpreadPercent: spreadPercentForDecision,
+        configuredMinSpreadPercent: this.config.minSpreadPercent,
+        liveSpreadBelowConfiguredMin,
+        executionGate: 'positive_spread_then_ev',
       };
       if (ev.expectedNetUSD <= 0) {
         return {
