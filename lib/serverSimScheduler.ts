@@ -1169,7 +1169,7 @@ class ServerSimScheduler {
   private config: ServerSimSchedulerConfig = {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.03,
+    minSpreadPercent: 0.01,
     compoundInvesting: true,
     enabledExchanges: [],
     timingConfig: getResolvedTimingConfig(),

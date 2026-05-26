@@ -60,11 +60,11 @@ headers = {
 default_config = {
     "investmentUSDT": 250,
     "leverage": 17,
-    "minSpreadPercent": 0.03,
+    "minSpreadPercent": 0.01,
     "compoundInvesting": True,
     "enabledExchanges": ["binance", "bybit", "okx", "bitget", "gate", "bingx"],
     "timingConfig": {
-        "entryLeadMs": 30000,
+        "entryLeadMs": 180000,
         "closeDelayMs": 1000,
         "fundingVerifyRetryMs": 5000,
         "fundingVerifyAttempts": 3,
@@ -102,7 +102,7 @@ try:
     current_config = status.get("config") if isinstance(status, dict) else {}
     config = {**default_config, **(current_config or {})}
     config["enabledExchanges"] = default_config["enabledExchanges"]
-    config["minSpreadPercent"] = min(float(config.get("minSpreadPercent") or 0.03), 0.03)
+    config["minSpreadPercent"] = min(float(config.get("minSpreadPercent") or 0.01), 0.01)
     config["maxSlippagePercent"] = max(float(config.get("maxSlippagePercent") or 0), 4)
     current_timing = ((current_config or {}).get("timingConfig") or {})
     timing_config = {**default_config["timingConfig"], **current_timing}
@@ -110,7 +110,7 @@ try:
         current_entry_lead = float(timing_config.get("entryLeadMs") or 0)
     except (TypeError, ValueError):
         current_entry_lead = 0
-    timing_config["entryLeadMs"] = max(30000, min(60000, current_entry_lead))
+    timing_config["entryLeadMs"] = max(180000, min(300000, current_entry_lead))
     config["timingConfig"] = timing_config
     config["confirmedSnipeConfig"] = {
         **default_config["confirmedSnipeConfig"],
@@ -130,12 +130,16 @@ try:
     action = "update" if status.get("active") else "start"
     result = request_json("POST", "/api/sim-scheduler", {"action": action, "config": config}, timeout=60)
     next_status = result.get("status", {})
+    applied_config = next_status.get("config") if isinstance(next_status, dict) else {}
+    applied_timing = (applied_config or {}).get("timingConfig") or {}
     scheduled = len(next_status.get("scheduledEntries") or [])
     print(
         "[start-local] SIM scheduler "
         f"{action} ok | active={next_status.get('active')} | scheduled={scheduled} | "
-        f"investment=${config['investmentUSDT']} | leverage={config['leverage']}x | "
-        f"entryLeadMs={config['timingConfig']['entryLeadMs']}"
+        f"investment=${(applied_config or config).get('investmentUSDT')} | "
+        f"leverage={(applied_config or config).get('leverage')}x | "
+        f"minSpread={float((applied_config or config).get('minSpreadPercent', config['minSpreadPercent'])):.4f}% | "
+        f"entryLeadMs={applied_timing.get('entryLeadMs', config['timingConfig']['entryLeadMs'])}"
     )
 except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError) as exc:
     print(f"[start-local] WARN: SIM scheduler auto-start failed: {exc}")

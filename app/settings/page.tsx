@@ -237,7 +237,7 @@ export default function SettingsPage() {
                     className="input-field"
                     type="number"
                     min={0}
-                    max={60000}
+                    max={300000}
                     step={100}
                     value={timingConfig.entryLeadMs}
                     onChange={e => updateTimingConfig({ entryLeadMs: Number(e.target.value) })}

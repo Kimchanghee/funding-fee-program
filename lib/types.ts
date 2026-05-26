@@ -248,7 +248,7 @@ export interface TimingConfig {
 }
 
 export const DEFAULT_TIMING_CONFIG: TimingConfig = {
-  entryLeadMs: 30_000,
+  entryLeadMs: 180_000,
   closeDelayMs: 1_000,
   fundingVerifyRetryMs: 5_000,
   fundingVerifyAttempts: 3,
@@ -362,7 +362,7 @@ export function hasValidTimingConfig(config: unknown): config is TimingConfig {
   if (!config || typeof config !== 'object') return false;
 
   const timing = config as Record<string, unknown>;
-  return isValidTimingMs(timing.entryLeadMs, 0, 60_000)
+  return isValidTimingMs(timing.entryLeadMs, 0, 300_000)
     && isValidTimingMs(timing.closeDelayMs, 0, 60_000)
     && isValidTimingMs(timing.fundingVerifyRetryMs, 1_000, 120_000)
     && isValidTimingCount(timing.fundingVerifyAttempts, 1, 20);
