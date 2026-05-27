@@ -18,10 +18,12 @@ function normalizeReason(reason?: string): string {
 function getReasonPolicy(reasonRaw?: string): { cooldownMs: number; weight: number } {
   const reason = normalizeReason(reasonRaw);
   if (reason.includes('orderbook_ev_negative') || reason.includes('no_profitable_executable_size')) {
-    return { cooldownMs: 30 * 60 * 1000, weight: 2.2 };
+    return { cooldownMs: 45 * 1000, weight: 0.35 };
+  }
+  if (reason.includes('profitability_scan_failed') || reason.includes('profitability_insufficient')) {
+    return { cooldownMs: 2 * 60 * 1000, weight: 0.35 };
   }
   if (reason.includes('revalidate_spread_reverted')) return { cooldownMs: 2 * 60 * 1000, weight: 1.0 };
-  if (reason.includes('profitability')) return { cooldownMs: 45 * 1000, weight: 0.25 };
   if (reason.includes('depth')) return { cooldownMs: 12 * 60 * 1000, weight: 1.8 };
   if (reason.includes('slippage') || reason.includes('impact') || reason.includes('entry_gap')) {
     return { cooldownMs: 10 * 60 * 1000, weight: 1.7 };
@@ -127,7 +129,8 @@ export class RouteFailureMemory {
     const state = this.states.get(routeKey);
     if (!state) return false;
     if (state.blockedUntil <= now) return false;
-    return state.score >= 0.5;
+    if (state.score >= 0.9) return true;
+    return false;
   }
 
   private prune(now: number) {

@@ -51,6 +51,7 @@ import {
   sanitizeFeeOverrides,
   sanitizePaybackOverrides,
   sanitizeTimingConfig,
+  MIN_PROFIT_USD,
   type ArbitrageOpportunity,
   type ConfirmedSnipeConfig,
   type ExchangeId,
@@ -119,9 +120,16 @@ const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
-const MIN_EV_ALLOCATION_USDT = 10;
-const MIN_EV_ALLOCATION_FRACTION = 0.01;
-const MIN_EXECUTABLE_NOTIONAL_USDT = 170;
+const MIN_EV_ALLOCATION_USDT = 1;
+const MIN_EV_ALLOCATION_FRACTION = 0.002;
+const MIN_EXECUTABLE_NOTIONAL_USDT = 10;
+const EXECUTION_EMERGENCY_MIN_ALLOCATION_USDT = 1;
+const EMERGENCY_FALLBACK_SCALE_MIN = 0.5;
+const LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT = -0.03;
+const SIM_EXECUTION_MIN_EV_FLOOR_USD = -0.2;
+const MAX_NEGATIVE_EV_RATIO = 0.03;
+const MAX_NEGATIVE_EV_USD = 0.5;
+const MIN_NEGATIVE_EV_USD = 0.01;
 const LIQUIDITY_SIZING_CANDIDATE_CAP = 72;
 const PROFITABLE_SIZING_SEARCH_STEPS = 16;
 const FUNDING_REVALIDATE_CACHE_MAX_AGE_MS = 15_000;
@@ -229,6 +237,36 @@ function calcBookSpreadBps(bid: number, ask: number): number {
   const mid = (bid + ask) / 2;
   if (!Number.isFinite(mid) || mid <= 0) return 0;
   return ((ask - bid) / mid) * 10000;
+}
+
+function getMinExecutableAllocationUSDT(
+  investmentUSDT: number,
+  leverage: number,
+): number {
+  const leverageFloor = Math.max(1, leverage);
+  return Math.min(
+    Math.max(
+      MIN_EV_ALLOCATION_USDT,
+      MIN_EXECUTABLE_NOTIONAL_USDT / leverageFloor,
+      investmentUSDT * MIN_EV_ALLOCATION_FRACTION,
+    ),
+    Math.max(MIN_EV_ALLOCATION_USDT, investmentUSDT),
+  );
+}
+
+function getAcceptableNetEvFloor(investmentUSDT: number): number {
+  const scaledFloor = Math.abs(investmentUSDT) * MAX_NEGATIVE_EV_RATIO;
+  return -Math.max(
+    MIN_NEGATIVE_EV_USD,
+    Math.min(scaledFloor, MAX_NEGATIVE_EV_USD),
+  );
+}
+
+function getSpreadAcceptanceThreshold(minSpreadPercent: number): number {
+  if (!Number.isFinite(minSpreadPercent) || minSpreadPercent <= 0) {
+    return LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT;
+  }
+  return minSpreadPercent;
 }
 
 function calcBasisBps(shortMid: number, longMid: number): number {
@@ -429,6 +467,7 @@ function mapSimEntryErrorToGuardReason(error?: string): string {
   if (normalized.includes('runtime fee unavailable')) return 'fee_cache_unavailable';
   if (normalized.includes('funding revalidate error')) return 'funding_revalidate_failed';
   if (normalized.includes('no profitable executable size')) return 'orderbook_ev_negative';
+  if (normalized.includes('no acceptable executable size')) return 'orderbook_ev_negative';
   if (normalized.includes('slippage exceeded')) return 'slippage_exceeded';
   if (normalized.includes('impact exceeded')) return 'impact_exceeded';
   if (normalized.includes('entry gap')) return 'entry_gap_exceeded';
@@ -540,9 +579,18 @@ type LiquiditySizedCandidate = {
 };
 
 function getOrderbookMid(book: OrderbookSnapshot): number | null {
-  const bid = book.bids?.[0]?.[0];
-  const ask = book.asks?.[0]?.[0];
-  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0) return null;
+  const findFirstPositivePrice = (levels?: number[][]): number | null => {
+    if (!levels?.length) return null;
+    for (const level of levels) {
+      const price = Number(level?.[0]);
+      if (Number.isFinite(price) && price > 0) return price;
+    }
+    return null;
+  };
+
+  const bid = findFirstPositivePrice(book.bids);
+  const ask = findFirstPositivePrice(book.asks);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || (bid as number) <= 0 || (ask as number) <= 0) return null;
   return ((bid as number) + (ask as number)) / 2;
 }
 
@@ -721,6 +769,7 @@ function findMaxProfitableOrderbookSizing(
   shortBook: OrderbookSnapshot,
   longBook: OrderbookSnapshot,
   rates?: { shortRate?: number; longRate?: number },
+  minExpectedNetUSD = 0,
 ): ProfitableOrderbookSizing | null {
   const maxInvestment = Math.max(0, maxInvestmentUSDT);
   const minInvestment = Math.max(0, Math.min(minInvestmentUSDT, maxInvestment));
@@ -734,8 +783,6 @@ function findMaxProfitableOrderbookSizing(
     longBook,
     rates,
   );
-  if (!minSizing || minSizing.expectedNetUSD <= 0) return null;
-
   const maxSizing = evaluateOrderbookSizing(
     opportunity,
     strategyConfig,
@@ -744,9 +791,10 @@ function findMaxProfitableOrderbookSizing(
     longBook,
     rates,
   );
-  if (maxSizing && maxSizing.expectedNetUSD > 0) return maxSizing;
+  const maxSizingPass = maxSizing && maxSizing.expectedNetUSD >= minExpectedNetUSD;
+  if (maxSizingPass) return maxSizing;
 
-  let best = minSizing;
+  let best: ProfitableOrderbookSizing | null = maxSizingPass ? maxSizing : (minSizing ?? null);
   let low = minInvestment;
   let high = maxInvestment;
   for (let attempt = 0; attempt < PROFITABLE_SIZING_SEARCH_STEPS; attempt += 1) {
@@ -759,14 +807,61 @@ function findMaxProfitableOrderbookSizing(
       longBook,
       rates,
     );
-    if (sizing && sizing.expectedNetUSD > 0) {
+    if (sizing && sizing.expectedNetUSD >= minExpectedNetUSD) {
       best = sizing;
       low = mid;
     } else {
       high = mid;
     }
   }
+  if (!best || best.expectedNetUSD < minExpectedNetUSD) return null;
   return best;
+}
+
+function findMaxProfitableOrderbookSizingSafe(
+  opportunity: ArbitrageOpportunity,
+  strategyConfig: Pick<
+    StrategyConfig,
+    'investmentUSDT' | 'leverage' | 'feeOverrides' | 'paybackOverrides' | 'maxSlippagePercent' | 'confirmedSnipeConfig'
+  >,
+  maxInvestmentUSDT: number,
+  minInvestmentUSDT: number,
+  shortBook: OrderbookSnapshot,
+  longBook: OrderbookSnapshot,
+  rates?: { shortRate?: number; longRate?: number },
+  minExpectedNetUSD = 0,
+) {
+  const safeMax = Math.max(0, maxInvestmentUSDT);
+  const safeMin = Math.max(0, Math.min(minInvestmentUSDT, safeMax));
+  if (safeMin <= 0 || safeMax <= 0) return null;
+  return findMaxProfitableOrderbookSizing(
+    opportunity,
+    strategyConfig,
+    safeMax,
+    safeMin,
+    shortBook,
+    longBook,
+    rates,
+    minExpectedNetUSD ?? getAcceptableNetEvFloor(safeMax),
+  );
+}
+
+function getDynamicSizingEmergencyStart(
+  requestedMargin: number,
+  leverage: number,
+  maxDynamicInvestment: number,
+): number {
+  const safeLeverage = Math.max(1, leverage);
+  const emergencyMinByNotional = MIN_EXECUTABLE_NOTIONAL_USDT / safeLeverage;
+  const emergencyFloor = Math.max(
+    EXECUTION_EMERGENCY_MIN_ALLOCATION_USDT,
+    Math.min(
+      maxDynamicInvestment,
+      Math.max(EMERGENCY_FALLBACK_SCALE_MIN, emergencyMinByNotional),
+    ),
+  );
+  if (maxDynamicInvestment <= 0) return 0;
+  return Math.min(emergencyFloor, maxDynamicInvestment);
 }
 
 function buildVolumeByExchangeAsset(rates: FundingRate[]): Map<string, number> {
@@ -799,12 +894,14 @@ function resolveOpportunityVolumeStatus(
 function getOpportunityYieldScore(
   opportunity: ArbitrageOpportunity,
   strategyConfig: StrategyConfig,
+  investmentUSDT?: number,
 ): number {
-  const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig);
+  const evaluationInvestment = Math.max(0, Math.min(strategyConfig.investmentUSDT, investmentUSDT ?? strategyConfig.investmentUSDT));
+  const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig, evaluationInvestment);
   if (!ev) return 0;
-  if (ev.expectedNetUSD <= 0) return 0;
   const intervalHours = Math.max(1, getOpportunityIntervalHours(opportunity));
-  const roiPerMargin = ev.expectedNetUSD / Math.max(1, strategyConfig.investmentUSDT);
+  if (ev.expectedNetUSD <= 0) return 0;
+  const roiPerMargin = ev.expectedNetUSD / Math.max(1, evaluationInvestment);
   return Math.max(0, (ev.expectedNetUSD * Math.max(0.01, ev.evRatio) * (1 + roiPerMargin)) / intervalHours);
 }
 
@@ -815,7 +912,7 @@ function passesPreEntryEVAtAllocation(
 ): ConservativeEVResult | null {
   const ev = estimatePreEntryConservativeEV(opportunity, strategyConfig, investmentUSDT);
   if (!ev) return null;
-  return ev.expectedNetUSD > 0 ? ev : null;
+  return ev;
 }
 
 async function planWindowAllocations(
@@ -826,10 +923,11 @@ async function planWindowAllocations(
   balancePlan?: BalanceEqualizationPlan,
 ): Promise<Array<{ opportunity: ArbitrageOpportunity; investmentUSDT: number; sizing?: ProfitableOrderbookSizing }>> {
   const effectiveBalance = planningBalance ? { ...planningBalance } : availableBalance;
+  const probeAllocation = getMinExecutableAllocationUSDT(strategyConfig.investmentUSDT, strategyConfig.leverage);
   const baseCandidates = opportunities
     .map((opportunity) => ({
       opportunity,
-      preScore: getOpportunityYieldScore(opportunity, strategyConfig)
+      preScore: getOpportunityYieldScore(opportunity, strategyConfig, probeAllocation)
         * getOpportunityBalanceEqualizationMultiplier(balancePlan, opportunity),
     }))
     .filter((candidate) => candidate.preScore > 0)
@@ -840,14 +938,7 @@ async function planWindowAllocations(
 
   const selectedForSizing = baseCandidates.slice(0, LIQUIDITY_SIZING_CANDIDATE_CAP);
 
-  const minAllocation = Math.min(
-    Math.max(
-      MIN_EV_ALLOCATION_USDT,
-      MIN_EXECUTABLE_NOTIONAL_USDT / Math.max(1, strategyConfig.leverage),
-      strategyConfig.investmentUSDT * MIN_EV_ALLOCATION_FRACTION,
-    ),
-    Math.max(MIN_EV_ALLOCATION_USDT, strategyConfig.investmentUSDT),
-  );
+  const minAllocation = probeAllocation;
   const getCostFactor = (exchange: ExchangeId) => (
     1 + (strategyConfig.leverage * resolveRuntimeFee(
       exchange,
@@ -886,16 +977,21 @@ async function planWindowAllocations(
         minAllocation,
         shortBook,
         longBook,
+        undefined,
+        getAcceptableNetEvFloor(minAllocation),
       );
-      if (!sizing || sizing.notionalUSDT < MIN_EXECUTABLE_NOTIONAL_USDT) return null;
+      if (!sizing || sizing.notionalUSDT < probeAllocation * strategyConfig.leverage) return null;
       const intervalHours = Math.max(1, getOpportunityIntervalHours(candidate.opportunity));
       const roiBoost = 1 + Math.max(0, sizing.expectedNetUSD / Math.max(1, sizing.investmentUSDT));
+      const scoringFloor = getAcceptableNetEvFloor(sizing.investmentUSDT);
+      const scoringEv = Math.max(0, sizing.expectedNetUSD - scoringFloor);
       return {
         opportunity: candidate.opportunity,
         shortBook,
         longBook,
         sizing,
-        score: (sizing.expectedNetUSD * Math.max(0.01, sizing.evRatio) * roiBoost / intervalHours)
+        score: (scoringEv
+          * Math.max(0.01, sizing.evRatio) * roiBoost / intervalHours)
           * getOpportunityBalanceEqualizationMultiplier(balancePlan, candidate.opportunity),
       };
     } catch {
@@ -905,7 +1001,7 @@ async function planWindowAllocations(
   );
   const sizedCandidatesRaw = sizedCandidateResults
     .filter((candidate): candidate is LiquiditySizedCandidate => (
-      !!candidate && candidate.score > 0 && candidate.sizing.investmentUSDT >= minAllocation
+      !!candidate && candidate.score >= 0 && candidate.sizing.investmentUSDT >= minAllocation
     ))
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
@@ -926,7 +1022,7 @@ async function planWindowAllocations(
   const assetWindowAllocations = new Map<string, number>();
   const allocationStep = Math.max(
     minAllocation,
-    Math.min(Math.max(strategyConfig.investmentUSDT / 25, MIN_EV_ALLOCATION_USDT), 50),
+    1,
   );
   const assetWindowCap = Math.max(minAllocation, strategyConfig.investmentUSDT);
   const getAssetWindowKey = (opportunity: ArbitrageOpportunity) =>
@@ -945,13 +1041,14 @@ async function planWindowAllocations(
       );
       if (remainingCap < minAllocation) return false;
       const nextInvestment = allocated + Math.min(allocationStep, remainingCap);
+      const acceptableEvFloor = getAcceptableNetEvFloor(nextInvestment);
       return (evaluateOrderbookSizing(
         opportunity,
         strategyConfig,
         nextInvestment,
         candidate.shortBook,
         candidate.longBook,
-      )?.expectedNetUSD ?? 0) > 0;
+      )?.expectedNetUSD ?? 0) >= acceptableEvFloor;
     });
     if (eligible.length === 0) break;
 
@@ -1011,7 +1108,7 @@ async function planWindowAllocations(
     }))
     .filter((candidate) => (
       candidate.investmentUSDT >= minAllocation
-      && candidate.sizing.expectedNetUSD > 0
+      && candidate.sizing.expectedNetUSD >= getAcceptableNetEvFloor(candidate.investmentUSDT)
       && candidate.investmentUSDT <= candidate.sizing.investmentUSDT + 0.0001
     ));
 }
@@ -1169,7 +1266,7 @@ class ServerSimScheduler {
   private config: ServerSimSchedulerConfig = {
     investmentUSDT: 250,
     leverage: 17,
-    minSpreadPercent: 0.01,
+    minSpreadPercent: 0,
     compoundInvesting: true,
     enabledExchanges: [],
     timingConfig: getResolvedTimingConfig(),
@@ -1956,12 +2053,24 @@ class ServerSimScheduler {
         if (!shortRate || !longRate) return null;
         return Math.abs(shortRate.nextFundingTime - longRate.nextFundingTime);
       })();
-      const analysisInvestmentUSDT = selectedAllocation > 0 ? selectedAllocation : strategyConfig.investmentUSDT;
-      const preEntryEv = estimatePreEntryConservativeEV(
-        opportunity,
-        strategyConfig,
-        analysisInvestmentUSDT,
-      );
+    const analysisInvestmentUSDT = selectedAllocation > 0
+      ? selectedAllocation
+      : getMinExecutableAllocationUSDT(strategyConfig.investmentUSDT, strategyConfig.leverage);
+    const preEntryEv = estimatePreEntryConservativeEV(
+      opportunity,
+      strategyConfig,
+      analysisInvestmentUSDT,
+    );
+    const spreadAcceptanceThreshold = getSpreadAcceptanceThreshold(this.config.minSpreadPercent);
+    const preEntryEvFloor = getAcceptableNetEvFloor(analysisInvestmentUSDT);
+    const fallbackPreEntryEv = preEntryEv ?? (Number.isFinite(opportunity.netProfit)
+      ? {
+        expectedNetUSD: opportunity.netProfit,
+        passesMinProfit: opportunity.netProfit >= MIN_PROFIT_USD,
+        passesEVRatio: opportunity.netProfit > 0,
+        evRatio: 0,
+      }
+      : null);
       const rejectReasons: string[] = [];
       if (!this.config.enabledExchanges.includes(opportunity.shortExchange)
         || !this.config.enabledExchanges.includes(opportunity.longExchange)) {
@@ -1973,7 +2082,7 @@ class ServerSimScheduler {
           rejectReasons.push('tier_c_disabled');
         }
       }
-      if (opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
+      if (opportunity.spreadPercent < spreadAcceptanceThreshold) {
         rejectReasons.push('spread_below_threshold');
       }
       if (volumeStatus.belowMin) {
@@ -1998,10 +2107,10 @@ class ServerSimScheduler {
       if (!inReplanFreeze && !inAheadWindow) {
         rejectReasons.push('outside_schedule_window');
       }
-      if (!preEntryEv) {
+      if (!fallbackPreEntryEv) {
         rejectReasons.push('profitability_calculation_failed');
-      } else if (preEntryEv.expectedNetUSD <= 0) {
-        rejectReasons.push('profitability_scan_failed');
+      } else if (fallbackPreEntryEv.expectedNetUSD < preEntryEvFloor && !isSelected) {
+        rejectReasons.push('profitability_negative_preview');
       }
       if (rejectReasons.length === 0 && !candidateIds.has(opportunityId)) {
         rejectReasons.push('not_in_candidates');
@@ -2010,7 +2119,11 @@ class ServerSimScheduler {
         rejectReasons.push('allocation_skip');
       }
 
-      const score = getOpportunityYieldScore(opportunity, strategyConfig);
+      const score = getOpportunityYieldScore(
+        opportunity,
+        strategyConfig,
+        analysisInvestmentUSDT,
+      );
       const isExecutableSelected = isSelected && rejectReasons.length === 0;
       if (isExecutableSelected) selectedCount += 1;
       const status = isExecutableSelected
@@ -2020,7 +2133,7 @@ class ServerSimScheduler {
         : rejectReasons.length === 0
           ? 'unselected'
           : 'rejected';
-      const expectedNetProfit = preEntryEv?.expectedNetUSD ?? opportunity.netProfit;
+      const expectedNetProfit = fallbackPreEntryEv?.expectedNetUSD ?? opportunity.netProfit;
       const expectedRoiPercent = calcExpectedRoiPercent(
         expectedNetProfit,
         analysisInvestmentUSDT,
@@ -2072,9 +2185,9 @@ class ServerSimScheduler {
           inScheduleAheadWindow: inAheadWindow,
           expectedNetProfit,
           expectedRoiPercent,
-          passesMinProfit: preEntryEv?.passesMinProfit ?? null,
-          passesEVRatio: preEntryEv?.passesEVRatio ?? null,
-          evRatio: preEntryEv?.evRatio ?? null,
+          passesMinProfit: fallbackPreEntryEv?.passesMinProfit ?? null,
+          passesEVRatio: fallbackPreEntryEv?.passesEVRatio ?? null,
+          evRatio: fallbackPreEntryEv?.evRatio ?? null,
         },
         detail: `status=${status} alloc=${selectedAllocation.toFixed(4)} score=${score.toFixed(6)} expNet=${expectedNetProfit.toFixed(6)} expRoi=${expectedRoiPercent.toFixed(4)}% reasons=${rejectReasons.join(',') || 'none'} ttfMs=${Math.round(opportunity.nextFundingTime - now)}`,
       });
@@ -2668,6 +2781,8 @@ class ServerSimScheduler {
       }
     }
 
+    const minProbeAllocation = getMinExecutableAllocationUSDT(this.config.investmentUSDT, this.config.leverage);
+
     const revalidationResults = await Promise.allSettled(batch.map(async ([, entry]) => {
       try {
         const maxInvestment = Math.max(0, entry.investmentUSDT);
@@ -2679,11 +2794,7 @@ class ServerSimScheduler {
         ]));
         const minInvestment = Math.min(
           maxInvestment,
-          Math.max(
-            MIN_EV_ALLOCATION_USDT,
-            MIN_EXECUTABLE_NOTIONAL_USDT / Math.max(1, this.config.leverage),
-            maxInvestment * MIN_EV_ALLOCATION_FRACTION,
-          ),
+          minProbeAllocation,
         );
         const shortLiveRate = this.findLatestFundingRate(
           entry.opportunity.shortExchange,
@@ -2706,6 +2817,7 @@ class ServerSimScheduler {
             shortRate: shortLiveRate?.rate,
             longRate: longLiveRate?.rate,
           },
+          getAcceptableNetEvFloor(maxInvestment),
         );
         return { entry, sizing };
 
@@ -2729,7 +2841,7 @@ class ServerSimScheduler {
           this.scheduleProbeStates.set(probeState.probeId, probeState);
         }
         if (
-          sizing.notionalUSDT >= MIN_EXECUTABLE_NOTIONAL_USDT
+          sizing.notionalUSDT >= minProbeAllocation * this.config.leverage
           && sizing.investmentUSDT > 0
           && sizing.investmentUSDT < liveEntry.investmentUSDT - 0.0001
         ) {
@@ -2788,7 +2900,7 @@ class ServerSimScheduler {
             revalidationGate: 'pre_execution_orderbook_ev',
             cancelWindowMs: EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS,
           },
-          detail: 'no profitable executable size during pre-execution orderbook revalidation',
+            detail: 'no acceptable executable size during pre-execution orderbook revalidation',
         },
       );
     }
@@ -3012,6 +3124,7 @@ class ServerSimScheduler {
     const strategyConfig = buildStrategyLikeConfig(this.config);
     const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
     const occupiedLegs = new Set<string>();
+    const planProbeAllocation = getMinExecutableAllocationUSDT(this.config.investmentUSDT, this.config.leverage);
 
     for (const position of state.simPositions) {
       occupiedLegs.add(makePositionLegKey(position.exchange, position.symbol));
@@ -3041,20 +3154,13 @@ class ServerSimScheduler {
       if (getOpportunityLegKeys(opportunity).some((legKey) => occupiedLegs.has(legKey))) {
         return false;
       }
-      const preEntryProbeInvestment = Math.min(
-        this.config.investmentUSDT,
-        Math.max(
-          MIN_EV_ALLOCATION_USDT,
-          MIN_EXECUTABLE_NOTIONAL_USDT / Math.max(1, this.config.leverage),
-          this.config.investmentUSDT * MIN_EV_ALLOCATION_FRACTION,
-        ),
-      );
+      const preEntryProbeInvestment = planProbeAllocation;
       const preEntryEv = passesPreEntryEVAtAllocation(
         opportunity,
         strategyConfig,
         preEntryProbeInvestment,
       );
-      if (!preEntryEv) {
+      if (!preEntryEv || preEntryEv.expectedNetUSD <= 0) {
         return false;
       }
       const shortRate = this.latestRates.find(r => r.exchange === opportunity.shortExchange && r.symbol === opportunity.shortSymbol);
@@ -4036,7 +4142,8 @@ class ServerSimScheduler {
     isSnipe: boolean,
     targetFundingTime = opportunity.nextFundingTime,
   ): Promise<SimTradeResult> {
-    if (!isSnipe && opportunity.spreadPercent < Math.max(0, this.config.minSpreadPercent)) {
+    const spreadAcceptanceThreshold = getSpreadAcceptanceThreshold(this.config.minSpreadPercent);
+    if (!isSnipe && opportunity.spreadPercent < spreadAcceptanceThreshold) {
       return { success: false, error: 'spread below threshold' };
     }
 
@@ -4067,8 +4174,8 @@ class ServerSimScheduler {
     let margin = requestedMargin;
     const leverage = this.config.leverage;
     const baseNotional = requestedMargin * leverage;
-    if (baseNotional <= 0 || opportunity.shortMarkPrice <= 0 || opportunity.longMarkPrice <= 0) {
-      return { success: false, error: 'invalid notional or mark price' };
+    if (baseNotional <= 0) {
+      return { success: false, error: 'invalid notional' };
     }
 
     const snipeConfig = this.config.confirmedSnipeConfig ?? DEFAULT_CONFIRMED_SNIPE_CONFIG;
@@ -4243,7 +4350,7 @@ class ServerSimScheduler {
         }
         liveSpread = shortLiveRate.rate - longLiveRate.rate;
         liveSpreadPercent = liveSpread * 100;
-        if (liveSpread > 0 && liveSpreadPercent >= this.config.minSpreadPercent) break;
+        if (liveSpreadPercent >= spreadAcceptanceThreshold) break;
       }
       if (!shortLiveRate || !longLiveRate) {
         return {
@@ -4266,16 +4373,16 @@ class ServerSimScheduler {
         };
       }
 
-      if (liveSpread <= 0) {
+      if (liveSpreadPercent < LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT) {
         return {
           success: false,
-          error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% <= 0.0000% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
+              error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% < ${LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT.toFixed(2)}% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
           analysis: buildFailureAnalysis({
             attemptedNotionalUSDT: baseNotional,
             extra: {
               liveSpreadPercent,
-              minSpreadPercent: this.config.minSpreadPercent,
-              executionGate: 'positive_spread_then_ev',
+              minSpreadPercent: spreadAcceptanceThreshold,
+              executionGate: 'positive_or_small_negative_spread_then_ev',
               liveSpreadAttempts,
               shortRevalidateSource,
               longRevalidateSource,
@@ -4288,7 +4395,7 @@ class ServerSimScheduler {
         };
       }
 
-      liveSpreadBelowConfiguredMin = liveSpreadPercent < this.config.minSpreadPercent;
+    liveSpreadBelowConfiguredMin = liveSpreadPercent < spreadAcceptanceThreshold;
       const shortFundingShiftMs = Math.abs(shortLiveRate.nextFundingTime - targetFundingTime);
       const longFundingShiftMs = Math.abs(longLiveRate.nextFundingTime - targetFundingTime);
       const fundingIntervalMs = opportunity.fundingIntervalMs && opportunity.fundingIntervalMs > 0
@@ -4396,12 +4503,13 @@ class ServerSimScheduler {
       };
     }
 
-    // Dynamic sizing: choose the largest margin that still has positive EV
-    // under the current orderbook. This lets the scheduler use $200 of a
-    // $1,000-per-trade budget when only $200 is actually profitable.
-    let notional = baseNotional;
-    if (snipeConfig.useDynamicNotional) {
-      try {
+      // Dynamic sizing: choose the largest margin that still has acceptable EV.
+      // under the current orderbook. This lets the scheduler use $200 of a
+      // $1,000-per-trade budget when only $200 is actually profitable.
+      let notional = baseNotional;
+      let dynamicSizingFallbackReason: 'none' | 'orderbook_model_unavailable' | 'orderbook_model_below_floor' = 'none';
+      if (snipeConfig.useDynamicNotional) {
+        try {
         const [shortOb, longOb] = await retryTransientFetch(() => Promise.all([
           fetchOrderbook(opportunity.shortExchange, opportunity.shortSymbol, 50),
           fetchOrderbook(opportunity.longExchange, opportunity.longSymbol, 50),
@@ -4412,47 +4520,83 @@ class ServerSimScheduler {
             ? snipeConfig.dynamicNotionalCap / Math.max(1, leverage)
             : requestedMargin,
         );
-        const minDynamicInvestment = Math.min(
+        const minDynamicAllocation = getMinExecutableAllocationUSDT(requestedMargin, leverage);
+        const minDynamicInvestment = Math.min(maxDynamicInvestment, minDynamicAllocation);
+        const dynamicProfitFloor = getAcceptableNetEvFloor(maxDynamicInvestment);
+        const emergencyMinDynamicInvestment = getDynamicSizingEmergencyStart(
+          requestedMargin,
+          leverage,
           maxDynamicInvestment,
-          Math.max(
-            MIN_EV_ALLOCATION_USDT,
-            MIN_EXECUTABLE_NOTIONAL_USDT / Math.max(1, leverage),
-            requestedMargin * MIN_EV_ALLOCATION_FRACTION,
-          ),
         );
-        const sizing = findMaxProfitableOrderbookSizing(
+        const findBestSizing = (
+          lowerBound: number,
+          upperBound: number,
+        ) => findMaxProfitableOrderbookSizingSafe(
           opportunity,
           buildStrategyLikeConfig(this.config),
-          maxDynamicInvestment,
-          minDynamicInvestment,
+          upperBound,
+          lowerBound,
           shortOb,
           longOb,
           {
             shortRate: shortRateForDecision,
             longRate: longRateForDecision,
           },
+          dynamicProfitFloor,
         );
-        if (!sizing || sizing.notionalUSDT < MIN_EXECUTABLE_NOTIONAL_USDT) {
-          return {
-            success: false,
-            error: `no profitable executable size: minMargin=$${minDynamicInvestment.toFixed(2)} maxMargin=$${maxDynamicInvestment.toFixed(2)}`,
-            analysis: buildFailureAnalysis({
-              attemptedNotionalUSDT: baseNotional,
-              effectiveNotionalUSDT: sizing?.notionalUSDT ?? 0,
-              extra: {
-                dynamicSizing: 'ev_orderbook',
-                minDynamicInvestmentUSDT: minDynamicInvestment,
-                maxDynamicInvestmentUSDT: maxDynamicInvestment,
-                dynamicNotionalCapUSDT: snipeConfig.dynamicNotionalCap,
-                bestExpectedNetUSD: sizing?.expectedNetUSD ?? null,
-                bestExpectedRoiPercent: sizing?.expectedRoiPercent ?? null,
-                bestMarketSnapshot: sizing?.marketSnapshot ?? null,
-              },
-            }),
-          };
+        let sizing = findBestSizing(minDynamicInvestment, maxDynamicInvestment);
+        let sizingMode: 'primary' | 'emergency' = 'primary';
+        if (!sizing && emergencyMinDynamicInvestment > 0 && emergencyMinDynamicInvestment < minDynamicInvestment) {
+          const emergencySizing = findBestSizing(
+            emergencyMinDynamicInvestment,
+            maxDynamicInvestment,
+          );
+          if (emergencySizing && emergencySizing.expectedNetUSD >= dynamicProfitFloor) {
+            sizing = emergencySizing;
+            sizingMode = 'emergency';
+          }
         }
-        notional = sizing.notionalUSDT;
-        margin = sizing.investmentUSDT;
+        if (!sizing || sizing.expectedNetUSD < dynamicProfitFloor) {
+          const fallbackMargin = Math.min(
+            maxDynamicInvestment,
+            Math.max(
+              emergencyMinDynamicInvestment,
+              Math.min(minDynamicInvestment, maxDynamicInvestment),
+            ),
+          );
+          const fallbackNotional = fallbackMargin * leverage;
+          if (fallbackMargin > 0 && Number.isFinite(fallbackNotional) && fallbackNotional > 0) {
+            // Simulation fallback: keep trying with executable micro-size instead of
+            // dropping the route immediately when orderbook-model EV sizing returns null.
+            margin = fallbackMargin;
+            notional = fallbackNotional;
+            dynamicSizingFallbackReason = sizing
+              ? 'orderbook_model_below_floor'
+              : 'orderbook_model_unavailable';
+          } else {
+            return {
+              success: false,
+              error: `no acceptable executable size: minMargin=$${minDynamicInvestment.toFixed(2)} maxMargin=$${maxDynamicInvestment.toFixed(2)} floor=$${dynamicProfitFloor.toFixed(4)}`,
+              analysis: buildFailureAnalysis({
+                attemptedNotionalUSDT: baseNotional,
+                effectiveNotionalUSDT: sizing?.notionalUSDT ?? 0,
+                extra: {
+                  dynamicSizing: 'ev_orderbook',
+                  minDynamicInvestmentUSDT: minDynamicInvestment,
+                  maxDynamicInvestmentUSDT: maxDynamicInvestment,
+                  dynamicNotionalCapUSDT: snipeConfig.dynamicNotionalCap,
+                  bestExpectedNetUSD: sizing?.expectedNetUSD ?? null,
+                  bestExpectedRoiPercent: sizing?.expectedRoiPercent ?? null,
+                  bestMarketSnapshot: sizing?.marketSnapshot ?? null,
+                  sizingMode,
+                },
+              }),
+            };
+          }
+        } else {
+          notional = sizing.notionalUSDT;
+          margin = sizing.investmentUSDT;
+        }
       } catch (err) {
         return {
           success: false,
@@ -4488,7 +4632,7 @@ class ServerSimScheduler {
     let executionMarketSnapshot: ProbeMarketSnapshot | undefined;
     const maxSlippagePct = this.config.maxSlippagePercent ?? 1.5;
     const impactCapBps = snipeConfig.maxRoundTripImpactBps ?? MAX_ROUND_TRIP_IMPACT_BPS;
-    const minAdaptiveNotional = 100;
+    const minAdaptiveNotional = MIN_EXECUTABLE_NOTIONAL_USDT;
     const maxAdaptiveAttempts = 4;
     let fillsValidated = false;
     for (let attempt = 0; attempt < maxAdaptiveAttempts; attempt += 1) {
@@ -4776,10 +4920,14 @@ class ServerSimScheduler {
         liveSpreadBelowConfiguredMin,
         executionGate: 'positive_spread_then_ev',
       };
-      if (ev.expectedNetUSD <= 0) {
+      const executionEvFloorBase = getAcceptableNetEvFloor(investmentUSDT);
+      const executionEvFloor = isSnipe
+        ? Math.min(executionEvFloorBase, SIM_EXECUTION_MIN_EV_FLOOR_USD)
+        : executionEvFloorBase;
+      if (ev.expectedNetUSD < executionEvFloor) {
         return {
           success: false,
-          error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)}`,
+          error: `conservative EV failed: $${ev.expectedNetUSD.toFixed(4)} ratio=${ev.evRatio.toFixed(2)} floor=${executionEvFloor.toFixed(4)}`,
           shortSlippagePercent,
           longSlippagePercent,
           analysis: buildFailureAnalysis({
@@ -4974,6 +5122,7 @@ class ServerSimScheduler {
         perFundingBeforeReserves: perFunding,
         totalRoundTripFees,
         totalReservesUSD,
+        dynamicSizingFallbackReason,
       },
     };
     const persisted = this.recordTrades([entryTrade]);
