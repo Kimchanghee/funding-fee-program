@@ -19,7 +19,7 @@
  *   RELAX_FUNDING_WINDOW=true|false   (default: false)
  *     - When true:
  *       a) The funding-time drift tolerance bumps from 60_000ms (1m) to
- *          600_000ms (10m).
+ *          1_200_000ms (20m).
  *       b) Funding-time shift is also accepted when it matches any of the
  *          standard funding cycles {1h, 4h, 8h} within the same tolerance,
  *          not only the opportunity's specific interval. This lets us pair
@@ -52,8 +52,8 @@ function readBooleanEnv(name: string, fallback: boolean): boolean {
   return TRUE_PATTERN.test(String(raw).trim());
 }
 
-/** Tolerance when scenario B is active (10 minutes). */
-export const RELAXED_LIVE_FUNDING_TIME_DRIFT_MS = 10 * 60 * 1000;
+/** Tolerance when scenario B is active (20 minutes). */
+export const RELAXED_LIVE_FUNDING_TIME_DRIFT_MS = 20 * 60 * 1000;
 
 /** Standard funding cycles considered when scenario B is active. */
 export const RELAXED_FUNDING_CYCLE_INTERVALS_MS: readonly number[] = [
@@ -88,7 +88,7 @@ export function getRelaxGuardsFlags(): RelaxGuardsFlags {
 /**
  * Return the active funding-time drift tolerance in ms. When scenario B is
  * disabled this returns the supplied baseline (preserves current behaviour
- * exactly). When enabled, returns 10 minutes.
+ * exactly). When enabled, returns 20 minutes.
  */
 export function getActiveLiveFundingTimeDriftMs(baselineMs: number): number {
   return getRelaxGuardsFlags().relaxFundingWindow

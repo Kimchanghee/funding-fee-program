@@ -126,6 +126,7 @@ const MIN_EXECUTABLE_NOTIONAL_USDT = 10;
 const EXECUTION_EMERGENCY_MIN_ALLOCATION_USDT = 1;
 const EMERGENCY_FALLBACK_SCALE_MIN = 0.5;
 const LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT = -0.03;
+const SIM_LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT = -0.2;
 const SIM_EXECUTION_MIN_EV_FLOOR_USD = -0.2;
 const MAX_NEGATIVE_EV_RATIO = 0.03;
 const MAX_NEGATIVE_EV_USD = 0.5;
@@ -4350,15 +4351,19 @@ class ServerSimScheduler {
         };
       }
 
-      if (liveSpreadPercent < LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT) {
+      const liveSpreadNegativeTolerance = isSnipe
+        ? SIM_LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT
+        : LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT;
+      if (liveSpreadPercent < liveSpreadNegativeTolerance) {
         return {
           success: false,
-              error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% < ${LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT.toFixed(2)}% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
+              error: `live spread revalidate failed: ${liveSpreadPercent.toFixed(4)}% < ${liveSpreadNegativeTolerance.toFixed(2)}% (after ${liveSpreadAttempts} attempt${liveSpreadAttempts === 1 ? '' : 's'})`,
           analysis: buildFailureAnalysis({
             attemptedNotionalUSDT: baseNotional,
             extra: {
               liveSpreadPercent,
               minSpreadPercent: spreadAcceptanceThreshold,
+              liveSpreadNegativeTolerancePercent: liveSpreadNegativeTolerance,
               executionGate: 'positive_or_small_negative_spread_then_ev',
               liveSpreadAttempts,
               shortRevalidateSource,
