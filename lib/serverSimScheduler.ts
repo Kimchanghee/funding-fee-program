@@ -127,7 +127,7 @@ const EXECUTION_EMERGENCY_MIN_ALLOCATION_USDT = 1;
 const EMERGENCY_FALLBACK_SCALE_MIN = 0.5;
 const LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT = -0.03;
 const SIM_LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT = -0.2;
-const SIM_EXECUTION_MIN_EV_FLOOR_USD = -0.05;
+const SIM_EXECUTION_MIN_EV_FLOOR_USD = 0;
 const MAX_NEGATIVE_EV_RATIO = 0.03;
 const MAX_NEGATIVE_EV_USD = 0.5;
 const MIN_NEGATIVE_EV_USD = 0.01;
@@ -261,6 +261,12 @@ function getAcceptableNetEvFloor(investmentUSDT: number): number {
     MIN_NEGATIVE_EV_USD,
     Math.min(scaledFloor, MAX_NEGATIVE_EV_USD),
   );
+}
+
+function getExecutionEvFloor(investmentUSDT: number, isSnipe: boolean): number {
+  const baseFloor = getAcceptableNetEvFloor(investmentUSDT);
+  if (!isSnipe) return baseFloor;
+  return Math.max(baseFloor, SIM_EXECUTION_MIN_EV_FLOOR_USD);
 }
 
 function getSpreadAcceptanceThreshold(minSpreadPercent: number): number {
@@ -3549,6 +3555,12 @@ class ServerSimScheduler {
       );
       const markPrice = liveRate?.markPrice ?? position.markPrice;
       const liveFundingRate = liveRate?.rate ?? position.fundingRate;
+      const liveFundingWindowAligned = liveRate != null
+        && Number.isFinite(liveRate.nextFundingTime)
+        && Math.abs(liveRate.nextFundingTime - position.nextFundingTime) <= MAX_FUNDING_TIMESTAMP_DIFF_MS;
+      const settlementFundingRate = liveFundingWindowAligned
+        ? liveFundingRate
+        : position.fundingRate;
 
       if (position.nextFundingTime > now) {
         const pricePnl = position.side === 'short'
@@ -3565,8 +3577,8 @@ class ServerSimScheduler {
       }
 
       const funding = position.side === 'short'
-        ? position.sizeUSD * liveFundingRate
-        : position.sizeUSD * (-liveFundingRate);
+        ? position.sizeUSD * settlementFundingRate
+        : position.sizeUSD * (-settlementFundingRate);
       state.simBalances[position.exchange] = (state.simBalances[position.exchange] ?? 0) + funding;
       state.simTotalFundingEarned += funding;
 
@@ -3574,7 +3586,7 @@ class ServerSimScheduler {
         exchange: position.exchange,
         symbol: position.symbol,
         amount: funding,
-        rate: liveFundingRate,
+        rate: settlementFundingRate,
         timestamp: now,
         side: position.side,
       };
@@ -3589,7 +3601,7 @@ class ServerSimScheduler {
         symbol: position.symbol,
         pairId: position.pairId,
         fundingAmount: funding,
-        fundingRate: liveFundingRate,
+        fundingRate: settlementFundingRate,
       });
       if (position.pairId) {
         fundedPairIds.add(position.pairId);
@@ -4504,7 +4516,7 @@ class ServerSimScheduler {
         );
         const minDynamicAllocation = getMinExecutableAllocationUSDT(requestedMargin, leverage);
         const minDynamicInvestment = Math.min(maxDynamicInvestment, minDynamicAllocation);
-        const dynamicProfitFloor = getAcceptableNetEvFloor(maxDynamicInvestment);
+        const dynamicProfitFloor = getExecutionEvFloor(maxDynamicInvestment, isSnipe);
         const emergencyMinDynamicInvestment = getDynamicSizingEmergencyStart(
           requestedMargin,
           leverage,
@@ -4902,10 +4914,7 @@ class ServerSimScheduler {
         liveSpreadBelowConfiguredMin,
         executionGate: 'positive_spread_then_ev',
       };
-      const executionEvFloorBase = getAcceptableNetEvFloor(investmentUSDT);
-      const executionEvFloor = isSnipe
-        ? Math.min(executionEvFloorBase, SIM_EXECUTION_MIN_EV_FLOOR_USD)
-        : executionEvFloorBase;
+      const executionEvFloor = getExecutionEvFloor(investmentUSDT, isSnipe);
       if (ev.expectedNetUSD < executionEvFloor) {
         return {
           success: false,
