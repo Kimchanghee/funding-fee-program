@@ -130,7 +130,7 @@ const SIM_EXECUTION_MIN_EV_FLOOR_USD = -0.2;
 const MAX_NEGATIVE_EV_RATIO = 0.03;
 const MAX_NEGATIVE_EV_USD = 0.5;
 const MIN_NEGATIVE_EV_USD = 0.01;
-const LIQUIDITY_SIZING_CANDIDATE_CAP = 72;
+const LIQUIDITY_SIZING_CANDIDATE_CAP = 200;
 const PROFITABLE_SIZING_SEARCH_STEPS = 16;
 const FUNDING_REVALIDATE_CACHE_MAX_AGE_MS = 15_000;
 const FUNDING_REVALIDATE_STALE_FALLBACK_MS = 60_000;
@@ -2857,23 +2857,18 @@ class ServerSimScheduler {
       if (sizing === undefined || timeToExecutionMs > EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS) {
         continue;
       }
-
-      this.scheduledEntries.delete(liveEntry.opportunityId);
-      if (probeState.status === 'scheduled') {
-        probeState.status = 'canceled';
-        probeState.finalizedAt = now;
-        probeState.lastReason = 'orderbook_ev_negative';
-        this.scheduleProbeStates.set(probeState.probeId, probeState);
-      }
+      // Keep the schedule alive and let executeDueEntries run the final
+      // decision path. This preserves the dynamic execution fallback logic
+      // instead of hard-canceling right before the entry window.
       events.push(
         this.buildScheduleProbeEvent(
-          'canceled_before_execute',
+          'pre_execution_ev_soft_fail',
           liveEntry.opportunity,
           liveEntry.investmentUSDT,
           now,
           {
-            status: 'canceled',
-            reason: 'orderbook_ev_negative',
+            status: probeState.status,
+            reason: 'orderbook_ev_negative_soft',
             timeToExecutionMs,
             analysis: {
               opportunityId: liveEntry.opportunityId,
@@ -2884,24 +2879,6 @@ class ServerSimScheduler {
             },
           },
         ),
-        {
-          timestamp: now,
-          type: 'guard_block',
-          simulation: true,
-          baseAsset: liveEntry.opportunity.baseAsset,
-          shortExchange: liveEntry.opportunity.shortExchange,
-          longExchange: liveEntry.opportunity.longExchange,
-          spread: liveEntry.opportunity.spread,
-          spreadPercent: liveEntry.opportunity.spreadPercent,
-          reason: 'orderbook_ev_negative',
-          analysis: {
-            opportunityId: liveEntry.opportunityId,
-            probeId: liveEntry.probeId,
-            revalidationGate: 'pre_execution_orderbook_ev',
-            cancelWindowMs: EXECUTABLE_REVALIDATE_CANCEL_WINDOW_MS,
-          },
-            detail: 'no acceptable executable size during pre-execution orderbook revalidation',
-        },
       );
     }
     if (events.length > 0) {
