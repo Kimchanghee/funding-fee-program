@@ -120,14 +120,18 @@ const MAX_FUNDING_HISTORY = 500;
 const TRANSIENT_FETCH_RETRY_ATTEMPTS = 2;
 const TRANSIENT_FETCH_RETRY_DELAY_MS = 120;
 const WS_WARM_INTERVAL_MS = 15_000;
-const MIN_EV_ALLOCATION_USDT = 1;
+const MIN_EV_ALLOCATION_USDT = 0.25;
 const MIN_EV_ALLOCATION_FRACTION = 0.002;
-const MIN_EXECUTABLE_NOTIONAL_USDT = 10;
-const EXECUTION_EMERGENCY_MIN_ALLOCATION_USDT = 1;
+const MIN_EXECUTABLE_NOTIONAL_USDT = 4;
+const EXECUTION_EMERGENCY_MIN_ALLOCATION_USDT = 0.25;
 const EMERGENCY_FALLBACK_SCALE_MIN = 0.5;
 const LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT = -0.03;
 const SIM_LIVE_SPREAD_NEGATIVE_TOLERANCE_PCT = -0.2;
-const SIM_EXECUTION_MIN_EV_FLOOR_USD = 0;
+const SIM_EXECUTION_MIN_EV_FLOOR_USD = -0.02;
+const SIM_FUNDING_ROLLOVER_TOLERANCE_MS = 5 * 60 * 1000;
+const SIM_EXECUTION_EXIT_IMPACT_MULTIPLIER = 0.6;
+const SIM_EXECUTION_BASIS_RESERVE_MULTIPLIER = 0.6;
+const SIM_EXECUTION_VOLUME_RESERVE_MULTIPLIER = 0.5;
 const MAX_NEGATIVE_EV_RATIO = 0.03;
 const MAX_NEGATIVE_EV_USD = 0.5;
 const MIN_NEGATIVE_EV_USD = 0.01;
@@ -4413,8 +4417,12 @@ class ServerSimScheduler {
         liveFundingDriftMs,
         { allowMultiCycle: relaxFlags.relaxFundingWindow },
       );
-      const shortWithinWindow = shortFundingShiftMs <= liveFundingDriftMs || shortIsRollover;
-      const longWithinWindow = longFundingShiftMs <= liveFundingDriftMs || longIsRollover;
+      const shortIsSimRollover = isSnipe
+        && Math.abs(shortFundingShiftMs - fundingIntervalMs) <= SIM_FUNDING_ROLLOVER_TOLERANCE_MS;
+      const longIsSimRollover = isSnipe
+        && Math.abs(longFundingShiftMs - fundingIntervalMs) <= SIM_FUNDING_ROLLOVER_TOLERANCE_MS;
+      const shortWithinWindow = shortFundingShiftMs <= liveFundingDriftMs || shortIsRollover || shortIsSimRollover;
+      const longWithinWindow = longFundingShiftMs <= liveFundingDriftMs || longIsRollover || longIsSimRollover;
       if (!shortWithinWindow || !longWithinWindow) {
         return {
           success: false,
@@ -4428,6 +4436,9 @@ class ServerSimScheduler {
               fundingIntervalMs,
               shortIsRollover,
               longIsRollover,
+              shortIsSimRollover,
+              longIsSimRollover,
+              simFundingRolloverToleranceMs: SIM_FUNDING_ROLLOVER_TOLERANCE_MS,
               shortWithinWindow,
               longWithinWindow,
               relaxFundingWindow: relaxFlags.relaxFundingWindow,
@@ -4871,21 +4882,30 @@ class ServerSimScheduler {
         entryGap.liveGapPercent,
         executionMarketSnapshot?.basisBps,
       );
+      const adjustedBasisConvergenceReservePct = isSnipe
+        ? basisConvergenceReservePct * SIM_EXECUTION_BASIS_RESERVE_MULTIPLIER
+        : basisConvergenceReservePct;
       const volumeReservePct = volumeLiquidityReservePct({
         notionalUSDT: notional,
         shortQuoteVolume24h,
         longQuoteVolume24h,
         marketSnapshot: executionMarketSnapshot,
       });
+      const adjustedVolumeReservePct = isSnipe
+        ? volumeReservePct * SIM_EXECUTION_VOLUME_RESERVE_MULTIPLIER
+        : volumeReservePct;
+      const adjustedExitImpactDec = isSnipe
+        ? exitImpactDec * SIM_EXECUTION_EXIT_IMPACT_MULTIPLIER
+        : exitImpactDec;
       const dataHealthPenaltyUSD = Date.now() - this.lastRatesUpdate > RATES_REFRESH_INTERVAL_MS * 3
         ? notional * (STALE_DATA_PENALTY_BPS / 10000)
         : 0;
       const ev = calcConservativeEV(
         notional, shortRateForDecision, longRateForDecision,
-        shortDrift, longDrift, roundTripFeeDec, entryImpactDec, exitImpactDec,
+        shortDrift, longDrift, roundTripFeeDec, entryImpactDec, adjustedExitImpactDec,
         {
-          basisConvergenceReservePct,
-          volumeLiquidityReservePct: volumeReservePct,
+          basisConvergenceReservePct: adjustedBasisConvergenceReservePct,
+          volumeLiquidityReservePct: adjustedVolumeReservePct,
           dataHealthPenaltyUSD,
         },
       );
@@ -4908,7 +4928,13 @@ class ServerSimScheduler {
         longExitSlippagePercent,
         entryGapLivePercent: entryGap.liveGapPercent,
         entryGapDriftPercent: entryGap.driftPercent,
-        basisRiskReservePct: basisConvergenceReservePct,
+        basisRiskReservePct: adjustedBasisConvergenceReservePct,
+        basisRiskReservePctRaw: basisConvergenceReservePct,
+        volumeLiquidityReservePct: adjustedVolumeReservePct,
+        volumeLiquidityReservePctRaw: volumeReservePct,
+        exitImpactPctUsed: adjustedExitImpactDec * 100,
+        exitImpactPctRaw: exitImpactDec * 100,
+        simExecutionRelaxed: isSnipe,
         liveSpreadPercent: spreadPercentForDecision,
         configuredMinSpreadPercent: this.config.minSpreadPercent,
         liveSpreadBelowConfiguredMin,
@@ -4941,7 +4967,12 @@ class ServerSimScheduler {
               dataHealthPenaltyUSD: ev.dataHealthPenaltyUSD,
               entryGapLivePercent: entryGap.liveGapPercent,
               entryGapDriftPercent: entryGap.driftPercent,
-              basisRiskReservePct: basisConvergenceReservePct,
+              basisRiskReservePct: adjustedBasisConvergenceReservePct,
+              basisRiskReservePctRaw: basisConvergenceReservePct,
+              volumeLiquidityReservePct: adjustedVolumeReservePct,
+              volumeLiquidityReservePctRaw: volumeReservePct,
+              exitImpactPctUsed: adjustedExitImpactDec * 100,
+              exitImpactPctRaw: exitImpactDec * 100,
               shortExitSlippagePercent,
               longExitSlippagePercent,
               shortQuoteVolume24h: shortQuoteVolume24h ?? null,
