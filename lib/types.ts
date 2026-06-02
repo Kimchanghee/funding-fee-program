@@ -640,7 +640,7 @@ export const DEFAULT_CONFIRMED_SNIPE_CONFIG: ConfirmedSnipeConfig = {
   targetImpactBps: TARGET_IMPACT_BPS,
   maxRoundTripImpactBps: MAX_ROUND_TRIP_IMPACT_BPS,
   useDynamicNotional: true,
-  dynamicNotionalCap: 100_000,
+  dynamicNotionalCap: 1_000,
   useDriftBuffer: false,
   useConfirmedClose: false,
   useIocLimitOnly: true,

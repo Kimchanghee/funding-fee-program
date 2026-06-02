@@ -60,7 +60,7 @@ headers = {
 default_config = {
     "investmentUSDT": 250,
     "leverage": 17,
-    "minSpreadPercent": 0.01,
+    "minSpreadPercent": 0.0,
     "compoundInvesting": True,
     "enabledExchanges": ["binance", "bybit", "okx", "bitget", "gate", "bingx"],
     "timingConfig": {
@@ -76,7 +76,7 @@ default_config = {
         "targetImpactBps": 2,
         "maxRoundTripImpactBps": 12,
         "useDynamicNotional": True,
-        "dynamicNotionalCap": 300000,
+        "dynamicNotionalCap": 1000,
         "useDriftBuffer": False,
         "useConfirmedClose": False,
         "useIocLimitOnly": True,
@@ -102,7 +102,7 @@ try:
     current_config = status.get("config") if isinstance(status, dict) else {}
     config = {**default_config, **(current_config or {})}
     config["enabledExchanges"] = default_config["enabledExchanges"]
-    config["minSpreadPercent"] = min(float(config.get("minSpreadPercent") or 0.01), 0.01)
+    config["minSpreadPercent"] = 0.0
     config["maxSlippagePercent"] = max(float(config.get("maxSlippagePercent") or 0), 4)
     current_timing = ((current_config or {}).get("timingConfig") or {})
     timing_config = {**default_config["timingConfig"], **current_timing}
@@ -120,10 +120,7 @@ try:
             float(((current_config or {}).get("confirmedSnipeConfig") or {}).get("targetImpactBps") or 2),
         ),
         "useDynamicNotional": True,
-        "dynamicNotionalCap": max(
-            300000,
-            int(((current_config or {}).get("confirmedSnipeConfig") or {}).get("dynamicNotionalCap") or 0),
-        ),
+        "dynamicNotionalCap": 1000,
         "useIocLimitOnly": True,
         "useStrictHedge": True,
     }

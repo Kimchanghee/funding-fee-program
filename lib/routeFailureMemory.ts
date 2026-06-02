@@ -2,7 +2,7 @@ import type { TradeEvent } from './fileLogger';
 
 const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
 const MIN_BLOCK_MS = 30 * 1000;
-const MAX_BLOCK_MS = 2 * 60 * 60 * 1000;
+const MAX_BLOCK_MS = 6 * 60 * 60 * 1000;
 
 interface RouteFailureState {
   timestamps: number[];
@@ -19,6 +19,12 @@ function getReasonPolicy(reasonRaw?: string): { cooldownMs: number; weight: numb
   const reason = normalizeReason(reasonRaw);
   if (reason.includes('orderbook_ev_negative') || reason.includes('no_profitable_executable_size')) {
     return { cooldownMs: 45 * 1000, weight: 0.35 };
+  }
+  if (reason.includes('realized_loss_large')) {
+    return { cooldownMs: 2 * 60 * 60 * 1000, weight: 2.0 };
+  }
+  if (reason.includes('realized_loss')) {
+    return { cooldownMs: 60 * 60 * 1000, weight: 1.1 };
   }
   if (reason.includes('profitability_scan_failed') || reason.includes('profitability_insufficient')) {
     return { cooldownMs: 2 * 60 * 1000, weight: 0.35 };
@@ -82,6 +88,21 @@ export class RouteFailureMemory {
         if (event.success === false) {
           this.recordFailure(routeKey, event.reason ?? 'entry_failed', event.timestamp);
         } else {
+          this.recordSuccess(routeKey, event.timestamp);
+        }
+        continue;
+      }
+
+      if (event.type === 'snipe_complete') {
+        const pnl = Number(event.pnl);
+        if (!Number.isFinite(pnl)) continue;
+        if (pnl < 0) {
+          this.recordFailure(
+            routeKey,
+            pnl <= -0.02 ? 'realized_loss_large' : 'realized_loss',
+            event.timestamp,
+          );
+        } else if (pnl > 0) {
           this.recordSuccess(routeKey, event.timestamp);
         }
       }

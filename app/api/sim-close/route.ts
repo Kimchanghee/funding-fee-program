@@ -3,12 +3,18 @@ import { getServerSimScheduler } from '@/lib/serverSimScheduler';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as { simId: string };
-    if (typeof body.simId !== 'string' || !body.simId.trim()) {
+    const body = await req.json() as { simId?: string; all?: boolean };
+    if (body.all === true) {
+      const result = await getServerSimScheduler().closeAllOpen();
+      return NextResponse.json(result, { status: result.success ? 200 : 404 });
+    }
+
+    const simId = body.simId;
+    if (typeof simId !== 'string' || !simId.trim()) {
       return NextResponse.json({ success: false, error: 'Invalid simId' }, { status: 400 });
     }
 
-    const result = await getServerSimScheduler().closeManual(body.simId.trim());
+    const result = await getServerSimScheduler().closeManual(simId.trim());
     return NextResponse.json(result, { status: result.success ? 200 : 404 });
   } catch (error) {
     return NextResponse.json(
